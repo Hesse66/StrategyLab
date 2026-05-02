@@ -1,0 +1,181 @@
+{
+  "engine_id": "ghl_dc_breakout_v1",
+  "asset": "XAUUSD",
+  "venue": "IC Markets MT5",
+  "timeframe": "30m",
+  "metadata": {
+    "family_id": "xauusd_ghl_dc",
+    "source_project": "AutoXAU GHL+DC",
+    "source_files": [
+      "C:/Users/G3_Mb/OneDrive/Documentos/Trading/AutoXAU/xau_ghl_dc_strategy_long_short.pine",
+      "C:/Users/G3_Mb/OneDrive/Documentos/Trading/AutoXAU/integrated_xau_ghl_dc.pine"
+    ],
+    "translation_prompt": "agents/translation and generation/whitebox/01_translation.md",
+    "translation_target": "universal inspired strategy candidate",
+    "notes": "Translated from the local Gann High Low plus Donchian breakout Pine strategy. The source has Gann-state exits but no production stop, so this parent adds an explicit ATR initial stop for auditable risk sizing."
+  },
+  "parameters": {
+    "gann_high_period": 13,
+    "gann_low_period": 21,
+    "donchian_length": 55,
+    "max_breakout_bars": 7,
+    "allow_long": true,
+    "allow_short": true,
+    "atr_len": 14,
+    "stop_mode": "atr",
+    "stop_mult": 2.5,
+    "quantity": 1.0,
+    "initial_capital": 100000.0,
+    "commission_pct": 0.0,
+    "slippage_ticks": 10,
+    "tick_size": 0.01,
+    "sizing_mode": "fixed_risk_pct",
+    "notional_pct": 0.25,
+    "risk_pct": 0.005,
+    "max_leverage": 1.0
+  },
+  "evaluation": {
+    "minimum_trades": 50,
+    "minimum_profit_factor": 1.15,
+    "maximum_drawdown_pct": 15.0,
+    "minimum_net_pnl": 0.0,
+    "minimum_sharpe": 0.35,
+    "minimum_sortino": 0.5,
+    "minimum_daily_sharpe": 0.5,
+    "minimum_daily_sortino": 0.75,
+    "minimum_calmar": 0.35,
+    "maximum_initial_risk_pct": 1.0,
+    "maximum_entry_exposure_pct": 100.0,
+    "maximum_avg_exposure_pct": 100.0,
+    "maximum_worst_daily_loss_pct": 5.0,
+    "production_sizing_modes": [
+      "fixed_notional_pct",
+      "fixed_risk_pct"
+    ],
+    "benchmark_policy": "outperform_return_or_calmar"
+  },
+  "mutation_space": [
+    {
+      "kind": "white_box",
+      "lever": "gann_high_period",
+      "path": "parameters.gann_high_period",
+      "values": [
+        8,
+        13,
+        21
+      ],
+      "rationale": "Tune the Gann high-side trend state memory without changing the family."
+    },
+    {
+      "kind": "white_box",
+      "lever": "gann_low_period",
+      "path": "parameters.gann_low_period",
+      "values": [
+        13,
+        21,
+        34
+      ],
+      "rationale": "Tune the Gann low-side trend state memory."
+    },
+    {
+      "kind": "white_box",
+      "lever": "donchian_length",
+      "path": "parameters.donchian_length",
+      "values": [
+        34,
+        55,
+        89
+      ],
+      "rationale": "Change the breakout horizon while preserving Donchian confirmation."
+    },
+    {
+      "kind": "white_box",
+      "lever": "max_breakout_bars",
+      "path": "parameters.max_breakout_bars",
+      "values": [
+        3,
+        7,
+        12
+      ],
+      "rationale": "Tighten or loosen how long a Gann state transition may wait for Donchian confirmation."
+    },
+    {
+      "kind": "white_box",
+      "lever": "atr_len",
+      "path": "parameters.atr_len",
+      "values": [
+        14,
+        21,
+        34
+      ],
+      "rationale": "Tune risk-stop volatility memory added for production-style capital modeling."
+    },
+    {
+      "kind": "white_box",
+      "lever": "stop_mult",
+      "path": "parameters.stop_mult",
+      "values": [
+        1.8,
+        2.5,
+        3.5
+      ],
+      "rationale": "Tune the explicit ATR risk stop used for sizing and survivability."
+    },
+    {
+      "kind": "white_box",
+      "lever": "stop_mode",
+      "path": "parameters.stop_mode",
+      "values": [
+        "atr",
+        "bar_extreme",
+        "donchian_opposite"
+      ],
+      "rationale": "Compare the added production stop against source-adjacent structural alternatives."
+    },
+    {
+      "kind": "white_box",
+      "lever": "allow_short",
+      "path": "parameters.allow_short",
+      "values": [
+        false
+      ],
+      "rationale": "Check whether short-side participation hurts the XAUUSD parent."
+    },
+    {
+      "kind": "white_box",
+      "lever": "allow_long",
+      "path": "parameters.allow_long",
+      "values": [
+        false
+      ],
+      "rationale": "Check whether long-side participation is carrying or degrading the family."
+    },
+    {
+      "kind": "white_box",
+      "lever": "risk_pct",
+      "path": "parameters.risk_pct",
+      "values": [
+        0.0025,
+        0.005,
+        0.01
+      ],
+      "rationale": "Production-style sizing stress after the engine shows sign of life."
+    }
+  ],
+  "causal_story": "Gann High Low defines a transparent trend-state flip. Donchian confirmation requires price to break the stored channel extreme soon after the flip, filtering weak crosses. Positions exit on the opposite Gann state close or on an explicit ATR risk stop added for auditable portfolio sizing.",
+  "translation_audit": {
+    "direct_translation": [
+      "Gann High Low state from SMA(high, HPeriod) and SMA(low, LPeriod)",
+      "Donchian upper/lower breakout confirmation",
+      "maximum bars allowed between Gann cross and Donchian confirmation",
+      "Gann state close exits",
+      "long and short symmetry"
+    ],
+    "transparent_approximations": [
+      "ATR initial stop is added because the Pine source had no hard stop and StrategyLab needs bounded risk for fixed-risk sizing.",
+      "Backtest fills use close plus configured slippage, matching the lab's bar-close research convention rather than claiming tick-perfect Pine equivalence."
+    ],
+    "first_test_dataset": "XAUUSD_M30_201711020700_202605011900",
+    "routing": "proceed_to_first_executable_translation"
+  }
+}

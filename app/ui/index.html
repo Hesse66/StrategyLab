@@ -51,7 +51,7 @@
             <p class="eyebrow">Step 1</p>
             <h2>Research Data</h2>
           </div>
-          <p>Binance public candles, no API key. Use at least 40k bars unless full history is selected.</p>
+          <p>Binance public candles or local MT5 CSV exports normalized into the research store.</p>
         </div>
 
         <div class="control-grid data-grid">
@@ -64,6 +64,7 @@
             <select id="timeframeSelect">
               <option value="15m" selected>15m</option>
               <option value="5m">5m</option>
+              <option value="30m">30m</option>
               <option value="1h">1h</option>
               <option value="4h">4h</option>
             </select>
@@ -81,6 +82,30 @@
             <input id="datasetNameInput" placeholder="binance-btcusdt-15m-40000" />
           </label>
           <button id="downloadButton" class="primary">Download Dataset</button>
+        </div>
+        <div class="control-grid data-grid">
+          <label class="span-2">
+            MT5 CSV path
+            <input id="mt5CsvPathInput" placeholder="C:\path\XAUUSD_M30_201711020700_202605011900.csv" />
+          </label>
+          <label>
+            MT5 symbol
+            <input id="mt5SymbolInput" value="XAUUSD" />
+          </label>
+          <label>
+            MT5 timeframe
+            <select id="mt5TimeframeSelect">
+              <option value="30m" selected>30m</option>
+              <option value="15m">15m</option>
+              <option value="1h">1h</option>
+              <option value="4h">4h</option>
+            </select>
+          </label>
+          <label class="span-2">
+            MT5 dataset label
+            <input id="mt5DatasetNameInput" placeholder="icmarkets-xauusd-30m-20171102-20260501" />
+          </label>
+          <button id="importMt5Button" class="primary">Import MT5 CSV</button>
         </div>
         <p id="downloadStatus" class="status"></p>
       </section>

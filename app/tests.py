@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 from fastapi import HTTPException
 
+from app.backtest import BacktestEngine
 from app.config import settings
 from app.data import Bar, DataService
 from app.lab import MutationLabService
@@ -141,6 +142,69 @@ class MutationLabTests(unittest.TestCase):
         self.assertIn("## Full-Whitebox Diagnostic Queue", report)
         stored_runs = self.repo.list_runs(family_id="btc_intraday")
         self.assertEqual(len(stored_runs), 1)
+
+    def test_import_mt5_csv_dataset_normalizes_rows(self) -> None:
+        source = self.root / "XAUUSD_M30_sample.csv"
+        source.write_text(
+            "<DATE>\t<TIME>\t<OPEN>\t<HIGH>\t<LOW>\t<CLOSE>\t<TICKVOL>\t<VOL>\t<SPREAD>\n"
+            "2017.11.02\t07:00:00\t1280.14\t1280.56\t1279.13\t1279.83\t2354\t2354\t6\n"
+            "2017.11.02\t07:30:00\t1279.83\t1280.47\t1279.61\t1280.03\t2067\t2067\t6\n",
+            encoding="utf-8",
+        )
+        with self.assertRaises(HTTPException):
+            self.data_service.import_mt5_csv_dataset(str(source), "XAUUSD", "30m", "too-small")
+
+        source.write_text(
+            source.read_text(encoding="utf-8")
+            + "".join(
+                f"{(datetime(2017, 11, 3, tzinfo=UTC) + timedelta(minutes=30 * step)).strftime('%Y.%m.%d')}\t"
+                f"{(datetime(2017, 11, 3, tzinfo=UTC) + timedelta(minutes=30 * step)).strftime('%H:%M:%S')}\t"
+                "1280\t1281\t1279\t1280.5\t100\t100\t6\n"
+                for step in range(500)
+            ),
+            encoding="utf-8",
+        )
+        payload = self.data_service.import_mt5_csv_dataset(str(source), "XAUUSD", "30m", "mt5-xau")
+        self.assertEqual(payload["symbol"], "XAUUSD")
+        self.assertEqual(payload["timeframe"], "30m")
+        self.assertEqual(payload["source"], "mt5_csv")
+        self.assertGreater(payload["rows_count"], 500)
+        bars = self.data_service.load_bars(payload["dataset_id"])
+        self.assertEqual(bars[0].ts, datetime(2017, 11, 2, 7, 0, tzinfo=UTC))
+        self.assertEqual(bars[0].symbol, "XAUUSD")
+        self.assertEqual(bars[0].timeframe, "30m")
+
+    def test_ghl_dc_engine_runs(self) -> None:
+        bars = build_fixture_bars(1200)
+        for bar in bars:
+            bar.symbol = "XAUUSD"
+            bar.timeframe = "30m"
+        spec = {
+            "engine_id": "ghl_dc_breakout_v1",
+            "parameters": {
+                "gann_high_period": 5,
+                "gann_low_period": 8,
+                "donchian_length": 13,
+                "max_breakout_bars": 10,
+                "allow_long": True,
+                "allow_short": True,
+                "atr_len": 8,
+                "stop_mode": "atr",
+                "stop_mult": 2.0,
+                "initial_capital": 100000.0,
+                "commission_pct": 0.0,
+                "slippage_ticks": 1,
+                "tick_size": 0.01,
+                "sizing_mode": "fixed_risk_pct",
+                "risk_pct": 0.005,
+                "max_leverage": 1.0,
+            },
+            "evaluation": {},
+        }
+        result = BacktestEngine().run(spec, bars)
+        self.assertIn("metrics", result)
+        self.assertIn("diagnostics", result)
+        self.assertGreaterEqual(result["diagnostics"]["bars"], 1200)
 
     def test_time_decay_exit_is_disabled_by_default_and_opt_in(self) -> None:
         bars = build_fixture_bars()

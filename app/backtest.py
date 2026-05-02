@@ -75,6 +75,26 @@ def atr(bars: list[Bar], length: int) -> list[float | None]:
     return output
 
 
+def rolling_high(values: list[float], length: int) -> list[float | None]:
+    output: list[float | None] = []
+    for index in range(len(values)):
+        if index + 1 < length:
+            output.append(None)
+            continue
+        output.append(max(values[index + 1 - length : index + 1]))
+    return output
+
+
+def rolling_low(values: list[float], length: int) -> list[float | None]:
+    output: list[float | None] = []
+    for index in range(len(values)):
+        if index + 1 < length:
+            output.append(None)
+            continue
+        output.append(min(values[index + 1 - length : index + 1]))
+    return output
+
+
 def compute_metrics(
     initial_capital: float,
     trades: list[dict[str, Any]],
@@ -271,21 +291,31 @@ def buy_hold_drawdown_pct(bars: list[Bar], start_index: int) -> float:
 def benchmark_warmup_index(parameters: dict[str, Any], bar_count: int) -> int:
     if bar_count <= 1:
         return 0
-    warmup = max(
-        int(parameters["fast_len"]),
-        int(parameters["slow_len"]),
-        int(parameters["atr_len"]),
-        int(parameters["noise_lookback"]) + 1,
-    )
+    if "fast_len" in parameters:
+        warmup = max(
+            int(parameters["fast_len"]),
+            int(parameters["slow_len"]),
+            int(parameters["atr_len"]),
+            int(parameters["noise_lookback"]) + 1,
+        )
+    else:
+        warmup = max(
+            int(parameters.get("gann_high_period", 13)),
+            int(parameters.get("gann_low_period", 21)),
+            int(parameters.get("donchian_length", 55)),
+            int(parameters.get("atr_len", 14)),
+        )
     return min(warmup, bar_count - 1)
 
 
 class BacktestEngine:
     def run(self, spec: dict[str, Any], bars: list[Bar]) -> dict[str, Any]:
         engine_id = spec.get("engine_id")
-        if engine_id != "ma_cross_atr_stop_v1":
-            raise HTTPException(status_code=400, detail=f"Unsupported engine: {engine_id}")
-        return self._run_ma_cross_atr_stop(spec, bars)
+        if engine_id == "ma_cross_atr_stop_v1":
+            return self._run_ma_cross_atr_stop(spec, bars)
+        if engine_id == "ghl_dc_breakout_v1":
+            return self._run_ghl_dc_breakout(spec, bars)
+        raise HTTPException(status_code=400, detail=f"Unsupported engine: {engine_id}")
 
     def _run_ma_cross_atr_stop(self, spec: dict[str, Any], bars: list[Bar]) -> dict[str, Any]:
         parameters = spec["parameters"]
@@ -670,6 +700,256 @@ class BacktestEngine:
             "equity_curve": equity_curve,
             "diagnostics": diagnostics,
         }
+
+    def _run_ghl_dc_breakout(self, spec: dict[str, Any], bars: list[Bar]) -> dict[str, Any]:
+        parameters = spec["parameters"]
+        highs = [bar.high for bar in bars]
+        lows = [bar.low for bar in bars]
+        closes = [bar.close for bar in bars]
+        gann_high_period = int(parameters.get("gann_high_period", 13))
+        gann_low_period = int(parameters.get("gann_low_period", 21))
+        donchian_length = int(parameters.get("donchian_length", 55))
+        max_breakout_bars = int(parameters.get("max_breakout_bars", 7))
+        atr_values = atr(bars, int(parameters.get("atr_len", 14)))
+        sma_high = sma(highs, gann_high_period)
+        sma_low = sma(lows, gann_low_period)
+        dc_upper = rolling_high(highs, donchian_length)
+        dc_lower = rolling_low(lows, donchian_length)
+
+        hilo_values: list[float | None] = []
+        state_values: list[int] = []
+        state = 0
+        for index, bar in enumerate(bars):
+            if index > 0 and sma_high[index - 1] is not None and bar.close > float(sma_high[index - 1]):
+                state = 1
+            elif index > 0 and sma_low[index - 1] is not None and bar.close < float(sma_low[index - 1]):
+                state = -1
+            state_values.append(state)
+            if state == -1:
+                hilo_values.append(sma_high[index])
+            elif state == 1:
+                hilo_values.append(sma_low[index])
+            else:
+                hilo_values.append(None)
+
+        position: Position | None = None
+        trades: list[dict[str, Any]] = []
+        equity_curve: list[dict[str, Any]] = []
+        equity = float(parameters.get("initial_capital", 100_000.0))
+        tick_size = float(parameters.get("tick_size", 0.01))
+        slippage = int(parameters.get("slippage_ticks", 0)) * tick_size
+        commission_pct = float(parameters.get("commission_pct", 0.0)) / 100
+        diagnostics = {
+            "bars": len(bars),
+            "gann_cross_up": 0,
+            "gann_cross_down": 0,
+            "signals_long": 0,
+            "signals_short": 0,
+            "entries": 0,
+            "reverse_exits": 0,
+            "gann_state_exits": 0,
+            "stop_exits": 0,
+            "expired_setups": 0,
+            "time_exits": 0,
+        }
+        pending_long = False
+        pending_long_bar = 0
+        pending_long_breakout: float | None = None
+        pending_short = False
+        pending_short_bar = 0
+        pending_short_breakdown: float | None = None
+        warmup = benchmark_warmup_index(parameters, len(bars))
+
+        for index, bar in enumerate(bars):
+            if index < warmup or hilo_values[index] is None or atr_values[index] is None:
+                equity_curve.append({"ts": bar.ts.isoformat(), "equity": round(equity, 2)})
+                continue
+
+            if position:
+                self._update_excursion(position, bar)
+
+            if position and index > position.stop_initialized_on_index:
+                if position.direction == 1 and bar.low <= position.stop_price:
+                    trade = self._close_trade(position, bar, index, max(position.stop_price - slippage, 0.0), "stop", commission_pct, equity)
+                    trades.append(trade)
+                    equity += trade["net_pnl"]
+                    diagnostics["stop_exits"] += 1
+                    position = None
+                elif position.direction == -1 and bar.high >= position.stop_price:
+                    trade = self._close_trade(position, bar, index, position.stop_price + slippage, "stop", commission_pct, equity)
+                    trades.append(trade)
+                    equity += trade["net_pnl"]
+                    diagnostics["stop_exits"] += 1
+                    position = None
+
+            previous_hilo = hilo_values[index - 1]
+            current_hilo = hilo_values[index]
+            gann_cross_up = (
+                previous_hilo is not None
+                and current_hilo is not None
+                and closes[index - 1] <= float(previous_hilo)
+                and bar.close > float(current_hilo)
+            )
+            gann_cross_down = (
+                previous_hilo is not None
+                and current_hilo is not None
+                and closes[index - 1] >= float(previous_hilo)
+                and bar.close < float(current_hilo)
+            )
+            if gann_cross_up:
+                diagnostics["gann_cross_up"] += 1
+                pending_long = True
+                pending_long_bar = index
+                pending_long_breakout = dc_upper[index - 1] if index > 0 else None
+                pending_short = False
+                pending_short_breakdown = None
+            if gann_cross_down:
+                diagnostics["gann_cross_down"] += 1
+                pending_short = True
+                pending_short_bar = index
+                pending_short_breakdown = dc_lower[index - 1] if index > 0 else None
+                pending_long = False
+                pending_long_breakout = None
+
+            long_age = index - pending_long_bar if pending_long else 0
+            short_age = index - pending_short_bar if pending_short else 0
+            long_signal = (
+                pending_long
+                and long_age <= max_breakout_bars
+                and pending_long_breakout is not None
+                and bar.high > pending_long_breakout
+                and highs[index - 1] <= pending_long_breakout
+            )
+            short_signal = (
+                pending_short
+                and short_age <= max_breakout_bars
+                and pending_short_breakdown is not None
+                and bar.low < pending_short_breakdown
+                and lows[index - 1] >= pending_short_breakdown
+            )
+
+            if pending_long and long_age > max_breakout_bars:
+                pending_long = False
+                pending_long_breakout = None
+                diagnostics["expired_setups"] += 1
+            if pending_short and short_age > max_breakout_bars:
+                pending_short = False
+                pending_short_breakdown = None
+                diagnostics["expired_setups"] += 1
+
+            close_long = position is not None and position.direction == 1 and bar.close < float(current_hilo) and state_values[index] == -1
+            close_short = position is not None and position.direction == -1 and bar.close > float(current_hilo) and state_values[index] == 1
+            if close_long or close_short:
+                exit_price = max(bar.close - slippage, 0.0) if position and position.direction == 1 else bar.close + slippage
+                trade = self._close_trade(position, bar, index, exit_price, "gann_state_exit", commission_pct, equity)
+                trades.append(trade)
+                equity += trade["net_pnl"]
+                diagnostics["gann_state_exits"] += 1
+                position = None
+
+            if long_signal and parameters.get("allow_long", True):
+                diagnostics["signals_long"] += 1
+            else:
+                long_signal = False
+            if short_signal and parameters.get("allow_short", True):
+                diagnostics["signals_short"] += 1
+            else:
+                short_signal = False
+
+            if position and position.direction == 1 and short_signal:
+                trade = self._close_trade(position, bar, index, max(bar.close - slippage, 0.0), "reverse", commission_pct, equity)
+                trades.append(trade)
+                equity += trade["net_pnl"]
+                diagnostics["reverse_exits"] += 1
+                position = None
+            elif position and position.direction == -1 and long_signal:
+                trade = self._close_trade(position, bar, index, bar.close + slippage, "reverse", commission_pct, equity)
+                trades.append(trade)
+                equity += trade["net_pnl"]
+                diagnostics["reverse_exits"] += 1
+                position = None
+
+            if position is None and long_signal:
+                fill = bar.close + slippage
+                stop = self._ghl_dc_initial_stop(parameters, 1, fill, bar, float(atr_values[index] or 0.0), dc_lower[index])
+                quantity = self._position_quantity(parameters, equity, fill, stop)
+                position = self._open_position(1, index, bar, fill, stop, quantity, commission_pct, equity, {"side": "long", "gann_state": state_values[index], "donchian_breakout": pending_long_breakout})
+                diagnostics["entries"] += 1
+                pending_long = False
+                pending_long_breakout = None
+            elif position is None and short_signal:
+                fill = max(bar.close - slippage, 0.0)
+                stop = self._ghl_dc_initial_stop(parameters, -1, fill, bar, float(atr_values[index] or 0.0), dc_upper[index])
+                quantity = self._position_quantity(parameters, equity, fill, stop)
+                position = self._open_position(-1, index, bar, fill, stop, quantity, commission_pct, equity, {"side": "short", "gann_state": state_values[index], "donchian_breakdown": pending_short_breakdown})
+                diagnostics["entries"] += 1
+                pending_short = False
+                pending_short_breakdown = None
+
+            equity_curve.append({"ts": bar.ts.isoformat(), "equity": round(equity, 2)})
+
+        if position:
+            last_bar = bars[-1]
+            exit_price = max(last_bar.close - slippage, 0.0) if position.direction == 1 else last_bar.close + slippage
+            trade = self._close_trade(position, last_bar, len(bars) - 1, exit_price, "time_exit", commission_pct, equity)
+            trades.append(trade)
+            equity += trade["net_pnl"]
+            diagnostics["time_exits"] += 1
+            equity_curve[-1] = {"ts": last_bar.ts.isoformat(), "equity": round(equity, 2)}
+
+        initial_capital = float(parameters.get("initial_capital", 100_000.0))
+        buy_hold_start_price = bars[warmup].close if len(bars) > warmup else bars[0].close
+        buy_hold_end_price = bars[-1].close
+        buy_hold_return_pct = ((buy_hold_end_price - buy_hold_start_price) / buy_hold_start_price) * 100 if buy_hold_start_price else 0.0
+        metrics = compute_metrics(
+            initial_capital=initial_capital,
+            trades=trades,
+            equity_curve=equity_curve,
+            buy_hold_return=initial_capital * (buy_hold_return_pct / 100),
+            buy_hold_return_pct=buy_hold_return_pct,
+            buy_hold_start_price=buy_hold_start_price,
+            buy_hold_end_price=buy_hold_end_price,
+            buy_hold_max_drawdown_pct=buy_hold_drawdown_pct(bars, warmup),
+        )
+        return {"metrics": metrics, "trades": trades, "equity_curve": equity_curve, "diagnostics": diagnostics}
+
+    @staticmethod
+    def _ghl_dc_initial_stop(parameters: dict[str, Any], direction: int, fill: float, bar: Bar, atr_value: float, channel_opposite: float | None) -> float:
+        stop_mode = parameters.get("stop_mode", "atr")
+        stop_mult = float(parameters.get("stop_mult", 2.5))
+        atr_stop = fill - (atr_value * stop_mult) if direction == 1 else fill + (atr_value * stop_mult)
+        if stop_mode == "donchian_opposite" and channel_opposite is not None:
+            return min(float(channel_opposite), atr_stop) if direction == 1 else max(float(channel_opposite), atr_stop)
+        if stop_mode == "bar_extreme":
+            return min(bar.low, atr_stop) if direction == 1 else max(bar.high, atr_stop)
+        return atr_stop
+
+    @staticmethod
+    def _open_position(
+        direction: int,
+        index: int,
+        bar: Bar,
+        fill: float,
+        stop: float,
+        quantity: float,
+        commission_pct: float,
+        equity: float,
+        features: dict[str, Any],
+    ) -> Position:
+        return Position(
+            direction=direction,
+            entry_index=index,
+            entry_ts=bar.ts,
+            entry_price=fill,
+            stop_price=stop,
+            quantity=quantity,
+            entry_commission=fill * quantity * commission_pct,
+            entry_equity=equity,
+            entry_notional=fill * quantity,
+            initial_risk_per_unit=abs(fill - stop),
+            stop_initialized_on_index=index,
+            entry_features=features,
+        )
 
     @staticmethod
     def _position_quantity(parameters: dict[str, Any], equity: float, entry_price: float, stop_price: float) -> float:

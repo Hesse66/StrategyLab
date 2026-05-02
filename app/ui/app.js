@@ -811,6 +811,34 @@ async function downloadDataset() {
   }
 }
 
+async function importMt5Dataset() {
+  setStatus("downloadStatus", "Importing MT5 CSV...", "");
+  const payload = {
+    source_path: document.getElementById("mt5CsvPathInput").value.trim(),
+    symbol: document.getElementById("mt5SymbolInput").value.trim().toUpperCase(),
+    timeframe: document.getElementById("mt5TimeframeSelect").value,
+    name: document.getElementById("mt5DatasetNameInput").value.trim() || null,
+  };
+  try {
+    const result = await fetchJson("/api/datasets/import-mt5", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    showOutput(result);
+    setStatus("downloadStatus", `Dataset ready: ${result.name} (${result.rows_count} rows).`, "success");
+    await refreshAll();
+    datasetSelect.value = result.dataset_id;
+    state.previewResult = null;
+    renderSummary();
+    renderRuns();
+    schedulePreview(true);
+  } catch (error) {
+    setStatus("downloadStatus", error.message, "error");
+    showOutput({ error: error.message });
+  }
+}
+
 async function runParent() {
   const version = currentVersion();
   const datasetId = selectedDatasetId();
@@ -1230,6 +1258,7 @@ function handleWorkingInput(event) {
 
 document.getElementById("refreshButton").addEventListener("click", refreshAll);
 document.getElementById("downloadButton").addEventListener("click", downloadDataset);
+document.getElementById("importMt5Button").addEventListener("click", importMt5Dataset);
 document.getElementById("runParentButton").addEventListener("click", runParent);
 document.getElementById("productionDefaultsButton").addEventListener("click", applyProductionDefaults);
 document.getElementById("robustnessButton").addEventListener("click", runRobustnessGate);
