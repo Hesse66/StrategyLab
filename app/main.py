@@ -28,6 +28,14 @@ class DatasetImportRequest(BaseModel):
     name: str | None = None
 
 
+class DatasetImportContentRequest(BaseModel):
+    filename: str
+    content: str
+    symbol: str = Field(default="XAUUSD")
+    timeframe: str = Field(default="30m")
+    name: str | None = None
+
+
 class RegisterBaselineRequest(BaseModel):
     family_id: str
     title: str
@@ -159,6 +167,17 @@ def download_dataset(request: DatasetDownloadRequest) -> dict:
 def import_mt5_dataset(request: DatasetImportRequest) -> dict:
     return data_service.import_mt5_csv_dataset(
         source_path=request.source_path,
+        symbol=request.symbol,
+        timeframe=request.timeframe,
+        name=request.name,
+    )
+
+
+@app.post("/api/datasets/import-mt5-content")
+def import_mt5_dataset_content(request: DatasetImportContentRequest) -> dict:
+    return data_service.import_mt5_csv_content(
+        filename=request.filename,
+        content=request.content,
         symbol=request.symbol,
         timeframe=request.timeframe,
         name=request.name,

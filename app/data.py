@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import io
 import json
 import socket
 import time
@@ -67,7 +68,7 @@ class DataService:
         dataset = self.repo.get_dataset(dataset_id)
         if not dataset:
             raise HTTPException(status_code=404, detail="Dataset not found.")
-        path = Path(dataset["path"])
+        path = self._resolve_dataset_path(dataset)
         if path.exists():
             path.unlink()
         self.repo.delete_dataset(dataset_id)
@@ -76,7 +77,7 @@ class DataService:
         dataset = self.repo.get_dataset(dataset_id)
         if not dataset:
             raise HTTPException(status_code=404, detail="Dataset not found.")
-        path = Path(dataset["path"])
+        path = self._resolve_dataset_path(dataset)
         if not path.exists():
             raise HTTPException(status_code=404, detail="Dataset file is missing.")
         with path.open("r", encoding="utf-8", newline="") as handle:
@@ -193,33 +194,77 @@ class DataService:
         self.repo.put_dataset(payload)
         return payload
 
+    def import_mt5_csv_content(
+        self,
+        filename: str,
+        content: str,
+        symbol: str,
+        timeframe: str,
+        name: str | None = None,
+    ) -> dict[str, Any]:
+        if timeframe not in INTERVAL_MS:
+            raise HTTPException(status_code=400, detail="Unsupported timeframe.")
+        if not content.strip():
+            raise HTTPException(status_code=400, detail="Selected CSV file is empty.")
+        bars = self._read_mt5_csv_text(content, symbol.upper(), timeframe)
+        if len(bars) < 500:
+            raise HTTPException(status_code=400, detail="Imported dataset is too small for research use.")
+        dataset_id = f"ds_{uuid.uuid4().hex[:12]}"
+        target = settings.data_dir / f"{dataset_id}.csv"
+        self.write_bars(target, bars)
+        source_name = Path(filename).stem if filename else "selected-file"
+        payload = {
+            "dataset_id": dataset_id,
+            "name": name or f"mt5-{symbol.lower()}-{timeframe}-{source_name.lower()}",
+            "symbol": symbol.upper(),
+            "timeframe": timeframe,
+            "source": "mt5_csv_upload",
+            "rows_count": len(bars),
+            "path": str(target),
+            "created_at": datetime.now(UTC).isoformat(),
+        }
+        self.repo.put_dataset(payload)
+        return payload
+
     def _read_mt5_csv(self, path: Path, symbol: str, timeframe: str) -> list[Bar]:
         with path.open("r", encoding="utf-8-sig", newline="") as handle:
-            sample = handle.readline()
-            handle.seek(0)
-            dialect = csv.excel_tab if "\t" in sample else csv.excel
-            reader = csv.DictReader(handle, dialect=dialect)
-            if not reader.fieldnames:
-                raise HTTPException(status_code=400, detail="CSV file has no header.")
-            bars: list[Bar] = []
-            for row_number, row in enumerate(reader, start=2):
-                normalized = {str(key).strip().strip("<>").lower(): value for key, value in row.items()}
-                try:
-                    ts = self._parse_mt5_timestamp(normalized)
-                    bars.append(
-                        Bar(
-                            ts=ts,
-                            open=float(normalized["open"]),
-                            high=float(normalized["high"]),
-                            low=float(normalized["low"]),
-                            close=float(normalized["close"]),
-                            volume=float(normalized.get("tickvol") or normalized.get("vol") or 0.0),
-                            symbol=symbol,
-                            timeframe=timeframe,
-                        )
+            bars = self._read_mt5_csv_stream(handle, symbol, timeframe)
+        return self._dedupe_bars(bars)
+
+    def _read_mt5_csv_text(self, content: str, symbol: str, timeframe: str) -> list[Bar]:
+        handle = io.StringIO(content.lstrip("\ufeff"))
+        bars = self._read_mt5_csv_stream(handle, symbol, timeframe)
+        return self._dedupe_bars(bars)
+
+    def _read_mt5_csv_stream(self, handle: Any, symbol: str, timeframe: str) -> list[Bar]:
+        sample = handle.readline()
+        handle.seek(0)
+        dialect = csv.excel_tab if "\t" in sample else csv.excel
+        reader = csv.DictReader(handle, dialect=dialect)
+        if not reader.fieldnames:
+            raise HTTPException(status_code=400, detail="CSV file has no header.")
+        bars: list[Bar] = []
+        for row_number, row in enumerate(reader, start=2):
+            normalized = {str(key).strip().strip("<>").lower(): value for key, value in row.items()}
+            try:
+                ts = self._parse_mt5_timestamp(normalized)
+                bars.append(
+                    Bar(
+                        ts=ts,
+                        open=float(normalized["open"]),
+                        high=float(normalized["high"]),
+                        low=float(normalized["low"]),
+                        close=float(normalized["close"]),
+                        volume=float(normalized.get("tickvol") or normalized.get("vol") or 0.0),
+                        symbol=symbol,
+                        timeframe=timeframe,
                     )
-                except (KeyError, TypeError, ValueError) as exc:
-                    raise HTTPException(status_code=400, detail=f"Invalid MT5 CSV row {row_number}.") from exc
+                )
+            except (KeyError, TypeError, ValueError) as exc:
+                raise HTTPException(status_code=400, detail=f"Invalid MT5 CSV row {row_number}.") from exc
+        return bars
+
+    def _dedupe_bars(self, bars: list[Bar]) -> list[Bar]:
         bars.sort(key=lambda item: item.ts)
         deduped: list[Bar] = []
         previous_ts: datetime | None = None
@@ -230,6 +275,18 @@ class DataService:
             deduped.append(bar)
             previous_ts = bar.ts
         return deduped
+
+    def _resolve_dataset_path(self, dataset: dict[str, Any]) -> Path:
+        path = Path(dataset["path"])
+        if path.exists():
+            return path
+        relocated = settings.data_dir / path.name
+        if relocated.exists():
+            repaired = dict(dataset)
+            repaired["path"] = str(relocated)
+            self.repo.put_dataset(repaired)
+            return relocated
+        return path
 
     @staticmethod
     def _parse_mt5_timestamp(row: dict[str, str]) -> datetime:

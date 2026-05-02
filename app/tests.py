@@ -145,25 +145,22 @@ class MutationLabTests(unittest.TestCase):
 
     def test_import_mt5_csv_dataset_normalizes_rows(self) -> None:
         source = self.root / "XAUUSD_M30_sample.csv"
-        source.write_text(
+        mt5_header = (
             "<DATE>\t<TIME>\t<OPEN>\t<HIGH>\t<LOW>\t<CLOSE>\t<TICKVOL>\t<VOL>\t<SPREAD>\n"
             "2017.11.02\t07:00:00\t1280.14\t1280.56\t1279.13\t1279.83\t2354\t2354\t6\n"
-            "2017.11.02\t07:30:00\t1279.83\t1280.47\t1279.61\t1280.03\t2067\t2067\t6\n",
-            encoding="utf-8",
+            "2017.11.02\t07:30:00\t1279.83\t1280.47\t1279.61\t1280.03\t2067\t2067\t6\n"
         )
+        source.write_text(mt5_header, encoding="utf-8")
         with self.assertRaises(HTTPException):
             self.data_service.import_mt5_csv_dataset(str(source), "XAUUSD", "30m", "too-small")
 
-        source.write_text(
-            source.read_text(encoding="utf-8")
-            + "".join(
-                f"{(datetime(2017, 11, 3, tzinfo=UTC) + timedelta(minutes=30 * step)).strftime('%Y.%m.%d')}\t"
-                f"{(datetime(2017, 11, 3, tzinfo=UTC) + timedelta(minutes=30 * step)).strftime('%H:%M:%S')}\t"
-                "1280\t1281\t1279\t1280.5\t100\t100\t6\n"
-                for step in range(500)
-            ),
-            encoding="utf-8",
+        mt5_body = mt5_header + "".join(
+            f"{(datetime(2017, 11, 3, tzinfo=UTC) + timedelta(minutes=30 * step)).strftime('%Y.%m.%d')}\t"
+            f"{(datetime(2017, 11, 3, tzinfo=UTC) + timedelta(minutes=30 * step)).strftime('%H:%M:%S')}\t"
+            "1280\t1281\t1279\t1280.5\t100\t100\t6\n"
+            for step in range(500)
         )
+        source.write_text(mt5_body, encoding="utf-8")
         payload = self.data_service.import_mt5_csv_dataset(str(source), "XAUUSD", "30m", "mt5-xau")
         self.assertEqual(payload["symbol"], "XAUUSD")
         self.assertEqual(payload["timeframe"], "30m")
@@ -173,6 +170,33 @@ class MutationLabTests(unittest.TestCase):
         self.assertEqual(bars[0].ts, datetime(2017, 11, 2, 7, 0, tzinfo=UTC))
         self.assertEqual(bars[0].symbol, "XAUUSD")
         self.assertEqual(bars[0].timeframe, "30m")
+
+        uploaded = self.data_service.import_mt5_csv_content("sample.csv", mt5_body, "XAUUSD", "30m", "mt5-xau-upload")
+        self.assertEqual(uploaded["source"], "mt5_csv_upload")
+        self.assertGreater(uploaded["rows_count"], 500)
+
+    def test_load_bars_repairs_relocated_dataset_path(self) -> None:
+        bars = build_fixture_bars(520)
+        dataset_id = "ds_relocated"
+        relocated = settings.data_dir / f"{dataset_id}.csv"
+        self.data_service.write_bars(relocated, bars)
+        stale = self.root / "old" / "artifacts" / "data" / relocated.name
+        self.repo.put_dataset(
+            {
+                "dataset_id": dataset_id,
+                "name": "relocated",
+                "symbol": "BTCUSDT",
+                "timeframe": "15m",
+                "source": "fixture",
+                "rows_count": len(bars),
+                "path": str(stale),
+                "created_at": datetime.now(UTC).isoformat(),
+            }
+        )
+        loaded = self.data_service.load_bars(dataset_id)
+        self.assertEqual(len(loaded), len(bars))
+        repaired = self.repo.get_dataset(dataset_id)
+        self.assertEqual(Path(repaired["path"]), relocated)
 
     def test_ghl_dc_engine_runs(self) -> None:
         bars = build_fixture_bars(1200)

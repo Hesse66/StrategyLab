@@ -813,14 +813,29 @@ async function downloadDataset() {
 
 async function importMt5Dataset() {
   setStatus("downloadStatus", "Importing MT5 CSV...", "");
-  const payload = {
-    source_path: document.getElementById("mt5CsvPathInput").value.trim(),
+  const fileInput = document.getElementById("mt5CsvFileInput");
+  const selectedFile = fileInput.files?.[0] || null;
+  const common = {
     symbol: document.getElementById("mt5SymbolInput").value.trim().toUpperCase(),
     timeframe: document.getElementById("mt5TimeframeSelect").value,
     name: document.getElementById("mt5DatasetNameInput").value.trim() || null,
   };
   try {
-    const result = await fetchJson("/api/datasets/import-mt5", {
+    let endpoint = "/api/datasets/import-mt5";
+    let payload = {
+      ...common,
+      source_path: document.getElementById("mt5CsvPathInput").value.trim(),
+    };
+    if (selectedFile) {
+      endpoint = "/api/datasets/import-mt5-content";
+      setStatus("downloadStatus", `Reading ${selectedFile.name}...`, "");
+      payload = {
+        ...common,
+        filename: selectedFile.name,
+        content: await selectedFile.text(),
+      };
+    }
+    const result = await fetchJson(endpoint, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
