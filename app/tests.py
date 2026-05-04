@@ -525,11 +525,16 @@ class MutationLabTests(unittest.TestCase):
         self.assertTrue(result["candidates"])
         self.assertEqual(result["search"]["min"], 1)
         self.assertGreaterEqual(result["search"]["candidate_count"], 300)
-        self.assertIn(result["selection_mode"], {"eligible_only", "no_production_eligible_keep_current"})
+        self.assertIn(
+            result["selection_mode"],
+            {"eligible_only", "research_score_fallback", "no_production_eligible_keep_current"},
+        )
         if result["selection_mode"] == "eligible_only":
             self.assertIn("atr_len", result["best"]["parameter_overrides"])
-        else:
+        elif result["selection_mode"] == "no_production_eligible_keep_current":
             self.assertEqual(result["best"]["parameter_overrides"], {})
+        else:
+            self.assertIn("atr_len", result["best"]["parameter_overrides"])
         self.assertIn("buy_hold_return_pct", result["best"]["metrics"])
         self.assertIn("eligible_count", result)
         self.assertIn("selection_mode", result)
@@ -611,6 +616,9 @@ class MutationLabTests(unittest.TestCase):
         self.assertTrue(result["steps"])
         self.assertIn("preview", result)
         self.assertIn("parameter_overrides", result)
+        self.assertIn("research_fallback_steps", result)
+        self.assertIn("eligible_steps", result)
+        self.assertIn("selection_mode", result["steps"][0])
         self.assertEqual(result["preview"]["spec"]["parameters"]["sizing_mode"], "fixed_risk_pct")
         self.assertLessEqual(result["preview"]["spec"]["parameters"]["risk_pct"], 0.01)
         self.assertLessEqual(result["preview"]["spec"]["parameters"]["max_leverage"], 1.0)

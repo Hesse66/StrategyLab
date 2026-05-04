@@ -1025,8 +1025,13 @@ async function optimizeAll() {
     renderRuns();
     showOutput(result);
     const tunedCount = Object.keys(result.parameter_overrides).length;
-    setStatus("familyStatus", `Optimization complete. Applied ${tunedCount} tuned values.`, "success");
-    setOptimizationStatus(`Optimization complete. Applied ${tunedCount} tuned values.`, "success");
+    const fallbackCount = Number(result.research_fallback_steps || 0);
+    const eligibleCount = Number(result.eligible_steps || 0);
+    const modeNote = fallbackCount
+      ? `${fallbackCount} research fallback steps, ${eligibleCount} production-eligible steps`
+      : `${eligibleCount} production-eligible steps`;
+    setStatus("familyStatus", `Optimization complete. Applied ${tunedCount} tuned values (${modeNote}).`, "success");
+    setOptimizationStatus(`Optimization complete. Applied ${tunedCount} tuned values (${modeNote}).`, "success");
     clearOptimizationStatus(9000);
   } catch (error) {
     setStatus("familyStatus", error.message, "error");

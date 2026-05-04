@@ -519,6 +519,10 @@ class MutationLabService:
         upgraded = json.loads(json.dumps(spec))
         changed = False
         if upgraded.get("engine_id") != "ma_cross_atr_stop_v1":
+            for mutation in upgraded.get("mutation_space", []):
+                if mutation.get("search_mode") is None:
+                    mutation["search_mode"] = "values_only"
+                    changed = True
             return upgraded, changed
         parameters = upgraded.setdefault("parameters", {})
         for key, value in {**PHASE_3_PARAMETERS, **PHASE_4_PARAMETERS, **PORTFOLIO_PARAMETERS}.items():
@@ -927,9 +931,14 @@ class MutationLabService:
         else:
             current_value = base_overrides.get(lever, version["spec_json"].get("parameters", {}).get(lever))
             current_candidates = [candidate for candidate in candidates if candidate["value"] == current_value]
-            best = current_candidates[0] if current_candidates else max(candidates, key=lambda item: item["score"])
-            best = {**best, "parameter_overrides": base_overrides}
-            selection_mode = "no_production_eligible_keep_current"
+            current_best = current_candidates[0] if current_candidates else max(candidates, key=lambda item: item["score"])
+            research_best = max(candidates, key=lambda item: item["score"])
+            if research_best["score"] > current_best["score"] and research_best["metrics"].get("net_pnl", 0.0) > 0:
+                best = research_best
+                selection_mode = "research_score_fallback"
+            else:
+                best = {**current_best, "parameter_overrides": base_overrides}
+                selection_mode = "no_production_eligible_keep_current"
         best_spec = self._apply_parameter_overrides(version["spec_json"], best["parameter_overrides"])
         return {
             "mode": "optimize_lever",
@@ -979,6 +988,8 @@ class MutationLabService:
                         "lever": edge["lever"],
                         "before": before.get(edge["lever"], edge["current_value"]),
                         "after": overrides.get(edge["lever"], edge["current_value"]),
+                        "selection_mode": result["selection_mode"],
+                        "eligible_count": result["eligible_count"],
                         "best_score": result["best"]["score"],
                         "best_metrics": result["best"]["metrics"],
                     }
@@ -993,6 +1004,8 @@ class MutationLabService:
             "passes_requested": passes,
             "parameter_overrides": overrides,
             "steps": steps,
+            "eligible_steps": sum(1 for step in steps if step["selection_mode"] == "eligible_only"),
+            "research_fallback_steps": sum(1 for step in steps if step["selection_mode"] == "research_score_fallback"),
             "preview": preview,
         }
 

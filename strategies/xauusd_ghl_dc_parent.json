@@ -64,6 +64,7 @@
         13,
         21
       ],
+      "search_mode": "values_only",
       "rationale": "Tune the Gann high-side trend state memory without changing the family."
     },
     {
@@ -75,6 +76,7 @@
         21,
         34
       ],
+      "search_mode": "values_only",
       "rationale": "Tune the Gann low-side trend state memory."
     },
     {
@@ -86,6 +88,7 @@
         55,
         89
       ],
+      "search_mode": "values_only",
       "rationale": "Change the breakout horizon while preserving Donchian confirmation."
     },
     {
@@ -97,6 +100,7 @@
         7,
         12
       ],
+      "search_mode": "values_only",
       "rationale": "Tighten or loosen how long a Gann state transition may wait for Donchian confirmation."
     },
     {
@@ -108,6 +112,7 @@
         21,
         34
       ],
+      "search_mode": "values_only",
       "rationale": "Tune risk-stop volatility memory added for production-style capital modeling."
     },
     {
@@ -119,6 +124,7 @@
         2.5,
         3.5
       ],
+      "search_mode": "values_only",
       "rationale": "Tune the explicit ATR risk stop used for sizing and survivability."
     },
     {
@@ -130,6 +136,7 @@
         "bar_extreme",
         "donchian_opposite"
       ],
+      "search_mode": "values_only",
       "rationale": "Compare the added production stop against source-adjacent structural alternatives."
     },
     {
@@ -139,6 +146,7 @@
       "values": [
         false
       ],
+      "search_mode": "values_only",
       "rationale": "Check whether short-side participation hurts the XAUUSD parent."
     },
     {
@@ -148,6 +156,7 @@
       "values": [
         false
       ],
+      "search_mode": "values_only",
       "rationale": "Check whether long-side participation is carrying or degrading the family."
     },
     {
@@ -159,6 +168,7 @@
         0.005,
         0.01
       ],
+      "search_mode": "values_only",
       "rationale": "Production-style sizing stress after the engine shows sign of life."
     }
   ],
