@@ -239,6 +239,12 @@ function renderMetrics() {
   const items = [
     ["Source", activeMetricSource()],
     ["Sizing Mode", spec?.parameters?.sizing_mode || "fixed_quantity"],
+    ["Initial Capital", formatNumber(spec?.parameters?.initial_capital, 2)],
+    ["Risk %", formatNumber(Number(spec?.parameters?.risk_pct || 0) * 100, 4)],
+    ["Max Leverage", formatNumber(spec?.parameters?.max_leverage, 2)],
+    ["Min Lot", formatNumber(spec?.parameters?.min_lot, 2)],
+    ["Lot Step", formatNumber(spec?.parameters?.lot_step, 2)],
+    ["Invalid Lot Skips", formatNumber(state.previewResult?.diagnostics?.mt5_invalid_lot_skips || 0, 0)],
     ["Production Gate", productionGateSummary(spec, metrics)],
     ["Net PnL", formatNumber(metrics.net_pnl)],
     ["Return %", `${formatNumber(metrics.return_pct)}%`],
@@ -477,6 +483,9 @@ function renderTuningEdges() {
         const stepAttr = edge.search_step !== null && edge.search_step !== undefined ? edge.search_step : step;
         control = `<input data-working-key="${edge.lever}" type="number" step="${stepAttr}"${minAttr}${maxAttr} value="${working}" />`;
       }
+      const optimizeControl = edge.optimizable === false
+        ? `<span class="manual-only">Manual</span>`
+        : `<button class="ghost" data-action="optimize-lever" data-key="${edge.lever}">Optimize</button>`;
       return `
         <tr>
           <td>
@@ -489,7 +498,7 @@ function renderTuningEdges() {
           </td>
           <td>
             <div class="table-actions">
-              <button class="ghost" data-action="optimize-lever" data-key="${edge.lever}">Optimize</button>
+              ${optimizeControl}
               <button class="ghost" data-action="reset-edge" data-key="${edge.lever}" data-value="${valueToken(current)}">Reset</button>
             </div>
           </td>
@@ -614,10 +623,14 @@ function renderRuns() {
 }
 
 function escapeHtml(value) {
-  return value
+  return String(value)
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;");
+}
+
+function escapeAttribute(value) {
+  return escapeHtml(value).replaceAll('"', "&quot;");
 }
 
 function renderPrompts() {
@@ -626,14 +639,18 @@ function renderPrompts() {
   );
   promptsList.innerHTML = prompts
     .map(
-      (prompt) => `
+      (prompt, index) => `
         <details>
-          <summary>${prompt.name}</summary>
+          <summary>
+            <span>${escapeHtml(prompt.name)}</span>
+            <button class="icon-button prompt-copy-button" data-action="copy-prompt" data-prompt-index="${index}" title="Copy prompt to clipboard" aria-label="Copy ${escapeAttribute(prompt.name)} to clipboard">Copy</button>
+          </summary>
           <pre>${escapeHtml(prompt.content)}</pre>
         </details>
       `,
     )
     .join("");
+  promptsList._visiblePrompts = prompts;
 }
 
 function promptSortKey(name) {
@@ -809,6 +826,22 @@ async function downloadDataset() {
     setStatus("downloadStatus", error.message, "error");
     showOutput({ error: error.message });
   }
+}
+
+async function copyTextToClipboard(text) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.left = "-9999px";
+  document.body.appendChild(textarea);
+  textarea.select();
+  document.execCommand("copy");
+  textarea.remove();
 }
 
 async function importMt5Dataset() {
@@ -1018,20 +1051,25 @@ async function optimizeAll() {
         passes: 2,
       }),
     });
-    state.workingParameters = { ...currentVersion().spec_json.parameters, ...result.parameter_overrides };
+    const baseParameters = currentVersion().spec_json.parameters;
+    state.workingParameters = { ...baseParameters, ...result.parameter_overrides };
     state.previewResult = result.preview;
     renderSummary();
     renderTuningEdges();
     renderRuns();
     showOutput(result);
-    const tunedCount = Object.keys(result.parameter_overrides).length;
+    const tunedCount = Object.entries(result.parameter_overrides).filter(
+      ([key, value]) => JSON.stringify(value) !== JSON.stringify(baseParameters[key]),
+    ).length;
+    const selectedCount = Object.keys(result.parameter_overrides).length;
     const fallbackCount = Number(result.research_fallback_steps || 0);
     const eligibleCount = Number(result.eligible_steps || 0);
     const modeNote = fallbackCount
       ? `${fallbackCount} research fallback steps, ${eligibleCount} production-eligible steps`
       : `${eligibleCount} production-eligible steps`;
-    setStatus("familyStatus", `Optimization complete. Applied ${tunedCount} tuned values (${modeNote}).`, "success");
-    setOptimizationStatus(`Optimization complete. Applied ${tunedCount} tuned values (${modeNote}).`, "success");
+    const selectedNote = selectedCount === tunedCount ? "" : `; ${selectedCount} selected values matched or filled the base`;
+    setStatus("familyStatus", `Optimization complete. Applied ${tunedCount} changed values (${modeNote}${selectedNote}).`, "success");
+    setOptimizationStatus(`Optimization complete. Applied ${tunedCount} changed values (${modeNote}${selectedNote}).`, "success");
     clearOptimizationStatus(9000);
   } catch (error) {
     setStatus("familyStatus", error.message, "error");
@@ -1257,6 +1295,31 @@ async function handleTableClick(event) {
   }
 }
 
+async function handlePromptClick(event) {
+  const button = event.target.closest("[data-action='copy-prompt']");
+  if (!button) {
+    return;
+  }
+  event.preventDefault();
+  event.stopPropagation();
+  const prompt = promptsList._visiblePrompts?.[Number(button.dataset.promptIndex)];
+  if (!prompt) {
+    setStatus("familyStatus", "Prompt not found.", "error");
+    return;
+  }
+  const originalLabel = button.textContent;
+  try {
+    await copyTextToClipboard(prompt.content);
+    button.textContent = "Copied";
+    setStatus("familyStatus", `${prompt.name} copied to clipboard.`, "success");
+    window.setTimeout(() => {
+      button.textContent = originalLabel;
+    }, 1400);
+  } catch (error) {
+    setStatus("familyStatus", `Clipboard copy failed: ${error.message}`, "error");
+  }
+}
+
 function handleWorkingInput(event) {
   const control = event.target.closest("[data-working-key]");
   if (!control) {
@@ -1296,6 +1359,7 @@ proposalsTable.addEventListener("input", handleWorkingInput);
 proposalsTable.addEventListener("change", handleWorkingInput);
 runsTable.addEventListener("click", handleTableClick);
 versionsTable.addEventListener("click", handleTableClick);
+promptsList.addEventListener("click", handlePromptClick);
 
 syncFullHistoryBars();
 

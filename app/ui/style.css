@@ -702,11 +702,19 @@ tbody td div {
 
 .table-actions button,
 .artifact-links a,
+.manual-only,
 .badge {
   min-height: 30px;
   padding: 0.32rem 0.64rem;
   border-radius: 999px;
   font-size: 0.78rem;
+}
+
+.manual-only {
+  display: inline-flex;
+  align-items: center;
+  color: var(--muted);
+  border: 1px solid var(--line);
 }
 
 .artifact-links a {
@@ -759,8 +767,22 @@ tbody td div {
 .prompt-list summary {
   cursor: pointer;
   font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.8rem;
   overflow-wrap: anywhere;
   word-break: break-word;
+}
+
+.prompt-list summary span {
+  min-width: 0;
+}
+
+.prompt-copy-button {
+  flex: 0 0 auto;
+  min-height: 2rem;
+  padding: 0.35rem 0.7rem;
 }
 
 .prompt-list pre,

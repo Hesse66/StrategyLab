@@ -193,6 +193,91 @@ PHASE_3_MUTATION_SPACE = [
     },
 ]
 
+GHL_DC_PHASE_3_PARAMETERS = {
+    "breakeven_stop_enabled": False,
+    "breakeven_trigger_mfe_r": 0.75,
+    "breakeven_lock_r": 0.0,
+    "time_risk_filter_enabled": False,
+    "time_risk_block_utc_hours": [],
+    "time_risk_block_weekdays": [],
+}
+
+GHL_DC_PHASE_3_MUTATION_SPACE = [
+    {
+        "kind": "white_box",
+        "lever": "breakeven_stop_enabled",
+        "path": "parameters.breakeven_stop_enabled",
+        "priority": 58,
+        "values": [True, False],
+        "search_mode": "values_only",
+        "rationale": "Enable or disable MFE-activated breakeven stop management for the XAUUSD GHL+DC parent.",
+    },
+    {
+        "kind": "white_box",
+        "lever": "breakeven_trigger_mfe_r",
+        "path": "parameters.breakeven_trigger_mfe_r",
+        "priority": 57,
+        "values": [0.5, 0.75, 1.0, 1.25, 1.5],
+        "search_mode": "range",
+        "search_min": 0.5,
+        "search_max": 1.5,
+        "search_step": 0.25,
+        "rationale": "Tune the favorable-excursion R threshold that moves the GHL+DC stop to breakeven or profit lock.",
+    },
+    {
+        "kind": "white_box",
+        "lever": "breakeven_lock_r",
+        "path": "parameters.breakeven_lock_r",
+        "priority": 56,
+        "values": [0.0, 0.1, 0.25, 0.5],
+        "search_mode": "range",
+        "search_min": 0.0,
+        "search_max": 0.5,
+        "search_step": 0.1,
+        "rationale": "Tune how much R is locked after the GHL+DC breakeven stop is armed.",
+    },
+    {
+        "kind": "white_box",
+        "lever": "time_risk_filter_enabled",
+        "path": "parameters.time_risk_filter_enabled",
+        "priority": 62,
+        "values": [True, False],
+        "search_mode": "values_only",
+        "rationale": "Enable or disable the UTC entry-hour risk filter for the XAUUSD GHL+DC parent.",
+    },
+    {
+        "kind": "white_box",
+        "lever": "time_risk_block_utc_hours",
+        "path": "parameters.time_risk_block_utc_hours",
+        "priority": 61,
+        "values": [
+            [],
+            [1],
+            [7],
+            [21],
+            [14],
+            [1, 7],
+            [1, 21],
+            [7, 21],
+            [1, 7, 21],
+            [1, 7, 14, 21],
+            [1, 7, 12, 14, 21],
+            [1, 7, 8, 11, 12, 13, 14, 21],
+        ],
+        "search_mode": "values_only",
+        "rationale": "Tune evidenced weak UTC entry-hour exclusions for the XAUUSD GHL+DC parent.",
+    },
+    {
+        "kind": "white_box",
+        "lever": "time_risk_block_weekdays",
+        "path": "parameters.time_risk_block_weekdays",
+        "priority": 60,
+        "values": [[]],
+        "search_mode": "values_only",
+        "rationale": "Keep weekday blocking disabled for the first GHL+DC time-risk mutation.",
+    },
+]
+
 PHASE_4_PARAMETERS = {
     "hybrid_time_decay_triage_enabled": False,
     "hybrid_time_decay_triage_checkpoints": [10, 20, 30],
@@ -278,26 +363,56 @@ PRODUCTION_EVALUATION_DEFAULTS = {
     "maximum_entry_exposure_pct": 100.0,
     "maximum_avg_exposure_pct": 100.0,
     "maximum_worst_daily_loss_pct": 5.0,
-    "production_sizing_modes": ["fixed_notional_pct", "fixed_risk_pct"],
+    "production_sizing_modes": ["fixed_notional_pct", "fixed_risk_pct", "mt5_fixed_risk_lot"],
     "benchmark_policy": "outperform_return_or_calmar",
 }
+
+
+def _ensure_production_evaluation_defaults(evaluation: dict[str, Any]) -> bool:
+    changed = False
+    for key, value in PRODUCTION_EVALUATION_DEFAULTS.items():
+        if key not in evaluation:
+            evaluation[key] = json.loads(json.dumps(value))
+            changed = True
+    allowed_modes = evaluation.setdefault("production_sizing_modes", [])
+    for mode in PRODUCTION_EVALUATION_DEFAULTS["production_sizing_modes"]:
+        if mode not in allowed_modes:
+            allowed_modes.append(mode)
+            changed = True
+    return changed
+
 
 PORTFOLIO_PARAMETERS = {
     "sizing_mode": "fixed_risk_pct",
     "notional_pct": 0.25,
     "risk_pct": 0.005,
     "max_leverage": 1.0,
+    "contract_size": 100.0,
+    "min_lot": 0.01,
+    "lot_step": 0.01,
+    "max_lot": 100.0,
+    "skip_below_min_lot": True,
 }
 
 PORTFOLIO_MUTATION_SPACE = [
     {
         "kind": "portfolio",
+        "lever": "initial_capital",
+        "path": "parameters.initial_capital",
+        "priority": 131,
+        "values": [5000.0, 100000.0],
+        "search_mode": "values_only",
+        "optimizable": False,
+        "rationale": "Switch between research account equity and funded-account sizing scenarios.",
+    },
+    {
+        "kind": "portfolio",
         "lever": "sizing_mode",
         "path": "parameters.sizing_mode",
         "priority": 130,
-        "values": ["fixed_quantity", "fixed_notional_pct", "fixed_risk_pct"],
+        "values": ["fixed_quantity", "fixed_notional_pct", "fixed_risk_pct", "mt5_fixed_risk_lot"],
         "search_mode": "values_only",
-        "rationale": "Choose the capital model. fixed_quantity is an alpha-engine diagnostic, fixed_notional_pct compounds a notional share of current equity, and fixed_risk_pct sizes by loss budget to the stop.",
+        "rationale": "Choose the capital model. fixed_quantity is an alpha-engine diagnostic, fixed_notional_pct compounds a notional share of current equity, fixed_risk_pct sizes by loss budget to the stop, and mt5_fixed_risk_lot rounds that risk budget to broker lot constraints.",
     },
     {
         "kind": "portfolio",
@@ -334,6 +449,51 @@ PORTFOLIO_MUTATION_SPACE = [
         "search_max": 1.0,
         "search_step": 0.25,
         "rationale": "Cap position notional as a multiple of current equity. Production optimization defaults to unlevered exposure at 1.0 or lower; higher leverage should be tested only as an explicit research stress scenario.",
+    },
+    {
+        "kind": "portfolio",
+        "lever": "contract_size",
+        "path": "parameters.contract_size",
+        "priority": 126,
+        "values": [100.0],
+        "search_mode": "values_only",
+        "rationale": "XAUUSD contract size used by mt5_fixed_risk_lot sizing.",
+    },
+    {
+        "kind": "portfolio",
+        "lever": "min_lot",
+        "path": "parameters.min_lot",
+        "priority": 125,
+        "values": [0.01],
+        "search_mode": "values_only",
+        "rationale": "Broker minimum lot used by mt5_fixed_risk_lot sizing.",
+    },
+    {
+        "kind": "portfolio",
+        "lever": "lot_step",
+        "path": "parameters.lot_step",
+        "priority": 124,
+        "values": [0.01],
+        "search_mode": "values_only",
+        "rationale": "Broker lot step used by mt5_fixed_risk_lot sizing.",
+    },
+    {
+        "kind": "portfolio",
+        "lever": "max_lot",
+        "path": "parameters.max_lot",
+        "priority": 123,
+        "values": [100.0],
+        "search_mode": "values_only",
+        "rationale": "Broker maximum lot cap used by mt5_fixed_risk_lot sizing.",
+    },
+    {
+        "kind": "portfolio",
+        "lever": "skip_below_min_lot",
+        "path": "parameters.skip_below_min_lot",
+        "priority": 122,
+        "values": [True, False],
+        "search_mode": "values_only",
+        "rationale": "Choose whether MT5 lot sizing skips entries below the minimum lot or floors them to min lot for an explicit stress test.",
     },
 ]
 
@@ -519,6 +679,28 @@ class MutationLabService:
         upgraded = json.loads(json.dumps(spec))
         changed = False
         if upgraded.get("engine_id") != "ma_cross_atr_stop_v1":
+            if upgraded.get("engine_id") == "ghl_dc_breakout_v1":
+                parameters = upgraded.setdefault("parameters", {})
+                for key, value in {**GHL_DC_PHASE_3_PARAMETERS, **PORTFOLIO_PARAMETERS}.items():
+                    if key not in parameters:
+                        parameters[key] = value
+                        changed = True
+                evaluation = upgraded.setdefault("evaluation", {})
+                if _ensure_production_evaluation_defaults(evaluation):
+                    changed = True
+                mutation_space = upgraded.setdefault("mutation_space", [])
+                existing_by_lever = {item.get("lever"): item for item in mutation_space}
+                for mutation in [*GHL_DC_PHASE_3_MUTATION_SPACE, *PORTFOLIO_MUTATION_SPACE]:
+                    existing = existing_by_lever.get(mutation["lever"])
+                    if existing is None:
+                        mutation_space.append(json.loads(json.dumps(mutation)))
+                        changed = True
+                        continue
+                    for key in ("priority", "values", "search_mode", "search_min", "search_max", "search_step", "optimizable", "rationale", "path", "kind"):
+                        next_value = mutation.get(key)
+                        if existing.get(key) != next_value:
+                            existing[key] = json.loads(json.dumps(next_value))
+                            changed = True
             for mutation in upgraded.get("mutation_space", []):
                 if mutation.get("search_mode") is None:
                     mutation["search_mode"] = "values_only"
@@ -530,10 +712,8 @@ class MutationLabService:
                 parameters[key] = value
                 changed = True
         evaluation = upgraded.setdefault("evaluation", {})
-        for key, value in PRODUCTION_EVALUATION_DEFAULTS.items():
-            if key not in evaluation:
-                evaluation[key] = json.loads(json.dumps(value))
-                changed = True
+        if _ensure_production_evaluation_defaults(evaluation):
+            changed = True
         mutation_space = upgraded.setdefault("mutation_space", [])
         next_mutation_space = [item for item in mutation_space if item.get("lever") != "quality_gate_placeholder"]
         if len(next_mutation_space) != len(mutation_space):
@@ -547,7 +727,7 @@ class MutationLabService:
                 mutation_space.append(json.loads(json.dumps(mutation)))
                 changed = True
                 continue
-            for key in ("priority", "values", "search_mode", "search_min", "search_max", "search_step", "rationale", "path", "kind"):
+            for key in ("priority", "values", "search_mode", "search_min", "search_max", "search_step", "optimizable", "rationale", "path", "kind"):
                 next_value = mutation.get(key)
                 if existing.get(key) != next_value:
                     existing[key] = json.loads(json.dumps(next_value))
@@ -638,6 +818,7 @@ class MutationLabService:
                 "suggested_down": lower[-1] if lower else None,
                 "suggested_up": upper[0] if upper else None,
                 "alternatives": suggestions,
+                "optimizable": mutation.get("optimizable", True),
                 "search_mode": mutation.get("search_mode", "auto"),
                 "search_min": mutation.get("search_min"),
                 "search_max": mutation.get("search_max"),
@@ -900,6 +1081,8 @@ class MutationLabService:
         edge = next((item for item in edges if item["lever"] == lever), None)
         if not edge:
             raise HTTPException(status_code=404, detail="Tuning lever not found.")
+        if not edge.get("optimizable", True):
+            raise HTTPException(status_code=400, detail=f"{lever} is manually editable but not optimizable.")
         bars = self.data_service.load_bars(dataset_id)
         candidates: list[dict[str, Any]] = []
         values = self._candidate_values(edge)
@@ -976,6 +1159,8 @@ class MutationLabService:
         for pass_index in range(1, passes + 1):
             improved = False
             for edge in self.list_tuning_edges(version_id):
+                if not edge.get("optimizable", True):
+                    continue
                 before = dict(overrides)
                 result = self.optimize_lever(version_id, dataset_id, edge["lever"], overrides)
                 best_overrides = result["best"]["parameter_overrides"]
@@ -2374,6 +2559,7 @@ class MutationLabService:
                 f"- Short quality gate blocks: `{payload['diagnostics'].get('short_quality_gate_blocks', 0)}`",
                 f"- Breakeven stop moves: `{payload['diagnostics'].get('breakeven_stop_moves', 0)}`",
                 f"- Time risk filter blocks: `{payload['diagnostics'].get('time_risk_filter_blocks', 0)}`",
+                f"- MT5 invalid lot skips: `{payload['diagnostics'].get('mt5_invalid_lot_skips', 0)}`",
                 f"- Stop exits: `{payload['diagnostics']['stop_exits']}`",
                 f"- Reverse exits: `{payload['diagnostics']['reverse_exits']}`",
                 f"- Time-decay exits: `{payload['diagnostics'].get('time_decay_exits', 0)}`",

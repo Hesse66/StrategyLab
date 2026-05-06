@@ -24,15 +24,26 @@
     "atr_len": 14,
     "stop_mode": "atr",
     "stop_mult": 2.5,
+    "breakeven_stop_enabled": false,
+    "breakeven_trigger_mfe_r": 0.75,
+    "breakeven_lock_r": 0.0,
+    "time_risk_filter_enabled": false,
+    "time_risk_block_utc_hours": [],
+    "time_risk_block_weekdays": [],
     "quantity": 1.0,
     "initial_capital": 100000.0,
-    "commission_pct": 0.0,
+    "commission_pct": 0.0035,
     "slippage_ticks": 10,
     "tick_size": 0.01,
     "sizing_mode": "fixed_risk_pct",
     "notional_pct": 0.25,
     "risk_pct": 0.005,
-    "max_leverage": 1.0
+    "max_leverage": 1.0,
+    "contract_size": 100.0,
+    "min_lot": 0.01,
+    "lot_step": 0.01,
+    "max_lot": 100.0,
+    "skip_below_min_lot": true
   },
   "evaluation": {
     "minimum_trades": 50,
@@ -50,7 +61,8 @@
     "maximum_worst_daily_loss_pct": 5.0,
     "production_sizing_modes": [
       "fixed_notional_pct",
-      "fixed_risk_pct"
+      "fixed_risk_pct",
+      "mt5_fixed_risk_lot"
     ],
     "benchmark_policy": "outperform_return_or_calmar"
   },
@@ -129,6 +141,133 @@
     },
     {
       "kind": "white_box",
+      "lever": "breakeven_stop_enabled",
+      "path": "parameters.breakeven_stop_enabled",
+      "values": [
+        true,
+        false
+      ],
+      "search_mode": "values_only",
+      "rationale": "Enable or disable the phase-3 MFE-activated breakeven stop after favorable movement."
+    },
+    {
+      "kind": "white_box",
+      "lever": "breakeven_trigger_mfe_r",
+      "path": "parameters.breakeven_trigger_mfe_r",
+      "values": [
+        0.5,
+        0.75,
+        1.0,
+        1.25,
+        1.5
+      ],
+      "search_mode": "range",
+      "search_min": 0.5,
+      "search_max": 1.5,
+      "search_step": 0.25,
+      "rationale": "Tune the favorable-excursion R threshold that moves the GHL+DC stop to breakeven or profit lock."
+    },
+    {
+      "kind": "white_box",
+      "lever": "breakeven_lock_r",
+      "path": "parameters.breakeven_lock_r",
+      "values": [
+        0.0,
+        0.1,
+        0.25,
+        0.5
+      ],
+      "search_mode": "range",
+      "search_min": 0.0,
+      "search_max": 0.5,
+      "search_step": 0.1,
+      "rationale": "Tune how much R is locked after the breakeven stop is armed."
+    },
+    {
+      "kind": "white_box",
+      "lever": "time_risk_filter_enabled",
+      "path": "parameters.time_risk_filter_enabled",
+      "values": [
+        true,
+        false
+      ],
+      "search_mode": "values_only",
+      "rationale": "Enable or disable the UTC entry-hour risk filter for the XAUUSD GHL+DC parent."
+    },
+    {
+      "kind": "white_box",
+      "lever": "time_risk_block_utc_hours",
+      "path": "parameters.time_risk_block_utc_hours",
+      "values": [
+        [],
+        [
+          1
+        ],
+        [
+          7
+        ],
+        [
+          21
+        ],
+        [
+          14
+        ],
+        [
+          1,
+          7
+        ],
+        [
+          1,
+          21
+        ],
+        [
+          7,
+          21
+        ],
+        [
+          1,
+          7,
+          21
+        ],
+        [
+          1,
+          7,
+          14,
+          21
+        ],
+        [
+          1,
+          7,
+          12,
+          14,
+          21
+        ],
+        [
+          1,
+          7,
+          8,
+          11,
+          12,
+          13,
+          14,
+          21
+        ]
+      ],
+      "search_mode": "values_only",
+      "rationale": "Tune evidenced weak UTC entry-hour exclusions for the XAUUSD GHL+DC parent."
+    },
+    {
+      "kind": "white_box",
+      "lever": "time_risk_block_weekdays",
+      "path": "parameters.time_risk_block_weekdays",
+      "values": [
+        []
+      ],
+      "search_mode": "values_only",
+      "rationale": "Keep weekday blocking disabled for the first GHL+DC time-risk mutation."
+    },
+    {
+      "kind": "white_box",
       "lever": "stop_mode",
       "path": "parameters.stop_mode",
       "values": [
@@ -170,6 +309,79 @@
       ],
       "search_mode": "values_only",
       "rationale": "Production-style sizing stress after the engine shows sign of life."
+    },
+    {
+      "kind": "portfolio",
+      "lever": "initial_capital",
+      "path": "parameters.initial_capital",
+      "values": [
+        5000.0,
+        100000.0
+      ],
+      "search_mode": "values_only",
+      "rationale": "Switch between research account equity and funded-account sizing scenarios."
+    },
+    {
+      "kind": "portfolio",
+      "lever": "sizing_mode",
+      "path": "parameters.sizing_mode",
+      "values": [
+        "fixed_risk_pct",
+        "mt5_fixed_risk_lot"
+      ],
+      "search_mode": "values_only",
+      "rationale": "Compare StrategyLab continuous fixed-risk sizing with MT5 lot-constrained fixed-risk sizing."
+    },
+    {
+      "kind": "portfolio",
+      "lever": "contract_size",
+      "path": "parameters.contract_size",
+      "values": [
+        100.0
+      ],
+      "search_mode": "values_only",
+      "rationale": "XAUUSD contract size used by mt5_fixed_risk_lot sizing."
+    },
+    {
+      "kind": "portfolio",
+      "lever": "min_lot",
+      "path": "parameters.min_lot",
+      "values": [
+        0.01
+      ],
+      "search_mode": "values_only",
+      "rationale": "Broker minimum lot used by mt5_fixed_risk_lot sizing."
+    },
+    {
+      "kind": "portfolio",
+      "lever": "lot_step",
+      "path": "parameters.lot_step",
+      "values": [
+        0.01
+      ],
+      "search_mode": "values_only",
+      "rationale": "Broker lot step used by mt5_fixed_risk_lot sizing."
+    },
+    {
+      "kind": "portfolio",
+      "lever": "max_lot",
+      "path": "parameters.max_lot",
+      "values": [
+        100.0
+      ],
+      "search_mode": "values_only",
+      "rationale": "Broker maximum lot cap used by mt5_fixed_risk_lot sizing."
+    },
+    {
+      "kind": "portfolio",
+      "lever": "skip_below_min_lot",
+      "path": "parameters.skip_below_min_lot",
+      "values": [
+        true,
+        false
+      ],
+      "search_mode": "values_only",
+      "rationale": "Skip below-minimum lots for funded realism or floor them for an explicit stress test."
     }
   ],
   "causal_story": "Gann High Low defines a transparent trend-state flip. Donchian confirmation requires price to break the stored channel extreme soon after the flip, filtering weak crosses. Positions exit on the opposite Gann state close or on an explicit ATR risk stop added for auditable portfolio sizing.",
