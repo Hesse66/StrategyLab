@@ -495,7 +495,7 @@ label {
 
 .optimization-status {
   display: none;
-  align-items: center;
+  align-items: flex-start;
   gap: 0.65rem;
   min-height: 40px;
   padding: 0.65rem 0.78rem;
@@ -521,9 +521,49 @@ label {
   background: rgba(239, 68, 68, 0.08);
 }
 
+.optimization-message {
+  min-width: 0;
+}
+
+.optimization-progress {
+  display: grid;
+  width: min(420px, 100%);
+  gap: 0.28rem;
+  margin-left: auto;
+  color: rgba(247, 244, 236, 0.82);
+  font-family: var(--mono);
+  font-size: 0.72rem;
+}
+
+.optimization-progress-line {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.optimization-progress-track {
+  height: 8px;
+  overflow: hidden;
+  border: 1px solid rgba(59, 130, 246, 0.28);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.optimization-progress-track span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #d9a441, #8ee0b5);
+}
+
+.optimization-progress-detail {
+  color: var(--muted);
+}
+
 .optimization-spinner {
   width: 16px;
   height: 16px;
+  flex: 0 0 auto;
   border: 2px solid rgba(255, 255, 255, 0.22);
   border-top-color: var(--amber);
   border-radius: 50%;

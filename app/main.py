@@ -126,6 +126,11 @@ def tuning_edges(version_id: str, include_hybrid: bool = True) -> list[dict]:
     return lab.list_tuning_edges(version_id, include_hybrid=include_hybrid)
 
 
+@app.get("/api/optimization-progress")
+def optimization_progress() -> dict:
+    return lab.optimization_progress()
+
+
 @app.post("/api/families/register")
 def register_family(request: RegisterBaselineRequest) -> dict:
     return lab.register_baseline(

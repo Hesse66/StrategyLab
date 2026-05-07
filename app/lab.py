@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import uuid
 import math
+import threading
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -622,6 +623,69 @@ class MutationLabService:
         self.repo = repo or Repository()
         self.data_service = data_service or DataService(self.repo)
         self.engine = engine or BacktestEngine()
+        self._optimization_lock = threading.Lock()
+        self._optimization_progress: dict[str, Any] = {
+            "active": False,
+            "message": "No optimization running.",
+        }
+
+    def optimization_progress(self) -> dict[str, Any]:
+        with self._optimization_lock:
+            return json.loads(json.dumps(self._optimization_progress))
+
+    def _set_optimization_progress(self, **updates: Any) -> None:
+        with self._optimization_lock:
+            self._optimization_progress = {
+                **self._optimization_progress,
+                **updates,
+                "updated_at": datetime.now(UTC).isoformat(),
+            }
+
+    def _start_optimization_progress(
+        self,
+        *,
+        mode: str,
+        version_id: str,
+        dataset_id: str,
+        total_candidates: int,
+        total_levers: int = 1,
+        passes: int = 1,
+        lever: str | None = None,
+    ) -> str:
+        job_id = f"opt_{uuid.uuid4().hex[:12]}"
+        now = datetime.now(UTC).isoformat()
+        with self._optimization_lock:
+            self._optimization_progress = {
+                "active": True,
+                "job_id": job_id,
+                "mode": mode,
+                "version_id": version_id,
+                "dataset_id": dataset_id,
+                "lever": lever,
+                "current_lever": lever,
+                "current_pass": 1,
+                "passes": passes,
+                "current_lever_index": 1 if lever else 0,
+                "total_levers": total_levers,
+                "candidate_index": 0,
+                "total_candidates": total_candidates,
+                "overall_index": 0,
+                "total_overall": total_candidates,
+                "message": "Starting optimization...",
+                "started_at": now,
+                "updated_at": now,
+                "finished_at": None,
+                "error": None,
+            }
+        return job_id
+
+    def _finish_optimization_progress(self, message: str, error: str | None = None) -> None:
+        self._set_optimization_progress(
+            active=False,
+            message=message,
+            error=error,
+            finished_at=datetime.now(UTC).isoformat(),
+        )
 
     def ensure_seeded(self) -> None:
         settings.ensure_dirs()
@@ -1072,6 +1136,7 @@ class MutationLabService:
         dataset_id: str,
         lever: str,
         parameter_overrides: dict[str, Any] | None = None,
+        _progress_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         version = self._get_upgraded_version(version_id)
         if not version:
@@ -1086,62 +1151,106 @@ class MutationLabService:
         bars = self.data_service.load_bars(dataset_id)
         candidates: list[dict[str, Any]] = []
         values = self._candidate_values(edge)
-        for value in values:
-            overrides = {**base_overrides, lever: value}
-            tuned_spec = self._apply_parameter_overrides(version["spec_json"], overrides)
-            result = self.engine.run(tuned_spec, bars)
-            comparison = self._comparison(version_id, dataset_id, result["metrics"])
-            verdict = self._verdict(tuned_spec, result["metrics"], comparison)
-            candidates.append(
-                {
-                    "lever": lever,
-                    "value": value,
-                    "score": self._optimization_score(tuned_spec, result["metrics"]),
-                    "score_components": self._optimization_score_components(tuned_spec, result["metrics"]),
-                    "eligible": self._optimization_eligible(tuned_spec, result["metrics"]),
-                    "verdict": verdict,
-                    "metrics": result["metrics"],
-                    "comparison": comparison,
-                    "parameter_overrides": overrides,
-                }
+        own_progress = _progress_context is None
+        if own_progress:
+            self._start_optimization_progress(
+                mode="optimize_lever",
+                version_id=version_id,
+                dataset_id=dataset_id,
+                lever=lever,
+                total_candidates=len(values),
             )
-        if not candidates:
-            raise HTTPException(status_code=400, detail="No candidates generated for this lever.")
-        eligible_candidates = [candidate for candidate in candidates if candidate["eligible"]]
-        if eligible_candidates:
-            best = max(eligible_candidates, key=lambda item: item["score"])
-            selection_mode = "eligible_only"
-        else:
-            current_value = base_overrides.get(lever, version["spec_json"].get("parameters", {}).get(lever))
-            current_candidates = [candidate for candidate in candidates if candidate["value"] == current_value]
-            current_best = current_candidates[0] if current_candidates else max(candidates, key=lambda item: item["score"])
-            research_best = max(candidates, key=lambda item: item["score"])
-            if research_best["score"] > current_best["score"] and research_best["metrics"].get("net_pnl", 0.0) > 0:
-                best = research_best
-                selection_mode = "research_score_fallback"
+        try:
+            for index, value in enumerate(values, start=1):
+                if _progress_context is None:
+                    overall_index = index
+                    total_overall = len(values)
+                    current_pass = 1
+                    passes = 1
+                    current_lever_index = 1
+                    total_levers = 1
+                else:
+                    overall_index = int(_progress_context.get("overall_done", 0)) + index
+                    total_overall = int(_progress_context.get("total_overall", len(values)))
+                    current_pass = int(_progress_context.get("pass_index", 1))
+                    passes = int(_progress_context.get("passes", 1))
+                    current_lever_index = int(_progress_context.get("lever_index", 1))
+                    total_levers = int(_progress_context.get("total_levers", 1))
+                self._set_optimization_progress(
+                    current_lever=lever,
+                    current_pass=current_pass,
+                    passes=passes,
+                    current_lever_index=current_lever_index,
+                    total_levers=total_levers,
+                    candidate_index=index,
+                    total_candidates=len(values),
+                    overall_index=overall_index,
+                    total_overall=total_overall,
+                    message=f"Pass {current_pass}/{passes}: optimizing {lever} candidate {index}/{len(values)}.",
+                )
+                overrides = {**base_overrides, lever: value}
+                tuned_spec = self._apply_parameter_overrides(version["spec_json"], overrides)
+                result = self.engine.run(tuned_spec, bars)
+                comparison = self._comparison(version_id, dataset_id, result["metrics"])
+                verdict = self._verdict(tuned_spec, result["metrics"], comparison)
+                candidates.append(
+                    {
+                        "lever": lever,
+                        "value": value,
+                        "score": self._optimization_score(tuned_spec, result["metrics"]),
+                        "score_components": self._optimization_score_components(tuned_spec, result["metrics"]),
+                        "eligible": self._optimization_eligible(tuned_spec, result["metrics"]),
+                        "verdict": verdict,
+                        "metrics": result["metrics"],
+                        "comparison": comparison,
+                        "parameter_overrides": overrides,
+                    }
+                )
+            if not candidates:
+                raise HTTPException(status_code=400, detail="No candidates generated for this lever.")
+            eligible_candidates = [candidate for candidate in candidates if candidate["eligible"]]
+            if eligible_candidates:
+                best = max(eligible_candidates, key=lambda item: item["score"])
+                selection_mode = "eligible_only"
             else:
-                best = {**current_best, "parameter_overrides": base_overrides}
-                selection_mode = "no_production_eligible_keep_current"
-        best_spec = self._apply_parameter_overrides(version["spec_json"], best["parameter_overrides"])
-        return {
-            "mode": "optimize_lever",
-            "family_id": version["family_id"],
-            "base_version_id": version_id,
-            "dataset_id": dataset_id,
-            "lever": lever,
-            "objective": (
-                "first require enough trade evidence, positive net PnL, profit factor, drawdown, Sharpe/Sortino/Calmar, "
-                "bounded trade risk, production sizing, and benchmark comparability when any candidate satisfies them; "
-                "then maximize a balanced risk-adjusted score using capped profit factor, trade evidence, net return, "
-                "buy-and-hold outperformance, Calmar efficiency, win rate, payoff, and drawdown"
-            ),
-            "search": self._search_summary(edge, values),
-            "eligible_count": len(eligible_candidates),
-            "selection_mode": selection_mode,
-            "best": best,
-            "best_spec": best_spec,
-            "candidates": sorted(candidates, key=lambda item: (item["eligible"], item["score"]), reverse=True),
-        }
+                current_value = base_overrides.get(lever, version["spec_json"].get("parameters", {}).get(lever))
+                current_candidates = [candidate for candidate in candidates if candidate["value"] == current_value]
+                current_best = current_candidates[0] if current_candidates else max(candidates, key=lambda item: item["score"])
+                research_best = max(candidates, key=lambda item: item["score"])
+                if research_best["score"] > current_best["score"] and research_best["metrics"].get("net_pnl", 0.0) > 0:
+                    best = research_best
+                    selection_mode = "research_score_fallback"
+                else:
+                    best = {**current_best, "parameter_overrides": base_overrides}
+                    selection_mode = "no_production_eligible_keep_current"
+            best_spec = self._apply_parameter_overrides(version["spec_json"], best["parameter_overrides"])
+            if own_progress:
+                self._finish_optimization_progress(
+                    f"{lever} optimization complete. Tested {len(candidates)} candidates."
+                )
+            return {
+                "mode": "optimize_lever",
+                "family_id": version["family_id"],
+                "base_version_id": version_id,
+                "dataset_id": dataset_id,
+                "lever": lever,
+                "objective": (
+                    "first require enough trade evidence, positive net PnL, profit factor, drawdown, Sharpe/Sortino/Calmar, "
+                    "bounded trade risk, production sizing, and benchmark comparability when any candidate satisfies them; "
+                    "then maximize a balanced risk-adjusted score using capped profit factor, trade evidence, net return, "
+                    "buy-and-hold outperformance, Calmar efficiency, win rate, payoff, and drawdown"
+                ),
+                "search": self._search_summary(edge, values),
+                "eligible_count": len(eligible_candidates),
+                "selection_mode": selection_mode,
+                "best": best,
+                "best_spec": best_spec,
+                "candidates": sorted(candidates, key=lambda item: (item["eligible"], item["score"]), reverse=True),
+            }
+        except Exception as error:
+            if own_progress:
+                self._finish_optimization_progress(f"{lever} optimization failed.", error=str(error))
+            raise
 
     def optimize_all(
         self,
@@ -1155,44 +1264,78 @@ class MutationLabService:
             raise HTTPException(status_code=404, detail="Version not found.")
         passes = max(1, min(int(passes), 5))
         overrides = self._production_baseline_overrides(version["spec_json"], dict(parameter_overrides or {}))
-        steps: list[dict[str, Any]] = []
-        for pass_index in range(1, passes + 1):
-            improved = False
-            for edge in self.list_tuning_edges(version_id):
-                if not edge.get("optimizable", True):
-                    continue
-                before = dict(overrides)
-                result = self.optimize_lever(version_id, dataset_id, edge["lever"], overrides)
-                best_overrides = result["best"]["parameter_overrides"]
-                if best_overrides != before:
-                    improved = True
-                    overrides = best_overrides
-                steps.append(
-                    {
-                        "pass": pass_index,
-                        "lever": edge["lever"],
-                        "before": before.get(edge["lever"], edge["current_value"]),
-                        "after": overrides.get(edge["lever"], edge["current_value"]),
-                        "selection_mode": result["selection_mode"],
-                        "eligible_count": result["eligible_count"],
-                        "best_score": result["best"]["score"],
-                        "best_metrics": result["best"]["metrics"],
-                    }
-                )
-            if not improved:
-                break
-        preview = self.preview_tuned_version(version_id, dataset_id, overrides)
-        return {
-            "mode": "optimize_all",
-            "base_version_id": version_id,
-            "dataset_id": dataset_id,
-            "passes_requested": passes,
-            "parameter_overrides": overrides,
-            "steps": steps,
-            "eligible_steps": sum(1 for step in steps if step["selection_mode"] == "eligible_only"),
-            "research_fallback_steps": sum(1 for step in steps if step["selection_mode"] == "research_score_fallback"),
-            "preview": preview,
+        edges = [edge for edge in self.list_tuning_edges(version_id) if edge.get("optimizable", True)]
+        candidate_counts = {edge["lever"]: len(self._candidate_values(edge)) for edge in edges}
+        total_overall = sum(candidate_counts.values()) * passes
+        progress_context = {
+            "overall_done": 0,
+            "total_overall": total_overall,
+            "passes": passes,
+            "total_levers": len(edges),
+            "pass_index": 1,
+            "lever_index": 1,
         }
+        self._start_optimization_progress(
+            mode="optimize_all",
+            version_id=version_id,
+            dataset_id=dataset_id,
+            total_candidates=total_overall,
+            total_levers=len(edges),
+            passes=passes,
+        )
+        steps: list[dict[str, Any]] = []
+        try:
+            for pass_index in range(1, passes + 1):
+                progress_context["pass_index"] = pass_index
+                improved = False
+                for lever_index, edge in enumerate(edges, start=1):
+                    progress_context["lever_index"] = lever_index
+                    before = dict(overrides)
+                    result = self.optimize_lever(
+                        version_id,
+                        dataset_id,
+                        edge["lever"],
+                        overrides,
+                        _progress_context=progress_context,
+                    )
+                    progress_context["overall_done"] += candidate_counts[edge["lever"]]
+                    best_overrides = result["best"]["parameter_overrides"]
+                    if best_overrides != before:
+                        improved = True
+                        overrides = best_overrides
+                    steps.append(
+                        {
+                            "pass": pass_index,
+                            "lever": edge["lever"],
+                            "before": before.get(edge["lever"], edge["current_value"]),
+                            "after": overrides.get(edge["lever"], edge["current_value"]),
+                            "selection_mode": result["selection_mode"],
+                            "eligible_count": result["eligible_count"],
+                            "best_score": result["best"]["score"],
+                            "best_metrics": result["best"]["metrics"],
+                        }
+                    )
+                if not improved:
+                    break
+            self._set_optimization_progress(message="Building optimized preview...")
+            preview = self.preview_tuned_version(version_id, dataset_id, overrides)
+            self._finish_optimization_progress(
+                f"Optimization complete. Tested {progress_context['overall_done']} candidates."
+            )
+            return {
+                "mode": "optimize_all",
+                "base_version_id": version_id,
+                "dataset_id": dataset_id,
+                "passes_requested": passes,
+                "parameter_overrides": overrides,
+                "steps": steps,
+                "eligible_steps": sum(1 for step in steps if step["selection_mode"] == "eligible_only"),
+                "research_fallback_steps": sum(1 for step in steps if step["selection_mode"] == "research_score_fallback"),
+                "preview": preview,
+            }
+        except Exception as error:
+            self._finish_optimization_progress("Optimization failed.", error=str(error))
+            raise
 
     @staticmethod
     def _production_baseline_overrides(spec: dict[str, Any], overrides: dict[str, Any]) -> dict[str, Any]:

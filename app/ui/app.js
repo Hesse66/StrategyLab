@@ -28,6 +28,7 @@ let previewTimer = null;
 const MIN_DATASET_BARS = 40000;
 const FULL_HISTORY_SENTINEL_BARS = 1000000;
 let optimizationInFlight = false;
+let optimizationProgressTimer = null;
 
 function setStatus(elementId, message, tone = "") {
   const node = document.getElementById(elementId);
@@ -39,9 +40,27 @@ function showOutput(payload) {
   outputBox.textContent = typeof payload === "string" ? payload : JSON.stringify(payload, null, 2);
 }
 
-function setOptimizationStatus(message, tone = "working") {
+function setOptimizationStatus(message, tone = "working", progress = null) {
   optimizationStatus.className = `optimization-status visible ${tone}`.trim();
-  optimizationStatus.innerHTML = `<span class="optimization-spinner" aria-hidden="true"></span><span>${message}</span>`;
+  const progressHtml = progress
+    ? `
+      <div class="optimization-progress">
+        <div class="optimization-progress-line">
+          <span>${progress.label}</span>
+          <span>${progress.percent}%</span>
+        </div>
+        <div class="optimization-progress-track" aria-hidden="true">
+          <span style="width: ${progress.percent}%"></span>
+        </div>
+        ${progress.detail ? `<div class="optimization-progress-detail">${progress.detail}</div>` : ""}
+      </div>
+    `
+    : "";
+  optimizationStatus.innerHTML = `
+    <span class="optimization-spinner" aria-hidden="true"></span>
+    <span class="optimization-message">${message}</span>
+    ${progressHtml}
+  `;
 }
 
 function clearOptimizationStatus(delayMs = 0) {
@@ -53,8 +72,68 @@ function clearOptimizationStatus(delayMs = 0) {
   window.setTimeout(() => clearOptimizationStatus(), delayMs);
 }
 
+function progressPercent(done, total) {
+  if (!total || total <= 0) {
+    return 0;
+  }
+  return Math.max(0, Math.min(100, Math.round((Number(done || 0) / Number(total)) * 100)));
+}
+
+function renderOptimizationProgress(progress) {
+  if (!progress || !progress.active) {
+    return;
+  }
+  const total = progress.total_overall || progress.total_candidates || 0;
+  const done = progress.overall_index || progress.candidate_index || 0;
+  const percent = progressPercent(done, total);
+  const currentLever = progress.current_lever || progress.lever || "lever";
+  const label = progress.mode === "optimize_all"
+    ? `Overall ${done}/${total || "?"}`
+    : `${currentLever} ${progress.candidate_index || 0}/${progress.total_candidates || "?"}`;
+  const detailParts = [];
+  if (progress.mode === "optimize_all") {
+    detailParts.push(`pass ${progress.current_pass || 1}/${progress.passes || 1}`);
+    detailParts.push(`lever ${progress.current_lever_index || 0}/${progress.total_levers || 0}: ${currentLever}`);
+    detailParts.push(`candidate ${progress.candidate_index || 0}/${progress.total_candidates || "?"}`);
+  }
+  setOptimizationStatus(progress.message || "Optimization running...", "working", {
+    label,
+    percent,
+    detail: detailParts.join(" | "),
+  });
+}
+
+function stopOptimizationProgressPolling() {
+  if (optimizationProgressTimer) {
+    window.clearInterval(optimizationProgressTimer);
+    optimizationProgressTimer = null;
+  }
+}
+
+function startOptimizationProgressPolling() {
+  stopOptimizationProgressPolling();
+  const poll = async () => {
+    try {
+      const progress = await fetchJson("/api/optimization-progress");
+      renderOptimizationProgress(progress);
+      if (!progress.active && !optimizationInFlight) {
+        stopOptimizationProgressPolling();
+      }
+    } catch {
+      // Progress polling is informational; the main optimization request owns success/failure.
+    }
+  };
+  poll();
+  optimizationProgressTimer = window.setInterval(poll, 1000);
+}
+
 function setOptimizationBusy(isBusy, activeLever = "") {
   optimizationInFlight = isBusy;
+  if (isBusy) {
+    startOptimizationProgressPolling();
+  } else {
+    stopOptimizationProgressPolling();
+  }
   optimizeAllButton.disabled = isBusy;
   proposalsTable.querySelectorAll('[data-action="optimize-lever"]').forEach((button) => {
     button.disabled = isBusy && button.dataset.key !== activeLever;
