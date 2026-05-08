@@ -30,6 +30,8 @@ class Position:
     max_favorable_excursion: float = 0.0
     max_adverse_excursion: float = 0.0
     stop_moved_to_breakeven: bool = False
+    time_decay_confirmation_suppressed: int = 0
+    reverse_confirmation_suppressed: int = 0
 
 
 def sma(values: list[float], length: int) -> list[float | None]:
@@ -107,6 +109,15 @@ def compute_metrics(
     buy_hold_max_drawdown_pct: float = 0.0,
 ) -> dict[str, Any]:
     periodic = periodic_equity_metrics(equity_curve, initial_capital)
+    empty_exit_metrics = {
+        "stop_exit_net_pnl": 0.0,
+        "stop_exit_profit_factor": 0.0,
+        "stop_exit_win_rate_pct": 0.0,
+        "stop_exit_pnl_share_pct": 0.0,
+        "reverse_exit_net_pnl": 0.0,
+        "reverse_exit_profit_factor": 0.0,
+        "reverse_exit_win_rate_pct": 0.0,
+    }
     if not trades:
         return {
             "initial_capital": initial_capital,
@@ -154,6 +165,7 @@ def compute_metrics(
             "calmar_delta": 0.0,
             "outperformance": -buy_hold_return,
             "outperformance_pct": -buy_hold_return_pct,
+            **empty_exit_metrics,
         }
     pnls = [trade["net_pnl"] for trade in trades]
     returns = [trade["return_on_equity_pct"] / 100 for trade in trades]
@@ -163,6 +175,7 @@ def compute_metrics(
     risk_pcts = [float(trade.get("initial_risk_pct", 0.0)) for trade in trades]
     gross_profit = sum(trade["net_pnl"] for trade in wins)
     gross_loss = abs(sum(trade["net_pnl"] for trade in losses))
+    exit_metrics = exit_reason_risk_metrics(trades)
     avg_return = sum(returns) / len(returns)
     variance = sum((item - avg_return) ** 2 for item in returns) / len(returns)
     downside = [item for item in returns if item < 0]
@@ -235,7 +248,25 @@ def compute_metrics(
         "calmar_delta": round(calmar - buy_hold_calmar, 4),
         "outperformance": round(sum(pnls) - buy_hold_return, 2),
         "outperformance_pct": round(return_pct - buy_hold_return_pct, 2),
+        **exit_metrics,
     }
+
+
+def exit_reason_risk_metrics(trades: list[dict[str, Any]]) -> dict[str, float]:
+    output: dict[str, float] = {}
+    total_net = sum(float(trade.get("net_pnl", 0.0)) for trade in trades)
+    for reason in ("stop", "reverse"):
+        segment = [trade for trade in trades if trade.get("reason") == reason]
+        wins = [trade for trade in segment if float(trade.get("net_pnl", 0.0)) > 0]
+        losses = [trade for trade in segment if float(trade.get("net_pnl", 0.0)) < 0]
+        gross_profit = sum(float(trade.get("net_pnl", 0.0)) for trade in wins)
+        gross_loss = abs(sum(float(trade.get("net_pnl", 0.0)) for trade in losses))
+        net_pnl = gross_profit - gross_loss
+        output[f"{reason}_exit_net_pnl"] = round(net_pnl, 2)
+        output[f"{reason}_exit_profit_factor"] = round(gross_profit / gross_loss, 4) if gross_loss else round(gross_profit, 4)
+        output[f"{reason}_exit_win_rate_pct"] = round((len(wins) / len(segment)) * 100, 2) if segment else 0.0
+    output["stop_exit_pnl_share_pct"] = round((output["stop_exit_net_pnl"] / total_net) * 100, 2) if total_net > 0 else 0.0
+    return output
 
 
 def periodic_equity_metrics(equity_curve: list[dict[str, Any]], initial_capital: float) -> dict[str, float]:
@@ -350,6 +381,8 @@ class BacktestEngine:
         tick_size = float(parameters.get("tick_size", 0.01))
         slippage = int(parameters.get("slippage_ticks", 0)) * tick_size
         commission_pct = float(parameters.get("commission_pct", 0.0)) / 100
+        mt5_bar_proxy = parameters.get("execution_model", "research_bar_close") == "mt5_bar_proxy"
+        pending_entry: dict[str, Any] | None = None
         diagnostics = {
             "bars": len(bars),
             "signals_long": 0,
@@ -360,9 +393,22 @@ class BacktestEngine:
             "breakeven_stop_moves": 0,
             "short_quality_gate_blocks": 0,
             "time_risk_filter_blocks": 0,
+            "entry_exposure_gate_blocks": 0,
+            "entry_exposure_gate_long_blocks": 0,
+            "entry_exposure_gate_short_blocks": 0,
             "hybrid_time_decay_triage_exits": 0,
             "hybrid_reverse_exit_blocks": 0,
+            "reverse_confirmation_candidates": 0,
+            "reverse_confirmation_exits_allowed": 0,
+            "reverse_confirmation_suppressed": 0,
+            "reverse_confirmation_adverse_escape_allowed": 0,
+            "reverse_confirmation_suppressed_net_pnl": 0.0,
             "time_decay_exits": 0,
+            "time_decay_confirmation_candidates": 0,
+            "time_decay_confirmation_exits": 0,
+            "time_decay_confirmation_suppressed": 0,
+            "time_decay_confirmation_suppressed_net_pnl": 0.0,
+            "mt5_stop_modify_rejects": 0,
             "time_exits": 0,
         }
         warmup = max(
@@ -377,10 +423,76 @@ class BacktestEngine:
                 equity_curve.append({"ts": bar.ts.isoformat(), "equity": round(equity, 2)})
                 continue
 
+            if mt5_bar_proxy and pending_entry:
+                direction = int(pending_entry["direction"])
+                if position and position.direction != direction:
+                    exit_price = max(bar.open - slippage, 0.0) if position.direction == 1 else bar.open + slippage
+                    trade = self._close_trade(
+                        position=position,
+                        bar=bar,
+                        index=index,
+                        price=exit_price,
+                        reason="reverse",
+                        commission_pct=commission_pct,
+                        equity_before=equity,
+                    )
+                    trades.append(trade)
+                    equity += trade["net_pnl"]
+                    diagnostics["reverse_exits"] += 1
+                    position = None
+                if position is None:
+                    fill = bar.open + slippage if direction == 1 else max(bar.open - slippage, 0.0)
+                    stop = (
+                        fill - (float(pending_entry["atr_value"]) * float(parameters["stop_mult"]))
+                        if direction == 1
+                        else fill + (float(pending_entry["atr_value"]) * float(parameters["stop_mult"]))
+                    )
+                    quantity = self._position_quantity(parameters, equity, fill, stop)
+                    entry_notional = fill * quantity
+                    if self._entry_exposure_gate_allows_entry(
+                        parameters=parameters,
+                        direction=direction,
+                        equity=equity,
+                        entry_notional=entry_notional,
+                        diagnostics=diagnostics,
+                    ):
+                        signal_index = int(pending_entry["signal_index"])
+                        entry_features = self._entry_features(
+                            bars=bars,
+                            index=signal_index,
+                            direction=direction,
+                            fast=fast,
+                            slow=slow,
+                            atr_values=atr_values,
+                            cross_count=int(pending_entry["cross_count"]),
+                            stop_price=stop,
+                            entry_price=fill,
+                        )
+                        position = Position(
+                            direction=direction,
+                            entry_index=index,
+                            entry_ts=bar.ts,
+                            entry_price=fill,
+                            stop_price=stop,
+                            quantity=quantity,
+                            entry_commission=fill * quantity * commission_pct,
+                            entry_equity=equity,
+                            entry_notional=entry_notional,
+                            initial_risk_per_unit=abs(fill - stop),
+                            stop_initialized_on_index=index,
+                            entry_features=entry_features,
+                        )
+                        diagnostics["entries"] += 1
+                pending_entry = None
+
             if position:
                 self._update_excursion(position, bar)
 
-            if position and index > position.stop_initialized_on_index:
+            stop_can_trigger = (
+                position is not None
+                and (index >= position.stop_initialized_on_index if mt5_bar_proxy else index > position.stop_initialized_on_index)
+            )
+            if position and stop_can_trigger:
                 if position.direction == 1 and bar.low <= position.stop_price:
                     trade = self._close_trade(
                         position=position,
@@ -419,13 +531,21 @@ class BacktestEngine:
                     if mfe_r >= trigger_r:
                         if position.direction == 1:
                             new_stop = position.entry_price + (initial_risk * lock_r)
+                            if mt5_bar_proxy and new_stop >= bar.close:
+                                diagnostics["mt5_stop_modify_rejects"] += 1
+                                new_stop = position.stop_price
                             if new_stop > position.stop_price:
                                 position.stop_price = new_stop
+                                position.stop_moved_to_breakeven = True
                                 diagnostics["breakeven_stop_moves"] += 1
                         else:
                             new_stop = position.entry_price - (initial_risk * lock_r)
+                            if mt5_bar_proxy and new_stop <= bar.close:
+                                diagnostics["mt5_stop_modify_rejects"] += 1
+                                new_stop = position.stop_price
                             if new_stop < position.stop_price:
                                 position.stop_price = new_stop
+                                position.stop_moved_to_breakeven = True
                                 diagnostics["breakeven_stop_moves"] += 1
 
             if position and parameters.get("hybrid_time_decay_triage_enabled", False):
@@ -446,6 +566,14 @@ class BacktestEngine:
                     max_unrealized_r = float(parameters.get("hybrid_time_decay_triage_max_unrealized_r", 0.10))
                     max_mfe_r = float(parameters.get("hybrid_time_decay_triage_max_mfe_r", 0.25))
                     if unrealized_r <= max_unrealized_r and mfe_r <= max_mfe_r:
+                        if not self._time_decay_confirmation_allows_exit(
+                            parameters=parameters,
+                            position=position,
+                            unrealized_r=unrealized_r,
+                            mfe_r=mfe_r,
+                            diagnostics=diagnostics,
+                        ):
+                            continue
                         exit_price = max(bar.close - slippage, 0.0) if position.direction == 1 else bar.close + slippage
                         trade = self._close_trade(
                             position=position,
@@ -467,6 +595,19 @@ class BacktestEngine:
                 initial_risk = abs(position.entry_price - position.stop_price)
                 mfe_r = position.max_favorable_excursion / initial_risk if initial_risk else 0.0
                 if decay_bars > 0 and bars_held >= decay_bars and mfe_r < float(parameters.get("time_decay_min_mfe_r", 0.0)):
+                    if position.direction == 1:
+                        unrealized = bar.close - position.entry_price
+                    else:
+                        unrealized = position.entry_price - bar.close
+                    unrealized_r = unrealized / initial_risk if initial_risk else 0.0
+                    if not self._time_decay_confirmation_allows_exit(
+                        parameters=parameters,
+                        position=position,
+                        unrealized_r=unrealized_r,
+                        mfe_r=mfe_r,
+                        diagnostics=diagnostics,
+                    ):
+                        continue
                     exit_price = max(bar.close - slippage, 0.0) if position.direction == 1 else bar.close + slippage
                     trade = self._close_trade(
                         position=position,
@@ -559,7 +700,21 @@ class BacktestEngine:
                     entry_long_signal = False
                     entry_short_signal = False
 
-            if position and position.direction == 1 and short_signal and not reverse_exit_blocked:
+            if position and not reverse_exit_blocked:
+                if not self._reverse_confirmation_allows_exit(
+                    parameters=parameters,
+                    position=position,
+                    index=index,
+                    current_close=bar.close,
+                    long_signal=long_signal,
+                    short_signal=short_signal,
+                    diagnostics=diagnostics,
+                ):
+                    reverse_exit_blocked = True
+                    entry_long_signal = False
+                    entry_short_signal = False
+
+            if not mt5_bar_proxy and position and position.direction == 1 and short_signal and not reverse_exit_blocked:
                 trade = self._close_trade(
                     position=position,
                     bar=bar,
@@ -573,7 +728,7 @@ class BacktestEngine:
                 equity += trade["net_pnl"]
                 diagnostics["reverse_exits"] += 1
                 position = None
-            elif position and position.direction == -1 and long_signal and not reverse_exit_blocked:
+            elif not mt5_bar_proxy and position and position.direction == -1 and long_signal and not reverse_exit_blocked:
                 trade = self._close_trade(
                     position=position,
                     bar=bar,
@@ -588,13 +743,37 @@ class BacktestEngine:
                 diagnostics["reverse_exits"] += 1
                 position = None
 
-            if position is None:
+            if mt5_bar_proxy:
+                if entry_long_signal:
+                    pending_entry = {
+                        "direction": 1,
+                        "atr_value": float(atr_values[index]),
+                        "signal_index": index,
+                        "cross_count": cross_count,
+                    }
+                elif entry_short_signal:
+                    pending_entry = {
+                        "direction": -1,
+                        "atr_value": float(atr_values[index]),
+                        "signal_index": index,
+                        "cross_count": cross_count,
+                    }
+            elif position is None:
                 if entry_long_signal:
                     fill = entry_at_close + slippage
                     stop = fill - (float(atr_values[index]) * float(parameters["stop_mult"]))
                     quantity = self._position_quantity(parameters, equity, fill, stop)
-                    commission = fill * quantity * commission_pct
                     entry_notional = fill * quantity
+                    if not self._entry_exposure_gate_allows_entry(
+                        parameters=parameters,
+                        direction=1,
+                        equity=equity,
+                        entry_notional=entry_notional,
+                        diagnostics=diagnostics,
+                    ):
+                        equity_curve.append({"ts": bar.ts.isoformat(), "equity": round(equity, 2)})
+                        continue
+                    commission = fill * quantity * commission_pct
                     initial_risk_per_unit = abs(fill - stop)
                     entry_features = self._entry_features(
                         bars=bars,
@@ -626,8 +805,17 @@ class BacktestEngine:
                     fill = max(entry_at_close - slippage, 0.0)
                     stop = fill + (float(atr_values[index]) * float(parameters["stop_mult"]))
                     quantity = self._position_quantity(parameters, equity, fill, stop)
-                    commission = fill * quantity * commission_pct
                     entry_notional = fill * quantity
+                    if not self._entry_exposure_gate_allows_entry(
+                        parameters=parameters,
+                        direction=-1,
+                        equity=equity,
+                        entry_notional=entry_notional,
+                        diagnostics=diagnostics,
+                    ):
+                        equity_curve.append({"ts": bar.ts.isoformat(), "equity": round(equity, 2)})
+                        continue
+                    commission = fill * quantity * commission_pct
                     initial_risk_per_unit = abs(fill - stop)
                     entry_features = self._entry_features(
                         bars=bars,
@@ -675,6 +863,22 @@ class BacktestEngine:
             diagnostics["time_exits"] += 1
             equity_curve[-1] = {"ts": last_bar.ts.isoformat(), "equity": round(equity, 2)}
 
+        diagnostics["time_decay_confirmation_suppressed_net_pnl"] = round(
+            sum(
+                trade["net_pnl"]
+                for trade in trades
+                if int(trade.get("time_decay_confirmation_suppressed", 0)) > 0
+            ),
+            2,
+        )
+        diagnostics["reverse_confirmation_suppressed_net_pnl"] = round(
+            sum(
+                trade["net_pnl"]
+                for trade in trades
+                if int(trade.get("reverse_confirmation_suppressed", 0)) > 0
+            ),
+            2,
+        )
         initial_capital = float(parameters.get("initial_capital", 100_000.0))
         buy_hold_start_price = bars[warmup].close if len(bars) > warmup else bars[0].close
         buy_hold_end_price = bars[-1].close
@@ -701,6 +905,103 @@ class BacktestEngine:
             "equity_curve": equity_curve,
             "diagnostics": diagnostics,
         }
+
+    @staticmethod
+    def _time_decay_confirmation_allows_exit(
+        *,
+        parameters: dict[str, Any],
+        position: Position,
+        unrealized_r: float,
+        mfe_r: float,
+        diagnostics: dict[str, Any],
+    ) -> bool:
+        if not parameters.get("time_decay_triage_confirmation_enabled", False):
+            return True
+        diagnostics["time_decay_confirmation_candidates"] += 1
+        max_unrealized_r = float(parameters.get("time_decay_confirm_max_unrealized_r", 0.0))
+        max_mfe_r = float(parameters.get("time_decay_confirm_max_mfe_r", 0.35))
+        require_no_breakeven = bool(parameters.get("time_decay_confirm_require_no_breakeven_move", False))
+        confirmed = unrealized_r <= max_unrealized_r and mfe_r <= max_mfe_r
+        if require_no_breakeven and position.stop_moved_to_breakeven:
+            confirmed = False
+        if confirmed:
+            diagnostics["time_decay_confirmation_exits"] += 1
+            return True
+        diagnostics["time_decay_confirmation_suppressed"] += 1
+        position.time_decay_confirmation_suppressed += 1
+        return False
+
+    @staticmethod
+    def _reverse_confirmation_allows_exit(
+        *,
+        parameters: dict[str, Any],
+        position: Position,
+        index: int,
+        current_close: float,
+        long_signal: bool,
+        short_signal: bool,
+        diagnostics: dict[str, Any],
+    ) -> bool:
+        if not parameters.get("reverse_confirmation_enabled", False):
+            return True
+        opposite_signal = (position.direction == 1 and short_signal) or (position.direction == -1 and long_signal)
+        if not opposite_signal:
+            return True
+        diagnostics["reverse_confirmation_candidates"] += 1
+        initial_risk = abs(position.entry_price - position.stop_price)
+        if not initial_risk:
+            diagnostics["reverse_confirmation_exits_allowed"] += 1
+            return True
+        bars_held = index - position.entry_index
+        mfe_r = position.max_favorable_excursion / initial_risk
+        if position.direction == 1:
+            unrealized = current_close - position.entry_price
+        else:
+            unrealized = position.entry_price - current_close
+        unrealized_r = unrealized / initial_risk
+
+        max_bars = int(parameters.get("reverse_confirm_max_bars", 2))
+        min_mfe_r = float(parameters.get("reverse_confirm_min_mfe_r", 0.20))
+        adverse_escape_r = float(parameters.get("reverse_confirm_allow_if_unrealized_r_lte", -0.35))
+        require_no_breakeven = bool(parameters.get("reverse_confirm_require_no_breakeven_move", False))
+
+        is_young = bars_held <= max_bars
+        weak_excursion = mfe_r < min_mfe_r
+        adverse_escape = unrealized_r <= adverse_escape_r
+        suppress_reverse = is_young and weak_excursion and not adverse_escape
+        if require_no_breakeven and position.stop_moved_to_breakeven:
+            suppress_reverse = False
+
+        if suppress_reverse:
+            diagnostics["reverse_confirmation_suppressed"] += 1
+            position.reverse_confirmation_suppressed += 1
+            return False
+        if adverse_escape:
+            diagnostics["reverse_confirmation_adverse_escape_allowed"] += 1
+        diagnostics["reverse_confirmation_exits_allowed"] += 1
+        return True
+
+    @staticmethod
+    def _entry_exposure_gate_allows_entry(
+        *,
+        parameters: dict[str, Any],
+        direction: int,
+        equity: float,
+        entry_notional: float,
+        diagnostics: dict[str, Any],
+    ) -> bool:
+        if not parameters.get("entry_exposure_gate_enabled", False):
+            return True
+        exposure_pct = (entry_notional / equity) * 100 if equity > 0 else float("inf")
+        max_exposure_pct = float(parameters.get("entry_exposure_gate_max_pct", 75.0))
+        if exposure_pct <= max_exposure_pct:
+            return True
+        diagnostics["entry_exposure_gate_blocks"] += 1
+        if direction == 1:
+            diagnostics["entry_exposure_gate_long_blocks"] += 1
+        else:
+            diagnostics["entry_exposure_gate_short_blocks"] += 1
+        return False
 
     def _run_ghl_dc_breakout(self, spec: dict[str, Any], bars: list[Bar]) -> dict[str, Any]:
         parameters = spec["parameters"]
@@ -740,6 +1041,8 @@ class BacktestEngine:
         tick_size = float(parameters.get("tick_size", 0.01))
         slippage = int(parameters.get("slippage_ticks", 0)) * tick_size
         commission_pct = float(parameters.get("commission_pct", 0.0)) / 100
+        mt5_bar_proxy = parameters.get("execution_model", "research_bar_close") == "mt5_bar_proxy"
+        pending_entry: dict[str, Any] | None = None
         diagnostics = {
             "bars": len(bars),
             "gann_cross_up": 0,
@@ -1295,6 +1598,8 @@ class BacktestEngine:
             "mfe_r": round(position.max_favorable_excursion / initial_risk, 4) if initial_risk else 0.0,
             "mae_r": round(position.max_adverse_excursion / initial_risk, 4) if initial_risk else 0.0,
             "return_on_equity_pct": round((net_pnl / equity_before) * 100, 4) if equity_before else 0.0,
+            "time_decay_confirmation_suppressed": position.time_decay_confirmation_suppressed,
+            "reverse_confirmation_suppressed": position.reverse_confirmation_suppressed,
             "entry_features": position.entry_features,
         }
 

@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 from fastapi import HTTPException
 
-from app.backtest import BacktestEngine
+from app.backtest import BacktestEngine, Position
 from app.config import settings
 from app.data import Bar, DataService
 from app.lab import MutationLabService
@@ -334,6 +334,180 @@ class MutationLabTests(unittest.TestCase):
         self.assertGreater(result["diagnostics"]["breakeven_stop_moves"], 0)
         self.assertTrue(any(trade["reason"] == "breakeven_stop" for trade in result["trades"]))
 
+    def test_time_decay_confirmation_suppresses_unconfirmed_exit(self) -> None:
+        diagnostics = {
+            "time_decay_confirmation_candidates": 0,
+            "time_decay_confirmation_exits": 0,
+            "time_decay_confirmation_suppressed": 0,
+        }
+        position = Position(
+            direction=1,
+            entry_index=10,
+            entry_ts=datetime(2024, 1, 1, tzinfo=UTC),
+            entry_price=100.0,
+            stop_price=95.0,
+            quantity=1.0,
+            entry_commission=0.0,
+            entry_equity=100000.0,
+            entry_notional=100.0,
+            initial_risk_per_unit=5.0,
+            stop_initialized_on_index=10,
+            entry_features={},
+        )
+
+        allowed = BacktestEngine._time_decay_confirmation_allows_exit(
+            parameters={
+                "time_decay_triage_confirmation_enabled": True,
+                "time_decay_confirm_max_unrealized_r": 0.0,
+                "time_decay_confirm_max_mfe_r": 0.35,
+                "time_decay_confirm_require_no_breakeven_move": False,
+            },
+            position=position,
+            unrealized_r=0.2,
+            mfe_r=0.5,
+            diagnostics=diagnostics,
+        )
+
+        self.assertFalse(allowed)
+        self.assertEqual(diagnostics["time_decay_confirmation_candidates"], 1)
+        self.assertEqual(diagnostics["time_decay_confirmation_exits"], 0)
+        self.assertEqual(diagnostics["time_decay_confirmation_suppressed"], 1)
+        self.assertEqual(position.time_decay_confirmation_suppressed, 1)
+
+    def test_reverse_confirmation_suppresses_young_weak_opposite_signal(self) -> None:
+        diagnostics = {
+            "reverse_confirmation_candidates": 0,
+            "reverse_confirmation_exits_allowed": 0,
+            "reverse_confirmation_suppressed": 0,
+            "reverse_confirmation_adverse_escape_allowed": 0,
+        }
+        position = Position(
+            direction=1,
+            entry_index=10,
+            entry_ts=datetime(2024, 1, 1, tzinfo=UTC),
+            entry_price=100.0,
+            stop_price=90.0,
+            quantity=1.0,
+            entry_commission=0.0,
+            entry_equity=100000.0,
+            entry_notional=100.0,
+            initial_risk_per_unit=10.0,
+            stop_initialized_on_index=10,
+            entry_features={},
+            max_favorable_excursion=1.0,
+        )
+
+        allowed = BacktestEngine._reverse_confirmation_allows_exit(
+            parameters={
+                "reverse_confirmation_enabled": True,
+                "reverse_confirm_max_bars": 2,
+                "reverse_confirm_min_mfe_r": 0.20,
+                "reverse_confirm_allow_if_unrealized_r_lte": -0.35,
+                "reverse_confirm_require_no_breakeven_move": False,
+            },
+            position=position,
+            index=12,
+            current_close=99.0,
+            long_signal=False,
+            short_signal=True,
+            diagnostics=diagnostics,
+        )
+
+        self.assertFalse(allowed)
+        self.assertEqual(diagnostics["reverse_confirmation_candidates"], 1)
+        self.assertEqual(diagnostics["reverse_confirmation_exits_allowed"], 0)
+        self.assertEqual(diagnostics["reverse_confirmation_suppressed"], 1)
+        self.assertEqual(position.reverse_confirmation_suppressed, 1)
+
+    def test_reverse_confirmation_keeps_adverse_escape(self) -> None:
+        diagnostics = {
+            "reverse_confirmation_candidates": 0,
+            "reverse_confirmation_exits_allowed": 0,
+            "reverse_confirmation_suppressed": 0,
+            "reverse_confirmation_adverse_escape_allowed": 0,
+        }
+        position = Position(
+            direction=1,
+            entry_index=10,
+            entry_ts=datetime(2024, 1, 1, tzinfo=UTC),
+            entry_price=100.0,
+            stop_price=90.0,
+            quantity=1.0,
+            entry_commission=0.0,
+            entry_equity=100000.0,
+            entry_notional=100.0,
+            initial_risk_per_unit=10.0,
+            stop_initialized_on_index=10,
+            entry_features={},
+            max_favorable_excursion=1.0,
+        )
+
+        allowed = BacktestEngine._reverse_confirmation_allows_exit(
+            parameters={
+                "reverse_confirmation_enabled": True,
+                "reverse_confirm_max_bars": 2,
+                "reverse_confirm_min_mfe_r": 0.20,
+                "reverse_confirm_allow_if_unrealized_r_lte": -0.35,
+                "reverse_confirm_require_no_breakeven_move": False,
+            },
+            position=position,
+            index=12,
+            current_close=96.0,
+            long_signal=False,
+            short_signal=True,
+            diagnostics=diagnostics,
+        )
+
+        self.assertTrue(allowed)
+        self.assertEqual(diagnostics["reverse_confirmation_candidates"], 1)
+        self.assertEqual(diagnostics["reverse_confirmation_exits_allowed"], 1)
+        self.assertEqual(diagnostics["reverse_confirmation_adverse_escape_allowed"], 1)
+        self.assertEqual(diagnostics["reverse_confirmation_suppressed"], 0)
+
+    def test_entry_exposure_gate_blocks_over_limit_entry(self) -> None:
+        diagnostics = {
+            "entry_exposure_gate_blocks": 0,
+            "entry_exposure_gate_long_blocks": 0,
+            "entry_exposure_gate_short_blocks": 0,
+        }
+
+        allowed = BacktestEngine._entry_exposure_gate_allows_entry(
+            parameters={
+                "entry_exposure_gate_enabled": True,
+                "entry_exposure_gate_max_pct": 75.0,
+            },
+            direction=1,
+            equity=5000.0,
+            entry_notional=4000.0,
+            diagnostics=diagnostics,
+        )
+
+        self.assertFalse(allowed)
+        self.assertEqual(diagnostics["entry_exposure_gate_blocks"], 1)
+        self.assertEqual(diagnostics["entry_exposure_gate_long_blocks"], 1)
+        self.assertEqual(diagnostics["entry_exposure_gate_short_blocks"], 0)
+
+    def test_entry_exposure_gate_allows_under_limit_entry(self) -> None:
+        diagnostics = {
+            "entry_exposure_gate_blocks": 0,
+            "entry_exposure_gate_long_blocks": 0,
+            "entry_exposure_gate_short_blocks": 0,
+        }
+
+        allowed = BacktestEngine._entry_exposure_gate_allows_entry(
+            parameters={
+                "entry_exposure_gate_enabled": True,
+                "entry_exposure_gate_max_pct": 75.0,
+            },
+            direction=-1,
+            equity=5000.0,
+            entry_notional=3500.0,
+            diagnostics=diagnostics,
+        )
+
+        self.assertTrue(allowed)
+        self.assertEqual(diagnostics["entry_exposure_gate_blocks"], 0)
+
     def test_ghl_dc_time_risk_filter_blocks_entries_when_enabled(self) -> None:
         bars = build_fixture_bars(1200)
         for bar in bars:
@@ -565,6 +739,12 @@ class MutationLabTests(unittest.TestCase):
         self.assertEqual(edges["time_decay_bars"]["search_mode"], "range")
         self.assertEqual(len(self.lab._candidate_values(edges["time_decay_bars"])), 300)
         self.assertGreaterEqual(len(self.lab._candidate_values(edges["time_decay_min_mfe_r"])), 40)
+        self.assertIn("time_decay_triage_confirmation_enabled", edges)
+        self.assertEqual(edges["time_decay_confirm_max_mfe_r"]["search_mode"], "range")
+        self.assertIn("reverse_confirmation_enabled", edges)
+        self.assertEqual(edges["reverse_confirm_min_mfe_r"]["search_mode"], "range")
+        self.assertIn("entry_exposure_gate_enabled", edges)
+        self.assertEqual(edges["entry_exposure_gate_max_pct"]["search_mode"], "range")
         self.assertGreaterEqual(len(self.lab._candidate_values(edges["short_quality_gate_len_bars"])), 70)
         self.assertGreaterEqual(len(self.lab._candidate_values(edges["breakeven_trigger_mfe_r"])), 55)
         self.assertGreaterEqual(len(self.lab._candidate_values(edges["breakeven_lock_r"])), 21)
@@ -749,6 +929,76 @@ class MutationLabTests(unittest.TestCase):
             self.lab._optimization_score(spec, low_trade_high_pf),
             self.lab._optimization_score(spec, enough_trade_credible),
         )
+
+    def test_live_execution_gate_rejects_managed_stop_artifact(self) -> None:
+        spec = {
+            "engine_id": "ma_cross_atr_stop_v1",
+            "parameters": {
+                "breakeven_stop_enabled": True,
+                "time_decay_exit_enabled": True,
+                "sizing_mode": "mt5_fixed_risk_lot",
+            },
+            "evaluation": {
+                "production_sizing_modes": ["mt5_fixed_risk_lot"],
+                "benchmark_policy": "outperform_return_or_calmar",
+            },
+        }
+        metrics = {
+            "total_trades": 43747,
+            "profit_factor": 2.9883,
+            "max_equity_drawdown_pct": 2.55,
+            "net_pnl": 1243550863.27,
+            "sharpe": 42.0,
+            "sortino": 98.0,
+            "daily_sharpe": 12.0,
+            "daily_sortino": 33.0,
+            "calmar": 1000.0,
+            "max_initial_risk_pct": 1.0,
+            "max_entry_exposure_pct": 100.0,
+            "avg_entry_exposure_pct": 31.0,
+            "worst_daily_return_pct": -1.58,
+            "outperformance_pct": 100.0,
+            "calmar_delta": 100.0,
+            "stop_exit_net_pnl": 1814299859.62,
+            "stop_exit_profit_factor": 67.0953,
+            "stop_exit_win_rate_pct": 98.1,
+            "stop_exit_pnl_share_pct": 145.89,
+            "reverse_exit_net_pnl": -570743749.76,
+        }
+        self.assertEqual(
+            self.lab._live_execution_gate_failures(spec, metrics),
+            [
+                "requires_mt5_execution_model",
+                "requires_mt5_parity_validation",
+                "managed_stop_execution_dependency",
+            ],
+        )
+        self.assertFalse(self.lab._optimization_eligible(spec, metrics))
+        self.assertEqual(self.lab._verdict(spec, metrics, None), "research_survivor")
+
+    def test_live_execution_gate_allows_managed_stops_after_mt5_parity_validation(self) -> None:
+        spec = {
+            "engine_id": "ma_cross_atr_stop_v1",
+            "parameters": {
+                "breakeven_stop_enabled": True,
+                "time_decay_exit_enabled": False,
+                "sizing_mode": "mt5_fixed_risk_lot",
+                "execution_model": "mt5_bar_proxy",
+            },
+            "evaluation": {
+                "mt5_parity_validated": True,
+                "production_sizing_modes": ["mt5_fixed_risk_lot"],
+            },
+        }
+        metrics = {
+            "net_pnl": 10000.0,
+            "stop_exit_net_pnl": 2500.0,
+            "stop_exit_profit_factor": 2.0,
+            "stop_exit_win_rate_pct": 55.0,
+            "stop_exit_pnl_share_pct": 25.0,
+            "reverse_exit_net_pnl": 7500.0,
+        }
+        self.assertEqual(self.lab._live_execution_gate_failures(spec, metrics), [])
 
     def test_optimize_all_runs_sequential_passes(self) -> None:
         dataset = self.data_service.import_fixture_dataset(

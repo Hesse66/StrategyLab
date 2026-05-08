@@ -21,9 +21,21 @@ MAX_NO_CROSS_OPTIMIZATION_MAX = 50
 FLOAT_OPTIMIZATION_MAX_CANDIDATES = 200
 
 PHASE_3_PARAMETERS = {
+    "execution_model": "research_bar_close",
     "time_decay_exit_enabled": False,
     "time_decay_bars": 96,
     "time_decay_min_mfe_r": 0.5,
+    "time_decay_triage_confirmation_enabled": False,
+    "time_decay_confirm_max_unrealized_r": 0.0,
+    "time_decay_confirm_max_mfe_r": 0.35,
+    "time_decay_confirm_require_no_breakeven_move": False,
+    "reverse_confirmation_enabled": False,
+    "reverse_confirm_max_bars": 2,
+    "reverse_confirm_min_mfe_r": 0.20,
+    "reverse_confirm_allow_if_unrealized_r_lte": -0.35,
+    "reverse_confirm_require_no_breakeven_move": False,
+    "entry_exposure_gate_enabled": False,
+    "entry_exposure_gate_max_pct": 75.0,
     "short_quality_gate_enabled": False,
     "short_quality_gate_rule": "block_below_sma",
     "short_quality_gate_len_bars": 19200,
@@ -38,12 +50,139 @@ PHASE_3_PARAMETERS = {
 PHASE_3_MUTATION_SPACE = [
     {
         "kind": "white_box",
+        "lever": "execution_model",
+        "path": "parameters.execution_model",
+        "priority": 130,
+        "values": ["mt5_bar_proxy", "research_bar_close"],
+        "search_mode": "values_only",
+        "optimizable": False,
+        "rationale": "Switch between the fast research bar-close model and a conservative MT5 bar proxy where signals execute on the next bar with stops active immediately.",
+    },
+    {
+        "kind": "white_box",
+        "lever": "entry_exposure_gate_enabled",
+        "path": "parameters.entry_exposure_gate_enabled",
+        "priority": 91,
+        "values": [True, False],
+        "search_mode": "values_only",
+        "rationale": "Enable or disable a decision-time gate that rejects entries whose intended exposure is too high.",
+    },
+    {
+        "kind": "white_box",
+        "lever": "entry_exposure_gate_max_pct",
+        "path": "parameters.entry_exposure_gate_max_pct",
+        "priority": 90,
+        "values": [60.0, 75.0, 90.0],
+        "search_mode": "range",
+        "search_min": 50.0,
+        "search_max": 100.0,
+        "search_step": 5.0,
+        "rationale": "Tune the maximum intended entry exposure allowed before a candidate trade is skipped.",
+    },
+    {
+        "kind": "white_box",
+        "lever": "reverse_confirmation_enabled",
+        "path": "parameters.reverse_confirmation_enabled",
+        "priority": 89,
+        "values": [True, False],
+        "search_mode": "values_only",
+        "rationale": "Enable or disable early reverse-exit confirmation for short-cycle XAU/BTC-transplant parents.",
+    },
+    {
+        "kind": "white_box",
         "lever": "time_decay_exit_enabled",
         "path": "parameters.time_decay_exit_enabled",
         "priority": 88,
         "values": [True, False],
         "search_mode": "values_only",
         "rationale": "Enable or disable failed-entry time-decay exits as a full-whitebox rule mutation.",
+    },
+    {
+        "kind": "white_box",
+        "lever": "reverse_confirm_max_bars",
+        "path": "parameters.reverse_confirm_max_bars",
+        "priority": 87,
+        "values": [1, 2, 3],
+        "search_mode": "range",
+        "search_min": 1,
+        "search_max": 4,
+        "search_step": 1,
+        "rationale": "Tune how young a position must be before reverse confirmation can suppress an opposite signal.",
+    },
+    {
+        "kind": "white_box",
+        "lever": "time_decay_triage_confirmation_enabled",
+        "path": "parameters.time_decay_triage_confirmation_enabled",
+        "priority": 86,
+        "values": [True, False],
+        "search_mode": "values_only",
+        "rationale": "Confirm failed-entry time-decay exits only when the trade still looks weak at decision time.",
+    },
+    {
+        "kind": "white_box",
+        "lever": "reverse_confirm_min_mfe_r",
+        "path": "parameters.reverse_confirm_min_mfe_r",
+        "priority": 87,
+        "values": [0.10, 0.20, 0.30],
+        "search_mode": "range",
+        "search_min": 0.05,
+        "search_max": 0.50,
+        "search_step": 0.05,
+        "rationale": "Tune the favorable-excursion threshold required before a young reverse exit is trusted.",
+    },
+    {
+        "kind": "white_box",
+        "lever": "reverse_confirm_allow_if_unrealized_r_lte",
+        "path": "parameters.reverse_confirm_allow_if_unrealized_r_lte",
+        "priority": 86,
+        "values": [-0.50, -0.35, -0.20],
+        "search_mode": "range",
+        "search_min": -0.75,
+        "search_max": -0.10,
+        "search_step": 0.05,
+        "rationale": "Tune the adverse escape valve so reverse confirmation does not trap clearly failing trades.",
+    },
+    {
+        "kind": "white_box",
+        "lever": "reverse_confirm_require_no_breakeven_move",
+        "path": "parameters.reverse_confirm_require_no_breakeven_move",
+        "priority": 85,
+        "values": [False, True],
+        "search_mode": "values_only",
+        "rationale": "Optionally allow reverse exits normally after breakeven stop management has taken control.",
+    },
+    {
+        "kind": "white_box",
+        "lever": "time_decay_confirm_max_unrealized_r",
+        "path": "parameters.time_decay_confirm_max_unrealized_r",
+        "priority": 84,
+        "values": [-0.25, 0.0, 0.25],
+        "search_mode": "range",
+        "search_min": -1.0,
+        "search_max": 0.5,
+        "search_step": 0.05,
+        "rationale": "Tune how weak unrealized R must still be before a time-decay candidate is allowed to close.",
+    },
+    {
+        "kind": "white_box",
+        "lever": "time_decay_confirm_max_mfe_r",
+        "path": "parameters.time_decay_confirm_max_mfe_r",
+        "priority": 83,
+        "values": [0.25, 0.35, 0.5],
+        "search_mode": "range",
+        "search_min": 0.0,
+        "search_max": 1.0,
+        "search_step": 0.05,
+        "rationale": "Tune the favorable-excursion ceiling that still qualifies a time-decay candidate as failed-entry behavior.",
+    },
+    {
+        "kind": "white_box",
+        "lever": "time_decay_confirm_require_no_breakeven_move",
+        "path": "parameters.time_decay_confirm_require_no_breakeven_move",
+        "priority": 82,
+        "values": [False, True],
+        "search_mode": "values_only",
+        "rationale": "Optionally suppress time-decay exits after a breakeven/lock stop has already taken over management.",
     },
     {
         "kind": "white_box",
@@ -1354,6 +1493,10 @@ class MutationLabService:
         max_exposure = float(rules.get("maximum_entry_exposure_pct", 100.0)) / 100
         if selected_leverage <= 0 or selected_leverage > max_exposure:
             output["max_leverage"] = max_exposure
+        if spec.get("engine_id") == "ma_cross_atr_stop_v1" and output.get(
+            "sizing_mode", parameters.get("sizing_mode")
+        ) == "mt5_fixed_risk_lot":
+            output.setdefault("execution_model", "mt5_bar_proxy")
         return output
 
     def save_tuned_version(
@@ -2384,8 +2527,10 @@ class MutationLabService:
 
     @staticmethod
     def _optimization_eligible(spec: dict[str, Any], metrics: dict[str, Any]) -> bool:
-        return not MutationLabService._core_gate_failures(spec, metrics) and not MutationLabService._portfolio_gate_failures(
-            spec, metrics
+        return (
+            not MutationLabService._core_gate_failures(spec, metrics)
+            and not MutationLabService._portfolio_gate_failures(spec, metrics)
+            and not MutationLabService._live_execution_gate_failures(spec, metrics)
         )
 
     @staticmethod
@@ -2473,6 +2618,12 @@ class MutationLabService:
                 parameters[key] = float(value)
             else:
                 parameters[key] = value
+        if (
+            tuned_spec.get("engine_id") == "ma_cross_atr_stop_v1"
+            and parameters.get("sizing_mode") == "mt5_fixed_risk_lot"
+            and "execution_model" not in overrides
+        ):
+            parameters["execution_model"] = "mt5_bar_proxy"
         return tuned_spec
 
     @staticmethod
@@ -2538,10 +2689,44 @@ class MutationLabService:
                 failures.append("weak_vs_buy_hold_benchmark")
         return failures
 
+    @staticmethod
+    def _live_execution_gate_failures(spec: dict[str, Any], metrics: dict[str, Any]) -> list[str]:
+        rules = spec.get("evaluation", {})
+        if not rules.get("require_live_execution_review", True):
+            return []
+        parameters = spec.get("parameters", {})
+        failures: list[str] = []
+        managed_stop_rules = bool(parameters.get("breakeven_stop_enabled", False)) or bool(
+            parameters.get("time_decay_exit_enabled", False)
+        )
+        if spec.get("engine_id") != "ma_cross_atr_stop_v1" or not managed_stop_rules:
+            return failures
+        if parameters.get("execution_model", "research_bar_close") != "mt5_bar_proxy":
+            failures.append("requires_mt5_execution_model")
+        if not rules.get("mt5_parity_validated", False):
+            failures.append("requires_mt5_parity_validation")
+
+        stop_net = float(metrics.get("stop_exit_net_pnl", 0.0))
+        reverse_net = float(metrics.get("reverse_exit_net_pnl", 0.0))
+        total_net = float(metrics.get("net_pnl", 0.0))
+        stop_pf = float(metrics.get("stop_exit_profit_factor", 0.0))
+        stop_win_rate = float(metrics.get("stop_exit_win_rate_pct", 0.0))
+        stop_share = float(metrics.get("stop_exit_pnl_share_pct", 0.0))
+        if (
+            total_net > 0
+            and stop_net > 0
+            and reverse_net < 0
+            and stop_share >= float(rules.get("maximum_managed_stop_pnl_share_pct", 125.0))
+            and stop_pf >= float(rules.get("maximum_managed_stop_profit_factor", 20.0))
+            and stop_win_rate >= float(rules.get("maximum_managed_stop_win_rate_pct", 90.0))
+        ):
+            failures.append("managed_stop_execution_dependency")
+        return failures
+
     def _verdict(self, spec: dict[str, Any], metrics: dict[str, Any], comparison: dict[str, Any] | None) -> str:
         if self._core_gate_failures(spec, metrics):
             return "graveyard"
-        if self._portfolio_gate_failures(spec, metrics):
+        if self._portfolio_gate_failures(spec, metrics) or self._live_execution_gate_failures(spec, metrics):
             return "research_survivor"
         if comparison and comparison["profit_factor_delta"] > 0 and comparison["drawdown_pct_delta"] <= 0.5:
             return "promotion_candidate"
@@ -2586,6 +2771,7 @@ class MutationLabService:
         capital_warnings = self._capital_model_warnings(payload["spec"], metrics)
         core_failures = self._core_gate_failures(payload["spec"], metrics)
         portfolio_failures = self._portfolio_gate_failures(payload["spec"], metrics)
+        live_execution_failures = self._live_execution_gate_failures(payload["spec"], metrics)
         parameters = payload["spec"].get("parameters", {})
         rules = payload["spec"].get("evaluation", {})
         trades = payload["trades"]
@@ -2659,6 +2845,7 @@ class MutationLabService:
                 "",
                 f"- Core failures: `{core_failures or []}`",
                 f"- Portfolio / benchmark failures: `{portfolio_failures or []}`",
+                f"- Live execution review failures: `{live_execution_failures or []}`",
                 f"- Production sizing modes: `{rules.get('production_sizing_modes', [])}`",
                 f"- Benchmark policy: `{rules.get('benchmark_policy', 'outperform_return_or_calmar')}`",
                 "",
@@ -2666,6 +2853,21 @@ class MutationLabService:
                 "",
             ]
         )
+        if live_execution_failures:
+            lines.extend(
+                [
+                    "## Live Execution Review",
+                    "",
+                    "This run is blocked from production-candidate routing until MT5 parity is validated. A StrategyLab run with managed stops may be useful for research, but it is not production-comparable when MT5 live-like execution produces materially different trade count, profit factor, drawdown, or net PnL. Mark `mt5_parity_validated=true` in evaluation only after an exported MT5 backtest is close enough to the StrategyLab result to make optimization decisions actionable.",
+                    "",
+                    f"- Stop-exit Net PnL: `{metrics.get('stop_exit_net_pnl', 0.0)}`",
+                    f"- Stop-exit PF: `{metrics.get('stop_exit_profit_factor', 0.0)}`",
+                    f"- Stop-exit Win Rate %: `{metrics.get('stop_exit_win_rate_pct', 0.0)}`",
+                    f"- Stop-exit PnL Share %: `{metrics.get('stop_exit_pnl_share_pct', 0.0)}`",
+                    f"- Reverse-exit Net PnL: `{metrics.get('reverse_exit_net_pnl', 0.0)}`",
+                    "",
+                ]
+            )
         if capital_warnings:
             lines.extend(["## Capital Model Warning", ""])
             lines.extend([f"- {warning}" for warning in capital_warnings])
@@ -2702,10 +2904,23 @@ class MutationLabService:
                 f"- Short quality gate blocks: `{payload['diagnostics'].get('short_quality_gate_blocks', 0)}`",
                 f"- Breakeven stop moves: `{payload['diagnostics'].get('breakeven_stop_moves', 0)}`",
                 f"- Time risk filter blocks: `{payload['diagnostics'].get('time_risk_filter_blocks', 0)}`",
+                f"- Entry exposure gate blocks: `{payload['diagnostics'].get('entry_exposure_gate_blocks', 0)}`",
+                f"- Entry exposure gate long blocks: `{payload['diagnostics'].get('entry_exposure_gate_long_blocks', 0)}`",
+                f"- Entry exposure gate short blocks: `{payload['diagnostics'].get('entry_exposure_gate_short_blocks', 0)}`",
                 f"- MT5 invalid lot skips: `{payload['diagnostics'].get('mt5_invalid_lot_skips', 0)}`",
                 f"- Stop exits: `{payload['diagnostics']['stop_exits']}`",
                 f"- Reverse exits: `{payload['diagnostics']['reverse_exits']}`",
+                f"- Reverse confirmation candidates: `{payload['diagnostics'].get('reverse_confirmation_candidates', 0)}`",
+                f"- Reverse confirmation exits allowed: `{payload['diagnostics'].get('reverse_confirmation_exits_allowed', 0)}`",
+                f"- Reverse confirmation adverse escapes allowed: `{payload['diagnostics'].get('reverse_confirmation_adverse_escape_allowed', 0)}`",
+                f"- Reverse confirmation suppressed: `{payload['diagnostics'].get('reverse_confirmation_suppressed', 0)}`",
+                f"- Reverse confirmation suppressed Net PnL: `{payload['diagnostics'].get('reverse_confirmation_suppressed_net_pnl', 0.0)}`",
                 f"- Time-decay exits: `{payload['diagnostics'].get('time_decay_exits', 0)}`",
+                f"- Time-decay confirmation candidates: `{payload['diagnostics'].get('time_decay_confirmation_candidates', 0)}`",
+                f"- Time-decay confirmation exits: `{payload['diagnostics'].get('time_decay_confirmation_exits', 0)}`",
+                f"- Time-decay confirmation suppressed: `{payload['diagnostics'].get('time_decay_confirmation_suppressed', 0)}`",
+                f"- Time-decay confirmation suppressed Net PnL: `{payload['diagnostics'].get('time_decay_confirmation_suppressed_net_pnl', 0.0)}`",
+                f"- MT5 stop modify rejects: `{payload['diagnostics'].get('mt5_stop_modify_rejects', 0)}`",
                 f"- Time exits: `{payload['diagnostics']['time_exits']}`",
                 "",
                 "## Side Decomposition",
