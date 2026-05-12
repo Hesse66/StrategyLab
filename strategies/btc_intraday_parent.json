@@ -46,7 +46,8 @@
     "sizing_mode": "fixed_risk_pct",
     "notional_pct": 0.25,
     "risk_pct": 0.005,
-    "max_leverage": 1.0
+    "max_leverage": 1.0,
+    "execution_model": "next_bar_open"
   },
   "evaluation": {
     "minimum_trades": 50,

@@ -14,6 +14,7 @@ const metricsGrid = document.getElementById("metricsGrid");
 const familySelect = document.getElementById("familySelect");
 const versionSelect = document.getElementById("versionSelect");
 const datasetSelect = document.getElementById("datasetSelect");
+const optimizeResearchButton = document.getElementById("optimizeResearchButton");
 const optimizeAllButton = document.getElementById("optimizeAllButton");
 const optimizationStatus = document.getElementById("optimizationStatus");
 const barsInput = document.getElementById("barsInput");
@@ -27,6 +28,7 @@ const promptsList = document.getElementById("promptsList");
 let previewTimer = null;
 const MIN_DATASET_BARS = 40000;
 const FULL_HISTORY_SENTINEL_BARS = 1000000;
+const OPTIMIZATION_POLL_MS = 2500;
 let optimizationInFlight = false;
 
 function setStatus(elementId, message, tone = "") {
@@ -55,6 +57,7 @@ function clearOptimizationStatus(delayMs = 0) {
 
 function setOptimizationBusy(isBusy, activeLever = "") {
   optimizationInFlight = isBusy;
+  optimizeResearchButton.disabled = isBusy;
   optimizeAllButton.disabled = isBusy;
   proposalsTable.querySelectorAll('[data-action="optimize-lever"]').forEach((button) => {
     button.disabled = isBusy && button.dataset.key !== activeLever;
@@ -92,6 +95,10 @@ async function fetchJson(url, options = {}) {
     throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
   }
   return payload;
+}
+
+function wait(ms) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
 function selectedFamilyId() {
@@ -604,6 +611,7 @@ function renderRuns() {
               <div class="table-actions">
                 <button class="ghost" data-action="select-version" data-version="${run.version_id}">Tune</button>
                 ${promoteButton}
+                <button class="ghost" data-action="execution-audit" data-id="${run.run_id}">Audit Execution</button>
                 <button class="danger" data-action="delete-run" data-id="${run.run_id}">Delete</button>
               </div>
             </td>
@@ -953,7 +961,7 @@ async function optimizeLever(lever) {
   }
 }
 
-async function optimizeAll() {
+async function optimizeAll(optimizationMode = "production") {
   const version = currentVersion();
   const datasetId = selectedDatasetId();
   if (!version || !datasetId) {
@@ -964,17 +972,21 @@ async function optimizeAll() {
     return;
   }
   setOptimizationBusy(true);
-  setOptimizationStatus("Running two-pass production optimization. Fixed-quantity and over-levered candidates are not eligible...");
+  const modeLabel = optimizationMode === "research" ? "baseline research" : "production";
+  setOptimizationStatus(`Starting background two-pass ${modeLabel} optimization...`);
   try {
-    const result = await fetchJson(`/api/versions/${version.version_id}/optimize-all`, {
+    const job = await fetchJson(`/api/versions/${version.version_id}/optimize-all/jobs`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         dataset_id: datasetId,
         parameter_overrides: collectOverrides(),
         passes: 2,
+        optimization_mode: optimizationMode,
       }),
     });
+    setOptimizationStatus(`${modeLabel} optimization job ${job.job_id} started. You can keep the page open while it works.`);
+    const result = await waitForOptimizationJob(job.job_id);
     state.workingParameters = { ...currentVersion().spec_json.parameters, ...result.parameter_overrides };
     state.previewResult = result.preview;
     renderSummary();
@@ -982,8 +994,8 @@ async function optimizeAll() {
     renderRuns();
     showOutput(result);
     const tunedCount = Object.keys(result.parameter_overrides).length;
-    setStatus("familyStatus", `Optimization complete. Applied ${tunedCount} tuned values.`, "success");
-    setOptimizationStatus(`Optimization complete. Applied ${tunedCount} tuned values.`, "success");
+    setStatus("familyStatus", `${modeLabel} optimization complete. Applied ${tunedCount} tuned values.`, "success");
+    setOptimizationStatus(`${modeLabel} optimization complete. Applied ${tunedCount} tuned values.`, "success");
     clearOptimizationStatus(9000);
   } catch (error) {
     setStatus("familyStatus", error.message, "error");
@@ -991,6 +1003,33 @@ async function optimizeAll() {
     setOptimizationStatus(`Optimization failed: ${error.message}`, "error");
   } finally {
     setOptimizationBusy(false);
+  }
+}
+
+async function waitForOptimizationJob(jobId) {
+  let connectionFailures = 0;
+  while (true) {
+    await wait(OPTIMIZATION_POLL_MS);
+    let job;
+    try {
+      job = await fetchJson(`/api/optimization-jobs/${jobId}`);
+      connectionFailures = 0;
+    } catch (error) {
+      connectionFailures += 1;
+      setOptimizationStatus(
+        `Optimization job ${jobId} is still being tracked, but the browser lost contact (${connectionFailures}). Retrying...`,
+        "working",
+      );
+      continue;
+    }
+    if (job.status === "completed") {
+      return job.result;
+    }
+    if (job.status === "failed") {
+      throw new Error(job.error || "Optimization job failed.");
+    }
+    const startedAt = job.created_at ? new Date(job.created_at).toLocaleTimeString() : "unknown time";
+    setOptimizationStatus(`Optimization job ${jobId} is ${job.status}. Started ${startedAt}. Waiting for result...`);
   }
 }
 
@@ -1015,7 +1054,7 @@ async function runRobustnessGate() {
     const summary = result.summary || {};
     setStatus(
       "familyStatus",
-      `Robustness: ${summary.label}. Walk-forward ${summary.walk_forward_passed}/${summary.walk_forward_total}; cost stress ${summary.cost_stress_passed}/${summary.cost_stress_total}.`,
+      `Robustness: ${summary.label}. Walk-forward ${summary.walk_forward_passed}/${summary.walk_forward_total}; anchored OOS ${summary.anchored_train_test_passed}/${summary.anchored_train_test_total}; cost stress ${summary.cost_stress_passed}/${summary.cost_stress_total}.`,
       summary.passed ? "success" : "error",
     );
   } catch (error) {
@@ -1202,6 +1241,17 @@ async function handleTableClick(event) {
       await fetchJson(`/api/runs/${button.dataset.id}`, { method: "DELETE" });
       await refreshFamilyDetail();
       showOutput({ status: "deleted", run_id: button.dataset.id });
+      return;
+    }
+    if (action === "execution-audit") {
+      setStatus("familyStatus", "Running execution feasibility audit for the saved run...", "");
+      const result = await fetchJson(`/api/runs/${button.dataset.id}/execution-audit`, { method: "POST" });
+      showOutput(result);
+      setStatus(
+        "familyStatus",
+        `Execution audit ${result.status}. ${result.failures?.length || 0} failures; ${result.warnings?.length || 0} warnings.`,
+        result.passed ? "success" : "error",
+      );
     }
   } catch (error) {
     setStatus("familyStatus", error.message, "error");
@@ -1235,7 +1285,8 @@ document.getElementById("productionDefaultsButton").addEventListener("click", ap
 document.getElementById("robustnessButton").addEventListener("click", runRobustnessGate);
 document.getElementById("resetTuneButton").addEventListener("click", resetTune);
 document.getElementById("saveTuneButton").addEventListener("click", saveTune);
-optimizeAllButton.addEventListener("click", optimizeAll);
+optimizeResearchButton.addEventListener("click", () => optimizeAll("research"));
+optimizeAllButton.addEventListener("click", () => optimizeAll("production"));
 document.getElementById("registerButton").addEventListener("click", registerBaseline);
 familySelect.addEventListener("change", refreshFamilyDetail);
 versionSelect.addEventListener("change", refreshSelectedVersion);

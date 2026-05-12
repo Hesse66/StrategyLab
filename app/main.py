@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime
+from threading import Lock
+from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
@@ -50,12 +54,14 @@ class OptimizeLeverRequest(BaseModel):
     dataset_id: str
     lever: str
     parameter_overrides: dict = Field(default_factory=dict)
+    optimization_mode: str = Field(default="production")
 
 
 class OptimizeAllRequest(BaseModel):
     dataset_id: str
     parameter_overrides: dict = Field(default_factory=dict)
     passes: int = Field(default=2, ge=1, le=5)
+    optimization_mode: str = Field(default="production")
 
 
 class RobustnessRequest(BaseModel):
@@ -76,6 +82,9 @@ repo = Repository()
 data_service = DataService(repo)
 lab = MutationLabService(repo, data_service)
 lab.ensure_seeded()
+optimization_executor = ThreadPoolExecutor(max_workers=1)
+optimization_jobs: dict[str, dict] = {}
+optimization_jobs_lock = Lock()
 
 app = FastAPI(title="Mutation Lab", version="1.0.0")
 app.mount("/ui", StaticFiles(directory=Path(__file__).parent / "ui"), name="ui")
@@ -187,6 +196,7 @@ def optimize_lever(version_id: str, request: OptimizeLeverRequest) -> dict:
         dataset_id=request.dataset_id,
         lever=request.lever,
         parameter_overrides=request.parameter_overrides,
+        optimization_mode=request.optimization_mode,
     )
 
 
@@ -197,7 +207,82 @@ def optimize_all(version_id: str, request: OptimizeAllRequest) -> dict:
         dataset_id=request.dataset_id,
         parameter_overrides=request.parameter_overrides,
         passes=request.passes,
+        optimization_mode=request.optimization_mode,
     )
+
+
+@app.post("/api/versions/{version_id}/optimize-all/jobs")
+def start_optimize_all_job(version_id: str, request: OptimizeAllRequest) -> dict:
+    job_id = f"opt_{uuid4().hex[:12]}"
+    now = datetime.now(UTC).isoformat()
+    with optimization_jobs_lock:
+        optimization_jobs[job_id] = {
+            "job_id": job_id,
+            "status": "queued",
+            "version_id": version_id,
+            "dataset_id": request.dataset_id,
+            "created_at": now,
+            "updated_at": now,
+            "result": None,
+            "error": None,
+        }
+    optimization_executor.submit(
+        _run_optimize_all_job,
+        job_id,
+        version_id,
+        request.dataset_id,
+        request.parameter_overrides,
+        request.passes,
+        request.optimization_mode,
+    )
+    return _optimization_job_snapshot(job_id)
+
+
+@app.get("/api/optimization-jobs/{job_id}")
+def optimization_job_status(job_id: str) -> dict:
+    return _optimization_job_snapshot(job_id)
+
+
+def _run_optimize_all_job(
+    job_id: str,
+    version_id: str,
+    dataset_id: str,
+    parameter_overrides: dict,
+    passes: int,
+    optimization_mode: str,
+) -> None:
+    _update_optimization_job(job_id, status="running")
+    try:
+        result = lab.optimize_all(
+            version_id=version_id,
+            dataset_id=dataset_id,
+            parameter_overrides=parameter_overrides,
+            passes=passes,
+            optimization_mode=optimization_mode,
+        )
+    except HTTPException as exc:
+        _update_optimization_job(job_id, status="failed", error=str(exc.detail))
+    except Exception as exc:  # pragma: no cover - defensive boundary for long-running operator jobs.
+        _update_optimization_job(job_id, status="failed", error=f"{type(exc).__name__}: {exc}")
+    else:
+        _update_optimization_job(job_id, status="completed", result=result)
+
+
+def _update_optimization_job(job_id: str, **updates: object) -> None:
+    with optimization_jobs_lock:
+        job = optimization_jobs.get(job_id)
+        if not job:
+            return
+        job.update(updates)
+        job["updated_at"] = datetime.now(UTC).isoformat()
+
+
+def _optimization_job_snapshot(job_id: str) -> dict:
+    with optimization_jobs_lock:
+        job = optimization_jobs.get(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="Optimization job not found.")
+        return dict(job)
 
 
 @app.post("/api/versions/{version_id}/robustness")
@@ -207,6 +292,11 @@ def robustness_check(version_id: str, request: RobustnessRequest) -> dict:
         dataset_id=request.dataset_id,
         parameter_overrides=request.parameter_overrides,
     )
+
+
+@app.post("/api/runs/{run_id}/execution-audit")
+def execution_feasibility_audit(run_id: str) -> dict:
+    return lab.execution_feasibility_audit(run_id)
 
 
 @app.post("/api/versions/{version_id}/proposals/generate")

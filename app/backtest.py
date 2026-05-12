@@ -31,6 +31,50 @@ class Position:
     max_adverse_excursion: float = 0.0
 
 
+@dataclass(slots=True)
+class Pivot:
+    index: int
+    price: float
+    kind: str
+
+
+@dataclass(slots=True)
+class FairValueGap:
+    direction: int
+    created_index: int
+    top: float
+    bottom: float
+    gap_atr_multiple: float
+
+
+@dataclass(slots=True)
+class AsmSetup:
+    direction: int
+    created_index: int
+    setup_type: str
+    origin_index: int
+    origin_price: float
+    extreme_index: int
+    extreme_price: float
+    range_size: float
+    range_atr_multiple: float
+    entry_price: float
+    stop_price: float
+    target_price: float
+    discount_premium_passed: bool
+    fvg: FairValueGap | None = None
+    retracement_index: int | None = None
+    sweep_index: int | None = None
+    sweep_price: float | None = None
+    internal_confirmation_index: int | None = None
+    internal_confirmation_type: str | None = None
+    context_bias: str | None = None
+    context_bias_event: str | None = None
+    context_bias_index: int | None = None
+    context_bias_ts: datetime | None = None
+    context_bias_age: int | None = None
+
+
 def sma(values: list[float], length: int) -> list[float | None]:
     output: list[float | None] = []
     running = 0.0
@@ -156,11 +200,12 @@ def compute_metrics(
     peak = initial_capital
     trough = initial_capital
     for point in equity_curve:
-        peak = max(peak, point["equity"])
-        trough = min(trough, point["equity"])
-        drawdown = max(drawdown, peak - point["equity"])
-        drawdown_pct = max(drawdown_pct, ((peak - point["equity"]) / peak) * 100 if peak else 0.0)
-        runup = max(runup, point["equity"] - trough)
+        point_equity = equity_point_value(point, initial_capital)
+        peak = max(peak, point_equity)
+        trough = min(trough, point_equity)
+        drawdown = max(drawdown, peak - point_equity)
+        drawdown_pct = max(drawdown_pct, ((peak - point_equity) / peak) * 100 if peak else 0.0)
+        runup = max(runup, point_equity - trough)
     return_pct = (sum(pnls) / initial_capital) * 100
     calmar = return_pct / drawdown_pct if drawdown_pct > 0 else (return_pct if return_pct > 0 else 0.0)
     buy_hold_calmar = (
@@ -224,7 +269,7 @@ def periodic_equity_metrics(equity_curve: list[dict[str, Any]], initial_capital:
         if not ts:
             continue
         day = ts[:10]
-        daily_closes[day] = float(point.get("equity", initial_capital))
+        daily_closes[day] = equity_point_value(point, initial_capital)
     returns: list[float] = []
     previous = initial_capital
     for day in sorted(daily_closes):
@@ -268,9 +313,33 @@ def buy_hold_drawdown_pct(bars: list[Bar], start_index: int) -> float:
     return max_drawdown
 
 
+def equity_point_value(point: dict[str, Any], initial_capital: float) -> float:
+    return float(point.get("equity", point.get("mark_to_market_equity", point.get("realized_equity", initial_capital))))
+
+
+def mark_to_market_equity(realized_equity: float, position: Position | None, close_price: float, commission_pct: float) -> float:
+    if position is None:
+        return realized_equity
+    if position.direction == 1:
+        unrealized = (close_price - position.entry_price) * position.quantity
+    else:
+        unrealized = (position.entry_price - close_price) * position.quantity
+    exit_commission = close_price * position.quantity * commission_pct
+    return realized_equity + unrealized - position.entry_commission - exit_commission
+
+
 def benchmark_warmup_index(parameters: dict[str, Any], bar_count: int) -> int:
     if bar_count <= 1:
         return 0
+    if "pivot_len" in parameters:
+        warmup = max(
+            int(parameters.get("pivot_len", 5)) * 2 + 2,
+            int(parameters.get("atr_len", 14)),
+            int(parameters.get("ema_len", 100)),
+        )
+        return min(warmup, bar_count - 1)
+    if "fast_len" not in parameters:
+        return min(max(int(parameters.get("displacement_atr_len", 14)), int(parameters.get("external_pivot_period", 4)) * 2 + 2), bar_count - 1)
     warmup = max(
         int(parameters["fast_len"]),
         int(parameters["slow_len"]),
@@ -283,12 +352,632 @@ def benchmark_warmup_index(parameters: dict[str, Any], bar_count: int) -> int:
 class BacktestEngine:
     def run(self, spec: dict[str, Any], bars: list[Bar]) -> dict[str, Any]:
         engine_id = spec.get("engine_id")
-        if engine_id != "ma_cross_atr_stop_v1":
-            raise HTTPException(status_code=400, detail=f"Unsupported engine: {engine_id}")
-        return self._run_ma_cross_atr_stop(spec, bars)
+        if engine_id == "ma_cross_atr_stop_v1":
+            return self._run_ma_cross_atr_stop(spec, bars)
+        if engine_id == "bos_demand_pullback_v1":
+            return self._run_bos_demand_pullback(spec, bars)
+        if engine_id == "asm_fib_liquidity_fvg_v1":
+            return self._run_asm_fib_liquidity_fvg(spec, bars)
+        raise HTTPException(status_code=400, detail=f"Unsupported engine: {engine_id}")
+
+    def _run_bos_demand_pullback(self, spec: dict[str, Any], bars: list[Bar]) -> dict[str, Any]:
+        parameters = spec["parameters"]
+        execution_model = str(parameters.get("execution_model", "next_bar_open"))
+        if execution_model not in {"next_bar_open", "research_same_close"}:
+            raise HTTPException(status_code=400, detail="execution_model must be `next_bar_open` or `research_same_close`.")
+        if len(bars) < 20:
+            raise HTTPException(status_code=400, detail="BOS demand pullback engine requires at least 20 bars.")
+        if bars[0].timeframe != spec.get("timeframe", bars[0].timeframe):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Dataset timeframe `{bars[0].timeframe}` does not match strategy timeframe `{spec.get('timeframe')}`.",
+            )
+
+        closes = [bar.close for bar in bars]
+        atr_values = atr(bars, int(parameters.get("atr_len", 14)))
+        ema_values = ema(closes, int(parameters.get("ema_len", 100)))
+        tick_size = float(parameters.get("tick_size", 0.01))
+        slippage = int(parameters.get("slippage_ticks", 0)) * tick_size
+        commission_pct = float(parameters.get("commission_pct", 0.0)) / 100
+        equity = float(parameters.get("initial_capital", 100_000.0))
+        initial_capital = equity
+        pivot_len = int(parameters.get("pivot_len", 5))
+        min_green = int(parameters.get("min_green", 1))
+        atr_mult = float(parameters.get("atr_mult", 2.0))
+        max_zone_age = int(parameters.get("max_zone_age", 20))
+        demand_lookback = int(parameters.get("demand_lookback_bars", 10))
+        tp_r = float(parameters.get("tp_r", 1.5))
+        variant = str(parameters.get("variant", "v0_exact_pine"))
+        bos_break_mode = str(parameters.get("bos_break_mode", "wick"))
+        ema_filter_enabled = bool(parameters.get("ema_filter_enabled", True))
+        if variant == "v0_exact_pine":
+            bos_break_mode = "wick"
+            ema_filter_enabled = True
+        elif variant == "v0_integrity_close_bos":
+            bos_break_mode = "close"
+            ema_filter_enabled = True
+        elif variant == "v0_no_ema_diagnostic":
+            bos_break_mode = "wick"
+            ema_filter_enabled = False
+        elif variant != "custom_controls":
+            raise HTTPException(status_code=400, detail=f"Unsupported BOS demand variant: {variant}")
+        if bos_break_mode not in {"wick", "close"}:
+            raise HTTPException(status_code=400, detail="bos_break_mode must be `wick` or `close`.")
+        same_bar_exit_policy = str(parameters.get("same_bar_exit_policy", "stop_first"))
+
+        diagnostics = {
+            "bars": len(bars),
+            "signals_long": 0,
+            "signals_short": 0,
+            "entries": 0,
+            "stop_exits": 0,
+            "target_exits": 0,
+            "reverse_exits": 0,
+            "time_exits": 0,
+            "same_bar_stop_first_exits": 0,
+            "pending_entry_orders": 0,
+            "pending_order_fills": 0,
+            "dropped_pending_orders_eod": 0,
+            "execution_model": execution_model,
+            "confirmed_pivot_highs": 0,
+            "bos_events": 0,
+            "strong_impulses": 0,
+            "demand_zones_created": 0,
+            "zone_pullbacks": 0,
+            "blocked_no_zone": 0,
+            "blocked_no_bullish_candle": 0,
+            "blocked_ema_filter": 0,
+            "wick_bos_events": 0,
+            "close_bos_events": 0,
+            "ema_filter_enabled": int(ema_filter_enabled),
+        }
+        position: Position | None = None
+        pending_order: dict[str, Any] | None = None
+        trades: list[dict[str, Any]] = []
+        equity_curve: list[dict[str, Any]] = []
+        last_high: float | None = None
+        high_broken = False
+        green_count = 0
+        first_green_open: float | None = None
+        zone_top: float | None = None
+        zone_bottom: float | None = None
+        zone_bar: int | None = None
+
+        def append_equity_point(current_bar: Bar) -> None:
+            mtm = mark_to_market_equity(equity, position, current_bar.close, commission_pct)
+            equity_curve.append(
+                {
+                    "ts": current_bar.ts.isoformat(),
+                    "equity": round(mtm, 2),
+                    "mark_to_market_equity": round(mtm, 2),
+                    "realized_equity": round(equity, 2),
+                }
+            )
+
+        def open_position(entry_bar: Bar, entry_index: int, signal: dict[str, Any]) -> Position:
+            reference = entry_bar.close if execution_model == "research_same_close" else entry_bar.open
+            fill = reference + slippage
+            stop = float(signal["zone_bottom"])
+            risk = max(fill - stop, tick_size)
+            target = fill + (risk * tp_r)
+            quantity = self._position_quantity(parameters, equity, fill, stop)
+            entry_features = {
+                "side": "long",
+                "source_parent": "bos_demand_pullback",
+                "variant": variant,
+                "bos_break_mode": bos_break_mode,
+                "ema_filter_enabled": ema_filter_enabled,
+                "pivot_len": pivot_len,
+                "atr_len": int(parameters.get("atr_len", 14)),
+                "atr_mult": atr_mult,
+                "min_green": min_green,
+                "max_zone_age": max_zone_age,
+                "demand_lookback_bars": demand_lookback,
+                "tp_r": tp_r,
+                "zone_top": round(float(signal["zone_top"]), 6),
+                "zone_bottom": round(stop, 6),
+                "zone_age": entry_index - int(signal["zone_bar"]),
+                "last_high": round(float(signal["last_high"]), 6),
+                "impulse_range": round(float(signal["impulse_range"]), 6),
+                "impulse_atr_multiple": round(float(signal["impulse_range"]) / float(signal["atr_value"]), 6)
+                if signal["atr_value"]
+                else 0.0,
+                "bullish_pattern": signal["bullish_pattern"],
+                "ema_value": round(float(signal["ema_value"] or 0.0), 6),
+                "target_price": round(target, 6),
+                "same_bar_exit_policy": same_bar_exit_policy,
+                "execution_model": execution_model,
+                "signal_ts": bars[int(signal["signal_index"])].ts.isoformat(),
+                "fill_ts": entry_bar.ts.isoformat(),
+            }
+            return Position(
+                direction=1,
+                entry_index=entry_index,
+                entry_ts=entry_bar.ts,
+                entry_price=fill,
+                stop_price=stop,
+                quantity=quantity,
+                entry_commission=fill * quantity * commission_pct,
+                entry_equity=equity,
+                entry_notional=fill * quantity,
+                initial_risk_per_unit=abs(fill - stop),
+                stop_initialized_on_index=entry_index if execution_model == "research_same_close" else entry_index - 1,
+                entry_features=entry_features,
+            )
+
+        for index, bar in enumerate(bars):
+            current_atr = atr_values[index]
+            if pending_order and execution_model == "next_bar_open" and position is None:
+                position = open_position(bar, index, pending_order)
+                diagnostics["entries"] += 1
+                diagnostics["pending_order_fills"] += 1
+                pending_order = None
+
+            if position:
+                self._update_excursion(position, bar)
+                target = float(position.entry_features["target_price"])
+                stop_hit = index > position.stop_initialized_on_index and bar.low <= position.stop_price
+                target_hit = index > position.stop_initialized_on_index and bar.high >= target
+                if stop_hit and target_hit:
+                    if same_bar_exit_policy == "target_first":
+                        trade = self._close_trade(position, bar, index, max(target - slippage, 0.0), "target", commission_pct, equity)
+                        diagnostics["target_exits"] += 1
+                    else:
+                        trade = self._close_trade(position, bar, index, max(position.stop_price - slippage, 0.0), "stop", commission_pct, equity)
+                        diagnostics["same_bar_stop_first_exits"] += 1
+                        diagnostics["stop_exits"] += 1
+                    trades.append(trade)
+                    equity += trade["net_pnl"]
+                    position = None
+                elif stop_hit:
+                    trade = self._close_trade(position, bar, index, max(position.stop_price - slippage, 0.0), "stop", commission_pct, equity)
+                    trades.append(trade)
+                    equity += trade["net_pnl"]
+                    diagnostics["stop_exits"] += 1
+                    position = None
+                elif target_hit:
+                    trade = self._close_trade(position, bar, index, max(target - slippage, 0.0), "target", commission_pct, equity)
+                    trades.append(trade)
+                    equity += trade["net_pnl"]
+                    diagnostics["target_exits"] += 1
+                    position = None
+
+            confirmed = self._confirmed_pivot(bars, index, pivot_len)
+            if confirmed and confirmed.kind == "high":
+                last_high = confirmed.price
+                high_broken = False
+                diagnostics["confirmed_pivot_highs"] += 1
+
+            if bar.close > bar.open:
+                if green_count == 0:
+                    first_green_open = bar.open
+                green_count += 1
+            else:
+                green_count = 0
+                first_green_open = None
+
+            if index == 0 or current_atr is None or ema_values[index] is None:
+                append_equity_point(bar)
+                continue
+
+            wick_bos = last_high is not None and not high_broken and bar.high > last_high and bars[index - 1].close <= last_high
+            close_bos = last_high is not None and not high_broken and bar.close > last_high and bars[index - 1].close <= last_high
+            bos = close_bos if bos_break_mode == "close" else wick_bos
+            if bos:
+                high_broken = True
+                diagnostics["bos_events"] += 1
+                if wick_bos:
+                    diagnostics["wick_bos_events"] += 1
+                if close_bos:
+                    diagnostics["close_bos_events"] += 1
+
+            impulse_range = (bar.close - first_green_open) if first_green_open is not None else 0.0
+            strong_impulse = green_count >= min_green and impulse_range >= atr_mult * float(current_atr) and bos
+            if strong_impulse:
+                diagnostics["strong_impulses"] += 1
+                for offset in range(1, min(demand_lookback, index) + 1):
+                    prior = bars[index - offset]
+                    if prior.close < prior.open:
+                        zone_top = prior.high
+                        zone_bottom = prior.low
+                        zone_bar = index
+                        diagnostics["demand_zones_created"] += 1
+                        break
+
+            zone_valid = zone_top is not None and zone_bottom is not None and zone_bar is not None and index > zone_bar and index - zone_bar <= max_zone_age
+            pullback_into_zone = zone_valid and bar.low <= zone_top and bar.low >= zone_bottom and bar.close >= zone_top
+            pattern = self._bos_bullish_pattern(bars, index)
+            trend_ok = not ema_filter_enabled or bar.close > float(ema_values[index])
+            if pullback_into_zone:
+                diagnostics["zone_pullbacks"] += 1
+            elif zone_top is None:
+                diagnostics["blocked_no_zone"] += 1
+            if pullback_into_zone and not pattern:
+                diagnostics["blocked_no_bullish_candle"] += 1
+            if pullback_into_zone and pattern and not trend_ok:
+                diagnostics["blocked_ema_filter"] += 1
+
+            if pullback_into_zone and pattern and trend_ok and position is None and pending_order is None:
+                signal = {
+                    "signal_index": index,
+                    "zone_top": zone_top,
+                    "zone_bottom": zone_bottom,
+                    "zone_bar": zone_bar,
+                    "last_high": last_high or 0.0,
+                    "impulse_range": impulse_range,
+                    "atr_value": float(current_atr),
+                    "bullish_pattern": pattern,
+                    "ema_value": ema_values[index],
+                }
+                diagnostics["signals_long"] += 1
+                if execution_model == "next_bar_open":
+                    pending_order = signal
+                    diagnostics["pending_entry_orders"] += 1
+                else:
+                    position = open_position(bar, index, signal)
+                    diagnostics["entries"] += 1
+                    self._update_excursion(position, bar)
+
+            append_equity_point(bar)
+
+        if pending_order:
+            diagnostics["dropped_pending_orders_eod"] += 1
+        if position:
+            last_bar = bars[-1]
+            trade = self._close_trade(position, last_bar, len(bars) - 1, max(last_bar.close - slippage, 0.0), "time", commission_pct, equity)
+            trades.append(trade)
+            equity += trade["net_pnl"]
+            diagnostics["time_exits"] += 1
+            equity_curve[-1]["equity"] = round(equity, 2)
+            equity_curve[-1]["mark_to_market_equity"] = round(equity, 2)
+            equity_curve[-1]["realized_equity"] = round(equity, 2)
+
+        warmup_index = benchmark_warmup_index(parameters, len(bars))
+        buy_hold_start = bars[warmup_index].close
+        buy_hold_end = bars[-1].close
+        buy_hold_return_pct = ((buy_hold_end - buy_hold_start) / buy_hold_start) * 100 if buy_hold_start else 0.0
+        buy_hold_return = initial_capital * (buy_hold_return_pct / 100)
+        metrics = compute_metrics(
+            initial_capital,
+            trades,
+            equity_curve,
+            buy_hold_return,
+            buy_hold_return_pct,
+            buy_hold_start,
+            buy_hold_end,
+            buy_hold_drawdown_pct(bars, warmup_index),
+        )
+        return {"metrics": metrics, "trades": trades, "equity_curve": equity_curve, "diagnostics": diagnostics}
+
+    def _run_asm_fib_liquidity_fvg(self, spec: dict[str, Any], bars: list[Bar]) -> dict[str, Any]:
+        parameters, profile_override_applied = self._resolve_asm_parameters(spec["parameters"])
+        execution_model = str(parameters.get("execution_model", "next_bar_open"))
+        if execution_model not in {"next_bar_open", "research_same_close"}:
+            raise HTTPException(status_code=400, detail="execution_model must be `next_bar_open` or `research_same_close`.")
+        if len(bars) < 10:
+            raise HTTPException(status_code=400, detail="ASM engine requires at least 10 bars.")
+        dataset_timeframe = bars[0].timeframe if bars else parameters.get("execution_timeframe", spec.get("timeframe", ""))
+        if dataset_timeframe != parameters.get("execution_timeframe", spec.get("timeframe")):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Dataset timeframe `{dataset_timeframe}` does not match ASM execution timeframe `{parameters.get('execution_timeframe')}`.",
+            )
+        context_bars = (
+            self._resample_bars(bars, str(parameters.get("execution_timeframe", dataset_timeframe)), str(parameters.get("context_timeframe", dataset_timeframe)))
+            if parameters.get("resample_context_from_execution_bars", False)
+            else []
+        )
+        higher_context_bars = (
+            self._resample_bars(
+                bars,
+                str(parameters.get("execution_timeframe", dataset_timeframe)),
+                str(parameters.get("higher_context_timeframe", parameters.get("context_timeframe", dataset_timeframe))),
+            )
+            if parameters.get("resample_context_from_execution_bars", False)
+            else []
+        )
+        context_bias_by_index = self._context_bias_series(parameters, bars, context_bars)
+        atr_len = int(parameters.get("displacement_atr_len", 14))
+        atr_values = atr(bars, atr_len)
+        pivot_period = int(parameters.get("external_pivot_period", 4))
+        internal_pivot_period = int(parameters.get("internal_pivot_period", 2))
+        warmup = max(atr_len, (pivot_period * 2) + 2, (internal_pivot_period * 2) + 2)
+        tick_size = float(parameters.get("tick_size", 0.01))
+        slippage = int(parameters.get("slippage_ticks", 0)) * tick_size
+        commission_pct = float(parameters.get("commission_pct", 0.0)) / 100
+        initial_capital = float(parameters.get("initial_capital", 100_000.0))
+        equity = initial_capital
+        position: Position | None = None
+        active_setup: AsmSetup | None = None
+        pending_setup: AsmSetup | None = None
+        latest_high: Pivot | None = None
+        latest_low: Pivot | None = None
+        latest_internal_high: Pivot | None = None
+        latest_internal_low: Pivot | None = None
+        active_fvgs: list[FairValueGap] = []
+        trades: list[dict[str, Any]] = []
+        equity_curve: list[dict[str, Any]] = []
+        diagnostics = {
+            "bars": len(bars),
+            "active_timeframe_profile": parameters.get("active_timeframe_profile", "none"),
+            "context_bars_built": len(context_bars),
+            "higher_context_bars_built": len(higher_context_bars),
+            "context_bias_bullish_events": 0,
+            "context_bias_bearish_events": 0,
+            "blocked_no_context_bias": 0,
+            "blocked_context_bias_mismatch": 0,
+            "blocked_incomplete_context_bar": 0,
+            "profile_override_applied": int(profile_override_applied),
+            "dataset_timeframe_mismatch": 0,
+            "setups_bullish": 0,
+            "setups_bearish": 0,
+            "external_setups_bullish": 0,
+            "external_setups_bearish": 0,
+            "internal_confirmations_bullish": 0,
+            "internal_confirmations_bearish": 0,
+            "setups_expired": 0,
+            "signals_long": 0,
+            "signals_short": 0,
+            "entries": 0,
+            "entries_after_internal_confirmation": 0,
+            "blocked_no_fvg": 0,
+            "blocked_no_sweep": 0,
+            "blocked_no_internal_confirmation": 0,
+            "blocked_internal_against_external_bias": 0,
+            "blocked_not_discount_or_premium": 0,
+            "blocked_time_risk": 0,
+            "stop_exits": 0,
+            "reverse_exits": 0,
+            "time_decay_exits": 0,
+            "breakeven_stop_moves": 0,
+            "short_quality_gate_blocks": 0,
+            "hybrid_time_decay_triage_exits": 0,
+            "hybrid_reverse_exit_blocks": 0,
+            "target_exits": 0,
+            "time_stop_exits": 0,
+            "time_exits": 0,
+            "same_bar_stop_first_exits": 0,
+            "execution_model": execution_model,
+            "pending_entry_orders": 0,
+            "pending_order_fills": 0,
+            "pending_orders_expired": 0,
+        }
+        last_context_bias_key: tuple[str | None, int | None] = (None, None)
+
+        def append_equity_point(current_bar: Bar) -> None:
+            mtm = mark_to_market_equity(equity, position, current_bar.close, commission_pct)
+            equity_curve.append(
+                {
+                    "ts": current_bar.ts.isoformat(),
+                    "equity": round(mtm, 2),
+                    "mark_to_market_equity": round(mtm, 2),
+                    "realized_equity": round(equity, 2),
+                }
+            )
+
+        def open_asm_position(setup: AsmSetup, fill: float, entry_bar: Bar, entry_index: int) -> Position:
+            quantity = self._position_quantity(parameters, equity, fill, setup.stop_price)
+            entry_features = self._asm_entry_features(parameters, setup, entry_bar, entry_index)
+            entry_features["execution_model"] = execution_model
+            entry_features["signal_ts"] = bars[setup.internal_confirmation_index or setup.created_index].ts.isoformat()
+            entry_features["fill_ts"] = entry_bar.ts.isoformat()
+            return Position(
+                direction=setup.direction,
+                entry_index=entry_index,
+                entry_ts=entry_bar.ts,
+                entry_price=fill,
+                stop_price=setup.stop_price,
+                quantity=quantity,
+                entry_commission=fill * quantity * commission_pct,
+                entry_equity=equity,
+                entry_notional=fill * quantity,
+                initial_risk_per_unit=abs(fill - setup.stop_price),
+                stop_initialized_on_index=entry_index - 1 if execution_model == "next_bar_open" else entry_index,
+                entry_features=entry_features,
+            )
+
+        for index, bar in enumerate(bars):
+            current_atr = atr_values[index]
+            self._register_asm_fvg(parameters, bars, atr_values, active_fvgs, index)
+            self._expire_asm_fvgs(parameters, bars, active_fvgs, index)
+
+            confirmed_pivot = self._confirmed_pivot(bars, index, pivot_period)
+            if confirmed_pivot:
+                if confirmed_pivot.kind == "high":
+                    latest_high = confirmed_pivot
+                else:
+                    latest_low = confirmed_pivot
+            confirmed_internal_pivot = self._confirmed_pivot(bars, index, internal_pivot_period)
+            if confirmed_internal_pivot:
+                if confirmed_internal_pivot.kind == "high":
+                    latest_internal_high = confirmed_internal_pivot
+                else:
+                    latest_internal_low = confirmed_internal_pivot
+
+            if not position and pending_setup and execution_model == "next_bar_open":
+                if index - pending_setup.created_index > int(parameters.get("max_setup_age_bars", 96)):
+                    diagnostics["pending_orders_expired"] += 1
+                    pending_setup = None
+                elif parameters.get("entry_order_type", "limit_touch") == "limit_touch":
+                    if self._asm_entry_touched(bar, pending_setup.entry_price):
+                        fill = pending_setup.entry_price + slippage if pending_setup.direction == 1 else max(pending_setup.entry_price - slippage, 0.0)
+                        position = open_asm_position(pending_setup, fill, bar, index)
+                        diagnostics["entries"] += 1
+                        diagnostics["pending_order_fills"] += 1
+                        if pending_setup.internal_confirmation_index is not None:
+                            diagnostics["entries_after_internal_confirmation"] += 1
+                        pending_setup = None
+                else:
+                    fill = bar.open + slippage if pending_setup.direction == 1 else max(bar.open - slippage, 0.0)
+                    position = open_asm_position(pending_setup, fill, bar, index)
+                    diagnostics["entries"] += 1
+                    diagnostics["pending_order_fills"] += 1
+                    if pending_setup.internal_confirmation_index is not None:
+                        diagnostics["entries_after_internal_confirmation"] += 1
+                    pending_setup = None
+
+            if position:
+                self._update_excursion(position, bar)
+                exit_result = self._asm_exit_position(
+                    position=position,
+                    bar=bar,
+                    index=index,
+                    slippage=slippage,
+                    commission_pct=commission_pct,
+                    equity=equity,
+                    diagnostics=diagnostics,
+                    allow_same_bar=True,
+                )
+                if exit_result:
+                    trade, reason = exit_result
+                    trades.append(trade)
+                    equity += trade["net_pnl"]
+                    diagnostics[reason] += 1
+                    position = None
+
+            if active_setup and index - active_setup.created_index > int(parameters.get("max_setup_age_bars", 96)):
+                diagnostics["setups_expired"] += 1
+                active_setup = None
+
+            if not position and pending_setup is None and active_setup is None and index >= warmup and current_atr:
+                context_bias = context_bias_by_index[index]
+                context_bias_key = (context_bias.get("bias"), context_bias.get("bar_index"))
+                if context_bias_key != last_context_bias_key:
+                    if context_bias.get("bias") == "bullish":
+                        diagnostics["context_bias_bullish_events"] += 1
+                    elif context_bias.get("bias") == "bearish":
+                        diagnostics["context_bias_bearish_events"] += 1
+                    last_context_bias_key = context_bias_key
+                new_setup = self._maybe_create_asm_setup(
+                    parameters=parameters,
+                    bars=bars,
+                    atr_value=float(current_atr),
+                    active_fvgs=active_fvgs,
+                    latest_high=latest_high,
+                    latest_low=latest_low,
+                    index=index,
+                    context_bias=context_bias,
+                )
+                if new_setup:
+                    active_setup = new_setup
+                    if new_setup.direction == 1:
+                        diagnostics["setups_bullish"] += 1
+                        diagnostics["external_setups_bullish"] += 1
+                    else:
+                        diagnostics["setups_bearish"] += 1
+                        diagnostics["external_setups_bearish"] += 1
+
+            if not position and active_setup:
+                self._update_asm_setup_retracement(bars, active_setup, index)
+                self._update_asm_setup_sweep(parameters, bars, active_setup, index)
+                confirmation = self._asm_internal_confirmation(
+                    parameters=parameters,
+                    bars=bars,
+                    setup=active_setup,
+                    latest_internal_high=latest_internal_high,
+                    latest_internal_low=latest_internal_low,
+                    index=index,
+                )
+                if confirmation:
+                    active_setup.internal_confirmation_index = index
+                    active_setup.internal_confirmation_type = confirmation
+                    if active_setup.direction == 1:
+                        diagnostics["internal_confirmations_bullish"] += 1
+                    else:
+                        diagnostics["internal_confirmations_bearish"] += 1
+                block_reason = self._asm_setup_block_reason(parameters, bars, active_setup, active_fvgs, index)
+                if block_reason:
+                    diagnostics[block_reason] += 1
+                elif self._asm_entry_ready(parameters, active_setup):
+                    if active_setup.direction == 1:
+                        diagnostics["signals_long"] += 1
+                    else:
+                        diagnostics["signals_short"] += 1
+                    if execution_model == "next_bar_open":
+                        pending_setup = active_setup
+                        diagnostics["pending_entry_orders"] += 1
+                        active_setup = None
+                    else:
+                        entry_reference = bar.close if self._asm_internal_required(parameters) else active_setup.entry_price
+                        fill = entry_reference + slippage if active_setup.direction == 1 else max(entry_reference - slippage, 0.0)
+                        position = open_asm_position(active_setup, fill, bar, index)
+                        diagnostics["entries"] += 1
+                        if active_setup.internal_confirmation_index is not None:
+                            diagnostics["entries_after_internal_confirmation"] += 1
+                        active_setup = None
+                        self._update_excursion(position, bar)
+                        exit_result = self._asm_exit_position(
+                            position=position,
+                            bar=bar,
+                            index=index,
+                            slippage=slippage,
+                            commission_pct=commission_pct,
+                            equity=equity,
+                            diagnostics=diagnostics,
+                            allow_same_bar=True,
+                        )
+                        if exit_result:
+                            trade, reason = exit_result
+                            trades.append(trade)
+                            equity += trade["net_pnl"]
+                            diagnostics[reason] += 1
+                            position = None
+
+            append_equity_point(bar)
+
+        if position:
+            last_bar = bars[-1]
+            exit_price = max(last_bar.close - slippage, 0.0) if position.direction == 1 else last_bar.close + slippage
+            trade = self._close_trade(
+                position=position,
+                bar=last_bar,
+                index=len(bars) - 1,
+                price=exit_price,
+                reason="time_exit",
+                commission_pct=commission_pct,
+                equity_before=equity,
+            )
+            trades.append(trade)
+            equity += trade["net_pnl"]
+            diagnostics["time_exits"] += 1
+            equity_curve[-1] = {
+                "ts": last_bar.ts.isoformat(),
+                "equity": round(equity, 2),
+                "mark_to_market_equity": round(equity, 2),
+                "realized_equity": round(equity, 2),
+            }
+
+        buy_hold_start_price = bars[warmup].close if len(bars) > warmup else bars[0].close
+        buy_hold_end_price = bars[-1].close
+        buy_hold_return_pct = (
+            ((buy_hold_end_price - buy_hold_start_price) / buy_hold_start_price) * 100
+            if buy_hold_start_price
+            else 0.0
+        )
+        buy_hold_return = initial_capital * (buy_hold_return_pct / 100)
+        metrics = compute_metrics(
+            initial_capital=initial_capital,
+            trades=trades,
+            equity_curve=equity_curve,
+            buy_hold_return=buy_hold_return,
+            buy_hold_return_pct=buy_hold_return_pct,
+            buy_hold_start_price=buy_hold_start_price,
+            buy_hold_end_price=buy_hold_end_price,
+            buy_hold_max_drawdown_pct=buy_hold_drawdown_pct(bars, warmup),
+        )
+        return {
+            "metrics": metrics,
+            "trades": trades,
+            "equity_curve": equity_curve,
+            "diagnostics": diagnostics,
+            "resolved_parameters": parameters,
+        }
 
     def _run_ma_cross_atr_stop(self, spec: dict[str, Any], bars: list[Bar]) -> dict[str, Any]:
         parameters = spec["parameters"]
+        execution_model = str(parameters.get("execution_model", "next_bar_open"))
+        if execution_model not in {"next_bar_open", "research_same_close"}:
+            raise HTTPException(status_code=400, detail="execution_model must be `next_bar_open` or `research_same_close`.")
         closes = [bar.close for bar in bars]
         ma_kind = parameters.get("ma_kind", "sma").lower()
         ma_fn = sma if ma_kind == "sma" else ema
@@ -333,6 +1022,11 @@ class BacktestEngine:
             "hybrid_reverse_exit_blocks": 0,
             "time_decay_exits": 0,
             "time_exits": 0,
+            "execution_model": execution_model,
+            "pending_entry_orders": 0,
+            "pending_reverse_orders": 0,
+            "pending_order_fills": 0,
+            "dropped_pending_orders_eod": 0,
         }
         warmup = max(
             int(parameters["fast_len"]),
@@ -340,11 +1034,97 @@ class BacktestEngine:
             int(parameters["atr_len"]),
             int(parameters["noise_lookback"]) + 1,
         )
+        pending_order: dict[str, Any] | None = None
+
+        def append_equity_point(current_bar: Bar) -> None:
+            mtm = mark_to_market_equity(equity, position, current_bar.close, commission_pct)
+            equity_curve.append(
+                {
+                    "ts": current_bar.ts.isoformat(),
+                    "equity": round(mtm, 2),
+                    "mark_to_market_equity": round(mtm, 2),
+                    "realized_equity": round(equity, 2),
+                }
+            )
+
+        def open_position(
+            direction: int,
+            entry_bar: Bar,
+            entry_index: int,
+            signal_index: int,
+            signal_atr: float,
+            signal_cross_count: int,
+        ) -> Position:
+            if direction == 1:
+                fill = entry_bar.close + slippage if execution_model == "research_same_close" else entry_bar.open + slippage
+                stop = fill - (signal_atr * float(parameters["stop_mult"]))
+            else:
+                reference = entry_bar.close if execution_model == "research_same_close" else entry_bar.open
+                fill = max(reference - slippage, 0.0)
+                stop = fill + (signal_atr * float(parameters["stop_mult"]))
+            quantity = self._position_quantity(parameters, equity, fill, stop)
+            entry_features = self._entry_features(
+                bars=bars,
+                index=signal_index,
+                direction=direction,
+                fast=fast,
+                slow=slow,
+                atr_values=atr_values,
+                cross_count=signal_cross_count,
+                stop_price=stop,
+                entry_price=fill,
+            )
+            entry_features["execution_model"] = execution_model
+            entry_features["signal_ts"] = bars[signal_index].ts.isoformat()
+            entry_features["fill_ts"] = entry_bar.ts.isoformat()
+            return Position(
+                direction=direction,
+                entry_index=entry_index,
+                entry_ts=entry_bar.ts,
+                entry_price=fill,
+                stop_price=stop,
+                quantity=quantity,
+                entry_commission=fill * quantity * commission_pct,
+                entry_equity=equity,
+                entry_notional=fill * quantity,
+                initial_risk_per_unit=abs(fill - stop),
+                stop_initialized_on_index=entry_index if execution_model == "research_same_close" else entry_index - 1,
+                entry_features=entry_features,
+            )
 
         for index, bar in enumerate(bars):
             if index < warmup or fast[index] is None or slow[index] is None or atr_values[index] is None:
-                equity_curve.append({"ts": bar.ts.isoformat(), "equity": round(equity, 2)})
+                append_equity_point(bar)
                 continue
+
+            if pending_order and execution_model == "next_bar_open":
+                if pending_order.get("close_existing") and position:
+                    exit_price = max(bar.open - slippage, 0.0) if position.direction == 1 else bar.open + slippage
+                    trade = self._close_trade(
+                        position=position,
+                        bar=bar,
+                        index=index,
+                        price=exit_price,
+                        reason="reverse",
+                        commission_pct=commission_pct,
+                        equity_before=equity,
+                    )
+                    trades.append(trade)
+                    equity += trade["net_pnl"]
+                    diagnostics["reverse_exits"] += 1
+                    position = None
+                if position is None and pending_order.get("direction"):
+                    position = open_position(
+                        direction=int(pending_order["direction"]),
+                        entry_bar=bar,
+                        entry_index=index,
+                        signal_index=int(pending_order["signal_index"]),
+                        signal_atr=float(pending_order["atr_value"]),
+                        signal_cross_count=int(pending_order.get("cross_count", 0)),
+                    )
+                    diagnostics["entries"] += 1
+                    diagnostics["pending_order_fills"] += 1
+                pending_order = None
 
             if position:
                 self._update_excursion(position, bar)
@@ -528,7 +1308,31 @@ class BacktestEngine:
                     entry_long_signal = False
                     entry_short_signal = False
 
-            if position and position.direction == 1 and short_signal and not reverse_exit_blocked:
+            if execution_model == "next_bar_open" and position and not reverse_exit_blocked:
+                if position.direction == 1 and short_signal:
+                    pending_order = {
+                        "direction": -1,
+                        "close_existing": True,
+                        "signal_index": index,
+                        "atr_value": float(atr_values[index]),
+                        "cross_count": cross_count,
+                    }
+                    diagnostics["pending_reverse_orders"] += 1
+                    entry_long_signal = False
+                    entry_short_signal = False
+                elif position.direction == -1 and long_signal:
+                    pending_order = {
+                        "direction": 1,
+                        "close_existing": True,
+                        "signal_index": index,
+                        "atr_value": float(atr_values[index]),
+                        "cross_count": cross_count,
+                    }
+                    diagnostics["pending_reverse_orders"] += 1
+                    entry_long_signal = False
+                    entry_short_signal = False
+
+            if execution_model == "research_same_close" and position and position.direction == 1 and short_signal and not reverse_exit_blocked:
                 trade = self._close_trade(
                     position=position,
                     bar=bar,
@@ -542,7 +1346,7 @@ class BacktestEngine:
                 equity += trade["net_pnl"]
                 diagnostics["reverse_exits"] += 1
                 position = None
-            elif position and position.direction == -1 and long_signal and not reverse_exit_blocked:
+            elif execution_model == "research_same_close" and position and position.direction == -1 and long_signal and not reverse_exit_blocked:
                 trade = self._close_trade(
                     position=position,
                     bar=bar,
@@ -559,74 +1363,36 @@ class BacktestEngine:
 
             if position is None:
                 if entry_long_signal:
-                    fill = entry_at_close + slippage
-                    stop = fill - (float(atr_values[index]) * float(parameters["stop_mult"]))
-                    quantity = self._position_quantity(parameters, equity, fill, stop)
-                    commission = fill * quantity * commission_pct
-                    entry_notional = fill * quantity
-                    initial_risk_per_unit = abs(fill - stop)
-                    entry_features = self._entry_features(
-                        bars=bars,
-                        index=index,
-                        direction=1,
-                        fast=fast,
-                        slow=slow,
-                        atr_values=atr_values,
-                        cross_count=cross_count,
-                        stop_price=stop,
-                        entry_price=fill,
-                    )
-                    position = Position(
-                        direction=1,
-                        entry_index=index,
-                        entry_ts=bar.ts,
-                        entry_price=fill,
-                        stop_price=stop,
-                        quantity=quantity,
-                        entry_commission=commission,
-                        entry_equity=equity,
-                        entry_notional=entry_notional,
-                        initial_risk_per_unit=initial_risk_per_unit,
-                        stop_initialized_on_index=index,
-                        entry_features=entry_features,
-                    )
-                    diagnostics["entries"] += 1
+                    if execution_model == "next_bar_open":
+                        pending_order = {
+                            "direction": 1,
+                            "close_existing": False,
+                            "signal_index": index,
+                            "atr_value": float(atr_values[index]),
+                            "cross_count": cross_count,
+                        }
+                        diagnostics["pending_entry_orders"] += 1
+                    else:
+                        position = open_position(1, bar, index, index, float(atr_values[index]), cross_count)
+                        diagnostics["entries"] += 1
                 elif entry_short_signal:
-                    fill = max(entry_at_close - slippage, 0.0)
-                    stop = fill + (float(atr_values[index]) * float(parameters["stop_mult"]))
-                    quantity = self._position_quantity(parameters, equity, fill, stop)
-                    commission = fill * quantity * commission_pct
-                    entry_notional = fill * quantity
-                    initial_risk_per_unit = abs(fill - stop)
-                    entry_features = self._entry_features(
-                        bars=bars,
-                        index=index,
-                        direction=-1,
-                        fast=fast,
-                        slow=slow,
-                        atr_values=atr_values,
-                        cross_count=cross_count,
-                        stop_price=stop,
-                        entry_price=fill,
-                    )
-                    position = Position(
-                        direction=-1,
-                        entry_index=index,
-                        entry_ts=bar.ts,
-                        entry_price=fill,
-                        stop_price=stop,
-                        quantity=quantity,
-                        entry_commission=commission,
-                        entry_equity=equity,
-                        entry_notional=entry_notional,
-                        initial_risk_per_unit=initial_risk_per_unit,
-                        stop_initialized_on_index=index,
-                        entry_features=entry_features,
-                    )
-                    diagnostics["entries"] += 1
+                    if execution_model == "next_bar_open":
+                        pending_order = {
+                            "direction": -1,
+                            "close_existing": False,
+                            "signal_index": index,
+                            "atr_value": float(atr_values[index]),
+                            "cross_count": cross_count,
+                        }
+                        diagnostics["pending_entry_orders"] += 1
+                    else:
+                        position = open_position(-1, bar, index, index, float(atr_values[index]), cross_count)
+                        diagnostics["entries"] += 1
 
-            equity_curve.append({"ts": bar.ts.isoformat(), "equity": round(equity, 2)})
+            append_equity_point(bar)
 
+        if pending_order:
+            diagnostics["dropped_pending_orders_eod"] += 1
         if position:
             last_bar = bars[-1]
             exit_price = max(last_bar.close - slippage, 0.0) if position.direction == 1 else last_bar.close + slippage
@@ -642,7 +1408,12 @@ class BacktestEngine:
             trades.append(trade)
             equity += trade["net_pnl"]
             diagnostics["time_exits"] += 1
-            equity_curve[-1] = {"ts": last_bar.ts.isoformat(), "equity": round(equity, 2)}
+            equity_curve[-1] = {
+                "ts": last_bar.ts.isoformat(),
+                "equity": round(equity, 2),
+                "mark_to_market_equity": round(equity, 2),
+                "realized_equity": round(equity, 2),
+            }
 
         initial_capital = float(parameters.get("initial_capital", 100_000.0))
         buy_hold_start_price = bars[warmup].close if len(bars) > warmup else bars[0].close
@@ -669,6 +1440,612 @@ class BacktestEngine:
             "trades": trades,
             "equity_curve": equity_curve,
             "diagnostics": diagnostics,
+        }
+
+    @staticmethod
+    def _bos_bullish_pattern(bars: list[Bar], index: int) -> str | None:
+        bar = bars[index]
+        previous = bars[index - 1] if index > 0 else bar
+        body = abs(bar.close - bar.open)
+        range_size = bar.high - bar.low
+        if range_size <= 0:
+            return None
+        upper_wick = bar.high - max(bar.open, bar.close)
+        lower_wick = min(bar.open, bar.close) - bar.low
+        marubozu = bar.close > bar.open and upper_wick <= range_size * 0.1 and lower_wick <= range_size * 0.1
+        engulfing = bar.close > bar.open and previous.close < previous.open and bar.close > previous.open and bar.open <= previous.close
+        pinbar = bar.close > bar.open and lower_wick >= body * 2 and upper_wick <= body
+        if marubozu:
+            return "marubozu"
+        if engulfing:
+            return "engulfing"
+        if pinbar:
+            return "pinbar"
+        return None
+
+    @staticmethod
+    def _confirmed_pivot(bars: list[Bar], index: int, period: int) -> Pivot | None:
+        center = index - period
+        if center < period:
+            return None
+        window = bars[center - period : center + period + 1]
+        center_bar = bars[center]
+        if center_bar.high == max(item.high for item in window):
+            return Pivot(index=center, price=center_bar.high, kind="high")
+        if center_bar.low == min(item.low for item in window):
+            return Pivot(index=center, price=center_bar.low, kind="low")
+        return None
+
+    @staticmethod
+    def _resolve_asm_parameters(parameters: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+        resolved = copy.deepcopy(parameters)
+        profile_name = resolved.get("active_timeframe_profile")
+        profiles = resolved.get("timeframe_profiles", {})
+        applied = False
+        if resolved.get("use_timeframe_profile_overrides", False) and profile_name and isinstance(profiles, dict):
+            profile = profiles.get(profile_name, {})
+            if isinstance(profile, dict):
+                for key, value in profile.items():
+                    resolved[key] = copy.deepcopy(value)
+                applied = True
+        return resolved, applied
+
+    @staticmethod
+    def _timeframe_minutes(timeframe: str) -> int:
+        normalized = timeframe.strip().lower()
+        if normalized.endswith("m"):
+            return int(normalized[:-1])
+        if normalized.endswith("h"):
+            return int(normalized[:-1]) * 60
+        if normalized.endswith("d"):
+            return int(normalized[:-1]) * 1440
+        raise HTTPException(status_code=400, detail=f"Unsupported timeframe for ASM resampling: {timeframe}")
+
+    def _resample_bars(self, bars: list[Bar], source_timeframe: str, target_timeframe: str) -> list[Bar]:
+        source_minutes = self._timeframe_minutes(source_timeframe)
+        target_minutes = self._timeframe_minutes(target_timeframe)
+        if target_minutes == source_minutes:
+            return list(bars)
+        if target_minutes < source_minutes or target_minutes % source_minutes:
+            raise HTTPException(status_code=400, detail=f"Cannot resample {source_timeframe} bars into {target_timeframe} context.")
+        factor = target_minutes // source_minutes
+        output: list[Bar] = []
+        for start in range(0, len(bars) - factor + 1, factor):
+            chunk = bars[start : start + factor]
+            if len(chunk) < factor:
+                break
+            output.append(
+                Bar(
+                    ts=chunk[-1].ts,
+                    open=chunk[0].open,
+                    high=max(item.high for item in chunk),
+                    low=min(item.low for item in chunk),
+                    close=chunk[-1].close,
+                    volume=sum(item.volume for item in chunk),
+                    symbol=chunk[-1].symbol,
+                    timeframe=target_timeframe,
+                )
+            )
+        return output
+
+    def _context_bias_for_index(
+        self,
+        parameters: dict[str, Any],
+        execution_bars: list[Bar],
+        context_bars: list[Bar],
+        execution_index: int,
+    ) -> dict[str, Any]:
+        if not parameters.get("context_bias_required", False):
+            return {"bias": None, "event": "not_required", "bar_index": None, "bar_ts": None, "age": None}
+        if not context_bars:
+            return {"bias": None, "event": None, "bar_index": None, "bar_ts": None, "age": None}
+        execution_tf = str(parameters.get("execution_timeframe", execution_bars[0].timeframe))
+        context_tf = str(parameters.get("context_timeframe", execution_tf))
+        factor = self._timeframe_minutes(context_tf) // self._timeframe_minutes(execution_tf)
+        completed_count = (execution_index + 1) // factor
+        usable = context_bars[:completed_count]
+        if len(usable) < (int(parameters.get("external_pivot_period", 4)) * 2) + 2:
+            return {"bias": None, "event": None, "bar_index": None, "bar_ts": None, "age": None}
+        event = self._latest_structure_event(usable, int(parameters.get("external_pivot_period", 4)), str(parameters.get("context_bias_event", "bos_or_choch")))
+        if not event:
+            return {"bias": None, "event": None, "bar_index": None, "bar_ts": None, "age": None}
+        return {
+            "bias": event["bias"],
+            "event": event["event"],
+            "bar_index": event["bar_index"],
+            "bar_ts": usable[event["bar_index"]].ts,
+            "age": len(usable) - 1 - event["bar_index"],
+        }
+
+    def _context_bias_series(
+        self,
+        parameters: dict[str, Any],
+        execution_bars: list[Bar],
+        context_bars: list[Bar],
+    ) -> list[dict[str, Any]]:
+        empty = {"bias": None, "event": None, "bar_index": None, "bar_ts": None, "age": None}
+        if not execution_bars:
+            return []
+        if not parameters.get("context_bias_required", False):
+            return [{"bias": None, "event": "not_required", "bar_index": None, "bar_ts": None, "age": None} for _ in execution_bars]
+        if not context_bars:
+            return [dict(empty) for _ in execution_bars]
+        execution_tf = str(parameters.get("execution_timeframe", execution_bars[0].timeframe))
+        context_tf = str(parameters.get("context_timeframe", execution_tf))
+        factor = self._timeframe_minutes(context_tf) // self._timeframe_minutes(execution_tf)
+        pivot_period = int(parameters.get("external_pivot_period", 4))
+        event_mode = str(parameters.get("context_bias_event", "bos_or_choch"))
+        context_events = self._context_structure_events(context_bars, pivot_period, event_mode)
+        series: list[dict[str, Any]] = []
+        for execution_index in range(len(execution_bars)):
+            completed_count = (execution_index + 1) // factor
+            context_index = completed_count - 1
+            if context_index < 0 or context_index >= len(context_events):
+                series.append(dict(empty))
+                continue
+            series.append(dict(context_events[context_index]))
+        return series
+
+    def _context_structure_events(self, bars: list[Bar], pivot_period: int, event_mode: str) -> list[dict[str, Any]]:
+        latest_high: Pivot | None = None
+        latest_low: Pivot | None = None
+        latest_event: dict[str, Any] | None = None
+        events: list[dict[str, Any]] = []
+        for index, bar in enumerate(bars):
+            pivot = self._confirmed_pivot(bars, index, pivot_period)
+            if pivot:
+                if pivot.kind == "high":
+                    latest_high = pivot
+                else:
+                    latest_low = pivot
+            if latest_high and bar.close > latest_high.price and event_mode in {"bos_or_choch", "bos_only", "choch_only"}:
+                latest_event = {"bias": "bullish", "event": "bullish_bos", "bar_index": index, "bar_ts": bar.ts}
+            if latest_low and bar.close < latest_low.price and event_mode in {"bos_or_choch", "bos_only", "choch_only"}:
+                latest_event = {"bias": "bearish", "event": "bearish_bos", "bar_index": index, "bar_ts": bar.ts}
+            if latest_event:
+                event = dict(latest_event)
+                event["age"] = index - int(event["bar_index"])
+                events.append(event)
+            else:
+                events.append({"bias": None, "event": None, "bar_index": None, "bar_ts": None, "age": None})
+        return events
+
+    def _latest_structure_event(self, bars: list[Bar], pivot_period: int, event_mode: str) -> dict[str, Any] | None:
+        latest_high: Pivot | None = None
+        latest_low: Pivot | None = None
+        latest_event: dict[str, Any] | None = None
+        for index, bar in enumerate(bars):
+            pivot = self._confirmed_pivot(bars, index, pivot_period)
+            if pivot:
+                if pivot.kind == "high":
+                    latest_high = pivot
+                else:
+                    latest_low = pivot
+            if latest_high and bar.close > latest_high.price and event_mode in {"bos_or_choch", "bos_only", "choch_only"}:
+                latest_event = {"bias": "bullish", "event": "bullish_bos", "bar_index": index}
+            if latest_low and bar.close < latest_low.price and event_mode in {"bos_or_choch", "bos_only", "choch_only"}:
+                latest_event = {"bias": "bearish", "event": "bearish_bos", "bar_index": index}
+        return latest_event
+
+    @staticmethod
+    def _register_asm_fvg(
+        parameters: dict[str, Any],
+        bars: list[Bar],
+        atr_values: list[float | None],
+        active_fvgs: list[FairValueGap],
+        index: int,
+    ) -> None:
+        if not parameters.get("fvg_enabled", True) or index < 2 or not atr_values[index]:
+            return
+        min_gap = float(parameters.get("fvg_min_gap_atr", 0.05)) * float(atr_values[index])
+        older = bars[index - 2]
+        current = bars[index]
+        if current.low > older.high and current.low - older.high >= min_gap:
+            active_fvgs.append(
+                FairValueGap(
+                    direction=1,
+                    created_index=index,
+                    bottom=older.high,
+                    top=current.low,
+                    gap_atr_multiple=round((current.low - older.high) / float(atr_values[index]), 6),
+                )
+            )
+        if current.high < older.low and older.low - current.high >= min_gap:
+            active_fvgs.append(
+                FairValueGap(
+                    direction=-1,
+                    created_index=index,
+                    bottom=current.high,
+                    top=older.low,
+                    gap_atr_multiple=round((older.low - current.high) / float(atr_values[index]), 6),
+                )
+            )
+
+    @staticmethod
+    def _expire_asm_fvgs(parameters: dict[str, Any], bars: list[Bar], active_fvgs: list[FairValueGap], index: int) -> None:
+        max_age = int(parameters.get("fvg_max_age_bars", 96))
+        mitigation_rule = parameters.get("fvg_mitigation_rule", "touch_through_far_edge")
+        current = bars[index]
+        retained: list[FairValueGap] = []
+        for fvg in active_fvgs:
+            if index - fvg.created_index > max_age:
+                continue
+            mitigated = False
+            if mitigation_rule == "touch_through_far_edge" and index > fvg.created_index:
+                if fvg.direction == 1:
+                    mitigated = current.low <= fvg.bottom
+                else:
+                    mitigated = current.high >= fvg.top
+            if not mitigated:
+                retained.append(fvg)
+        active_fvgs[:] = retained
+
+    def _maybe_create_asm_setup(
+        self,
+        parameters: dict[str, Any],
+        bars: list[Bar],
+        atr_value: float,
+        active_fvgs: list[FairValueGap],
+        latest_high: Pivot | None,
+        latest_low: Pivot | None,
+        index: int,
+        context_bias: dict[str, Any] | None = None,
+    ) -> AsmSetup | None:
+        bar = bars[index]
+        allow_long = bool(parameters.get("allow_long", True))
+        allow_short = bool(parameters.get("allow_short", True))
+        if allow_long and latest_high and latest_low and latest_low.index < index and bar.close > latest_high.price:
+            return self._build_asm_setup(
+                parameters=parameters,
+                bars=bars,
+                atr_value=atr_value,
+                active_fvgs=active_fvgs,
+                direction=1,
+                index=index,
+                origin=latest_low,
+                broken=latest_high,
+                context_bias=context_bias,
+            )
+        if allow_short and latest_high and latest_low and latest_high.index < index and bar.close < latest_low.price:
+            return self._build_asm_setup(
+                parameters=parameters,
+                bars=bars,
+                atr_value=atr_value,
+                active_fvgs=active_fvgs,
+                direction=-1,
+                index=index,
+                origin=latest_high,
+                broken=latest_low,
+                context_bias=context_bias,
+            )
+        return None
+
+    def _build_asm_setup(
+        self,
+        parameters: dict[str, Any],
+        bars: list[Bar],
+        atr_value: float,
+        active_fvgs: list[FairValueGap],
+        direction: int,
+        index: int,
+        origin: Pivot,
+        broken: Pivot,
+        context_bias: dict[str, Any] | None = None,
+    ) -> AsmSetup | None:
+        bar = bars[index]
+        fib_entry = float(parameters.get("fib_entry_retracement", 0.67))
+        stop_retrace = float(parameters.get("fib_stop_retracement", 1.0))
+        target_retrace = float(parameters.get("fib_target_retracement", 0.0))
+        buffer = float(parameters.get("stop_buffer_atr_mult", 0.0)) * atr_value
+        if direction == 1:
+            extreme_price = max(bar.high, broken.price)
+            origin_price = origin.price
+            range_size = extreme_price - origin_price
+            displacement = bar.close - broken.price
+            entry_price = extreme_price - (range_size * fib_entry)
+            stop_price = extreme_price - (range_size * stop_retrace) - buffer
+            target_price = extreme_price - (range_size * target_retrace)
+            midpoint = origin_price + (range_size * float(parameters.get("premium_discount_midpoint", 0.5)))
+            discount_premium_passed = (not parameters.get("require_discount_for_longs", True)) or entry_price <= midpoint
+        else:
+            extreme_price = min(bar.low, broken.price)
+            origin_price = origin.price
+            range_size = origin_price - extreme_price
+            displacement = broken.price - bar.close
+            entry_price = extreme_price + (range_size * fib_entry)
+            stop_price = extreme_price + (range_size * stop_retrace) + buffer
+            target_price = extreme_price + (range_size * target_retrace)
+            midpoint = extreme_price + (range_size * float(parameters.get("premium_discount_midpoint", 0.5)))
+            discount_premium_passed = (not parameters.get("require_premium_for_shorts", True)) or entry_price >= midpoint
+        if range_size <= 0:
+            return None
+        range_atr = range_size / atr_value if atr_value else 0.0
+        if range_atr < float(parameters.get("range_min_atr", 1.0)):
+            return None
+        if range_atr > float(parameters.get("range_max_atr", 12.0)):
+            return None
+        if displacement < float(parameters.get("min_displacement_atr", 0.8)) * atr_value:
+            return None
+        fvg = self._select_asm_fvg(parameters, active_fvgs, direction, entry_price, atr_value, index)
+        return AsmSetup(
+            direction=direction,
+            created_index=index,
+            setup_type="BOS",
+            origin_index=origin.index,
+            origin_price=origin_price,
+            extreme_index=index,
+            extreme_price=extreme_price,
+            range_size=range_size,
+            range_atr_multiple=round(range_atr, 6),
+            entry_price=entry_price,
+            stop_price=stop_price,
+            target_price=target_price,
+            discount_premium_passed=discount_premium_passed,
+            fvg=fvg,
+            context_bias=context_bias.get("bias") if context_bias else None,
+            context_bias_event=context_bias.get("event") if context_bias else None,
+            context_bias_index=context_bias.get("bar_index") if context_bias else None,
+            context_bias_ts=context_bias.get("bar_ts") if context_bias else None,
+            context_bias_age=context_bias.get("age") if context_bias else None,
+        )
+
+    @staticmethod
+    def _select_asm_fvg(
+        parameters: dict[str, Any],
+        active_fvgs: list[FairValueGap],
+        direction: int,
+        entry_price: float,
+        atr_value: float,
+        index: int,
+    ) -> FairValueGap | None:
+        tolerance = float(parameters.get("fvg_overlap_tolerance_atr", 0.1)) * atr_value
+        candidates = [
+            fvg
+            for fvg in active_fvgs
+            if fvg.direction == direction and fvg.bottom - tolerance <= entry_price <= fvg.top + tolerance
+        ]
+        if not candidates:
+            return None
+        return min(candidates, key=lambda item: index - item.created_index)
+
+    @staticmethod
+    def _update_asm_setup_sweep(parameters: dict[str, Any], bars: list[Bar], setup: AsmSetup, index: int) -> None:
+        if setup.sweep_index is not None or index <= setup.created_index:
+            return
+        lookback = int(parameters.get("sweep_lookback_bars", 20))
+        start = max(0, index - lookback)
+        if start >= index:
+            return
+        prior = bars[start:index]
+        bar = bars[index]
+        close_back_inside = bool(parameters.get("sweep_close_back_inside", True))
+        if setup.direction == 1:
+            prior_low = min(item.low for item in prior)
+            if bar.low < prior_low and (not close_back_inside or bar.close > prior_low):
+                setup.sweep_index = index
+                setup.sweep_price = bar.low
+        else:
+            prior_high = max(item.high for item in prior)
+            if bar.high > prior_high and (not close_back_inside or bar.close < prior_high):
+                setup.sweep_index = index
+                setup.sweep_price = bar.high
+
+    @staticmethod
+    def _update_asm_setup_retracement(bars: list[Bar], setup: AsmSetup, index: int) -> None:
+        if setup.retracement_index is not None or index <= setup.created_index:
+            return
+        if bars[index].low <= setup.entry_price <= bars[index].high:
+            setup.retracement_index = index
+
+    @staticmethod
+    def _asm_internal_confirmation(
+        parameters: dict[str, Any],
+        bars: list[Bar],
+        setup: AsmSetup,
+        latest_internal_high: Pivot | None,
+        latest_internal_low: Pivot | None,
+        index: int,
+    ) -> str | None:
+        if not BacktestEngine._asm_internal_required(parameters):
+            return "not_required"
+        if setup.retracement_index is None or setup.sweep_index is None:
+            return None
+        if index <= setup.retracement_index or index <= setup.sweep_index:
+            return None
+        event_mode = parameters.get("internal_confirmation_event", "bos_or_choch")
+        bar = bars[index]
+        if setup.direction == 1:
+            if latest_internal_high is None:
+                return None
+            if latest_internal_high.index <= max(setup.retracement_index, setup.sweep_index):
+                return None
+            if bar.close > latest_internal_high.price and event_mode in {"bos_or_choch", "bos_only"}:
+                return "bullish_bos"
+            if bar.close > latest_internal_high.price and event_mode == "choch_only":
+                return "bullish_choch"
+        else:
+            if latest_internal_low is None:
+                return None
+            if latest_internal_low.index <= max(setup.retracement_index, setup.sweep_index):
+                return None
+            if bar.close < latest_internal_low.price and event_mode in {"bos_or_choch", "bos_only"}:
+                return "bearish_bos"
+            if bar.close < latest_internal_low.price and event_mode == "choch_only":
+                return "bearish_choch"
+        return None
+
+    def _asm_setup_block_reason(
+        self,
+        parameters: dict[str, Any],
+        bars: list[Bar],
+        setup: AsmSetup,
+        active_fvgs: list[FairValueGap],
+        index: int,
+    ) -> str | None:
+        if parameters.get("time_risk_filter_enabled", False):
+            blocked_weekdays = {int(item) for item in parameters.get("time_risk_block_weekdays", [])}
+            blocked_hours = {int(item) for item in parameters.get("time_risk_block_utc_hours", [])}
+            if bars[index].ts.weekday() in blocked_weekdays or bars[index].ts.hour in blocked_hours:
+                return "blocked_time_risk"
+        if not setup.discount_premium_passed:
+            return "blocked_not_discount_or_premium"
+        if parameters.get("context_bias_required", False):
+            if setup.context_bias is None:
+                return "blocked_no_context_bias"
+            expected_bias = "bullish" if setup.direction == 1 else "bearish"
+            max_age = int(parameters.get("context_bias_max_age_bars", 96))
+            if setup.context_bias_index is None or setup.context_bias_age is None or setup.context_bias_age > max_age:
+                return "blocked_no_context_bias"
+            if parameters.get("context_bias_must_align_with_external_bias", True) and setup.context_bias != expected_bias:
+                return "blocked_context_bias_mismatch"
+        if parameters.get("fvg_overlap_required", True):
+            atr_value = max(setup.range_size / max(setup.range_atr_multiple, 0.000001), 0.000001)
+            setup.fvg = setup.fvg or self._select_asm_fvg(parameters, active_fvgs, setup.direction, setup.entry_price, atr_value, index)
+            if setup.fvg is None:
+                return "blocked_no_fvg"
+        if setup.retracement_index is None:
+            return "blocked_not_discount_or_premium"
+        if parameters.get("liquidity_sweep_required", True):
+            if setup.sweep_index is None:
+                return "blocked_no_sweep"
+            if index - setup.sweep_index > int(parameters.get("sweep_window_bars", 48)):
+                return "blocked_no_sweep"
+        if self._asm_internal_required(parameters):
+            if setup.internal_confirmation_index is None:
+                return "blocked_no_internal_confirmation"
+            max_age = int(parameters.get("internal_confirmation_max_age_bars", 24))
+            if index - setup.internal_confirmation_index > max_age:
+                return "blocked_no_internal_confirmation"
+            if parameters.get("internal_must_align_with_external_bias", True):
+                expected_prefix = "bullish" if setup.direction == 1 else "bearish"
+                if not str(setup.internal_confirmation_type).startswith(expected_prefix):
+                    return "blocked_internal_against_external_bias"
+        return None
+
+    @staticmethod
+    def _asm_entry_touched(bar: Bar, entry_price: float) -> bool:
+        return bar.low <= entry_price <= bar.high
+
+    @staticmethod
+    def _asm_entry_ready(parameters: dict[str, Any], setup: AsmSetup) -> bool:
+        sweep_ready = setup.sweep_index is not None or not parameters.get("liquidity_sweep_required", True)
+        internal_ready = setup.internal_confirmation_index is not None or not BacktestEngine._asm_internal_required(parameters)
+        return setup.retracement_index is not None and sweep_ready and internal_ready
+
+    @staticmethod
+    def _asm_internal_required(parameters: dict[str, Any]) -> bool:
+        return bool(parameters.get("internal_confirmation_required", False)) or parameters.get("structure_stream") == "external_and_internal_intraday"
+
+    def _asm_exit_position(
+        self,
+        position: Position,
+        bar: Bar,
+        index: int,
+        slippage: float,
+        commission_pct: float,
+        equity: float,
+        diagnostics: dict[str, int],
+        allow_same_bar: bool,
+    ) -> tuple[dict[str, Any], str] | None:
+        target = float(position.entry_features.get("target_price", position.entry_price))
+        stop_hit = False
+        target_hit = False
+        if position.direction == 1:
+            stop_hit = bar.low <= position.stop_price
+            target_hit = bar.high >= target
+            stop_price = max(position.stop_price - slippage, 0.0)
+            target_price = max(target - slippage, 0.0)
+        else:
+            stop_hit = bar.high >= position.stop_price
+            target_hit = bar.low <= target
+            stop_price = position.stop_price + slippage
+            target_price = target + slippage
+        if index == position.entry_index and not allow_same_bar:
+            return None
+        if stop_hit and target_hit:
+            if position.entry_features.get("same_bar_exit_policy", "stop_first") == "target_first":
+                trade = self._close_trade(position, bar, index, target_price, "target", commission_pct, equity)
+                return trade, "target_exits"
+            diagnostics["same_bar_stop_first_exits"] += 1
+            trade = self._close_trade(position, bar, index, stop_price, "stop", commission_pct, equity)
+            return trade, "stop_exits"
+        if stop_hit:
+            trade = self._close_trade(position, bar, index, stop_price, "stop", commission_pct, equity)
+            return trade, "stop_exits"
+        if target_hit:
+            trade = self._close_trade(position, bar, index, target_price, "target", commission_pct, equity)
+            return trade, "target_exits"
+        time_stop_enabled = bool(position.entry_features.get("time_stop_enabled", False))
+        if time_stop_enabled and index - position.entry_index >= int(position.entry_features.get("time_stop_bars", 0)):
+            initial_risk = abs(position.entry_price - position.stop_price)
+            mfe_r = position.max_favorable_excursion / initial_risk if initial_risk else 0.0
+            if mfe_r < float(position.entry_features.get("time_stop_min_mfe_r", 0.0)):
+                exit_price = max(bar.close - slippage, 0.0) if position.direction == 1 else bar.close + slippage
+                trade = self._close_trade(position, bar, index, exit_price, "time_stop", commission_pct, equity)
+                return trade, "time_stop_exits"
+        return None
+
+    @staticmethod
+    def _asm_entry_features(parameters: dict[str, Any], setup: AsmSetup, bar: Bar, index: int) -> dict[str, Any]:
+        fvg = setup.fvg
+        return {
+            "side": "long" if setup.direction == 1 else "short",
+            "direction": "long" if setup.direction == 1 else "short",
+            "setup_type": setup.setup_type,
+            "external_setup_type": setup.setup_type,
+            "weekday": bar.ts.weekday(),
+            "utc_hour": bar.ts.hour,
+            "month": bar.ts.month,
+            "fib_entry_retracement": round(abs(setup.extreme_price - setup.entry_price) / setup.range_size, 6)
+            if setup.range_size
+            else 0.0,
+            "swing_origin": round(setup.origin_price, 6),
+            "swing_extreme": round(setup.extreme_price, 6),
+            "external_range_origin": round(setup.origin_price, 6),
+            "external_range_extreme": round(setup.extreme_price, 6),
+            "external_range_midpoint": round((setup.origin_price + setup.extreme_price) / 2, 6),
+            "external_bias": "bullish" if setup.direction == 1 else "bearish",
+            "execution_external_bias": "bullish" if setup.direction == 1 else "bearish",
+            "range_size": round(setup.range_size, 6),
+            "range_atr_multiple": round(setup.range_atr_multiple, 6),
+            "fvg_top": round(fvg.top, 6) if fvg else None,
+            "fvg_bottom": round(fvg.bottom, 6) if fvg else None,
+            "fvg_age": index - fvg.created_index if fvg else None,
+            "fvg_gap_atr_multiple": fvg.gap_atr_multiple if fvg else None,
+            "sweep_age": index - setup.sweep_index if setup.sweep_index is not None else None,
+            "sweep_price": round(setup.sweep_price, 6) if setup.sweep_price is not None else None,
+            "sweep_passed": setup.sweep_index is not None or not parameters.get("liquidity_sweep_required", True),
+            "internal_confirmation_type": setup.internal_confirmation_type,
+            "execution_internal_confirmation_type": setup.internal_confirmation_type,
+            "internal_confirmation_bar_index": setup.internal_confirmation_index,
+            "internal_confirmation_age_bars": index - setup.internal_confirmation_index
+            if setup.internal_confirmation_index is not None
+            else None,
+            "internal_pivot_period": int(parameters.get("internal_pivot_period", 2)),
+            "external_pivot_period": int(parameters.get("external_pivot_period", 4)),
+            "active_timeframe_profile": parameters.get("active_timeframe_profile"),
+            "execution_timeframe": parameters.get("execution_timeframe"),
+            "context_timeframe": parameters.get("context_timeframe"),
+            "higher_context_timeframe": parameters.get("higher_context_timeframe"),
+            "context_bias": setup.context_bias,
+            "context_bias_event": setup.context_bias_event,
+            "context_bias_age_bars": setup.context_bias_age,
+            "context_bias_bar_time": setup.context_bias_ts.isoformat() if setup.context_bias_ts else None,
+            "fib_entry_retracement_resolved": round(abs(setup.extreme_price - setup.entry_price) / setup.range_size, 6)
+            if setup.range_size
+            else 0.0,
+            "profile_override_applied": bool(parameters.get("use_timeframe_profile_overrides", False)),
+            "entry_r": 0.0,
+            "discount_premium_passed": setup.discount_premium_passed,
+            "discount_or_premium_passed": setup.discount_premium_passed,
+            "fvg_overlap_passed": fvg is not None or not parameters.get("fvg_overlap_required", True),
+            "entry_price": round(setup.entry_price, 6),
+            "stop_price": round(setup.stop_price, 6),
+            "target_price": round(setup.target_price, 6),
+            "same_bar_exit_policy": parameters.get("same_bar_exit_policy", "stop_first"),
+            "time_stop_enabled": bool(parameters.get("time_stop_enabled", False)),
+            "time_stop_bars": int(parameters.get("time_stop_bars", 0)),
+            "time_stop_min_mfe_r": float(parameters.get("time_stop_min_mfe_r", 0.0)),
         }
 
     @staticmethod
