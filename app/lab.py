@@ -24,6 +24,17 @@ PHASE_3_PARAMETERS = {
     "time_decay_exit_enabled": False,
     "time_decay_bars": 96,
     "time_decay_min_mfe_r": 0.5,
+    "time_decay_triage_confirmation_enabled": False,
+    "time_decay_confirm_max_unrealized_r": 0.0,
+    "time_decay_confirm_max_mfe_r": 0.35,
+    "time_decay_confirm_require_no_breakeven_move": False,
+    "reverse_confirmation_enabled": False,
+    "reverse_confirm_max_bars": 2,
+    "reverse_confirm_min_mfe_r": 0.20,
+    "reverse_confirm_allow_if_unrealized_r_lte": -0.35,
+    "reverse_confirm_require_no_breakeven_move": False,
+    "entry_exposure_gate_enabled": False,
+    "entry_exposure_gate_max_pct": 75.0,
     "short_quality_gate_enabled": False,
     "short_quality_gate_rule": "block_below_sma",
     "short_quality_gate_len_bars": 19200,
@@ -68,6 +79,123 @@ PHASE_3_MUTATION_SPACE = [
         "search_max": 2.0,
         "search_step": 0.05,
         "rationale": "Tune the minimum favorable excursion required before the time-decay window expires.",
+    },
+    {
+        "kind": "white_box",
+        "lever": "entry_exposure_gate_enabled",
+        "path": "parameters.entry_exposure_gate_enabled",
+        "priority": 95,
+        "values": [True, False],
+        "search_mode": "values_only",
+        "rationale": "Enable or disable an entry gate that blocks new trades when current exposure already exceeds a production cap.",
+    },
+    {
+        "kind": "white_box",
+        "lever": "entry_exposure_gate_max_pct",
+        "path": "parameters.entry_exposure_gate_max_pct",
+        "priority": 94,
+        "values": [25.0, 50.0, 75.0, 100.0],
+        "search_mode": "range",
+        "search_min": 10.0,
+        "search_max": 100.0,
+        "search_step": 5.0,
+        "rationale": "Tune the maximum existing exposure allowed before a new entry is blocked.",
+    },
+    {
+        "kind": "white_box",
+        "lever": "reverse_confirmation_enabled",
+        "path": "parameters.reverse_confirmation_enabled",
+        "priority": 89,
+        "values": [True, False],
+        "search_mode": "values_only",
+        "rationale": "Enable or disable confirmation before reverse-exit signals can close an open trade.",
+    },
+    {
+        "kind": "white_box",
+        "lever": "reverse_confirm_max_bars",
+        "path": "parameters.reverse_confirm_max_bars",
+        "priority": 88,
+        "values": [1, 2, 3, 4, 6],
+        "search_mode": "range",
+        "search_min": 1,
+        "search_max": 12,
+        "search_step": 1,
+        "rationale": "Tune how many bars after entry remain too early for an unconfirmed reverse exit.",
+    },
+    {
+        "kind": "white_box",
+        "lever": "reverse_confirm_min_mfe_r",
+        "path": "parameters.reverse_confirm_min_mfe_r",
+        "priority": 87,
+        "values": [0.0, 0.1, 0.2, 0.35, 0.5],
+        "search_mode": "range",
+        "search_min": 0.0,
+        "search_max": 2.0,
+        "search_step": 0.05,
+        "rationale": "Tune the favorable excursion required before a reverse signal is trusted as a real exit.",
+    },
+    {
+        "kind": "white_box",
+        "lever": "reverse_confirm_allow_if_unrealized_r_lte",
+        "path": "parameters.reverse_confirm_allow_if_unrealized_r_lte",
+        "priority": 86,
+        "values": [-1.0, -0.5, -0.35, -0.2, 0.0],
+        "search_mode": "range",
+        "search_min": -2.0,
+        "search_max": 0.0,
+        "search_step": 0.05,
+        "rationale": "Tune the adverse unrealized R level where a reverse exit is allowed even if confirmation is weak.",
+    },
+    {
+        "kind": "white_box",
+        "lever": "reverse_confirm_require_no_breakeven_move",
+        "path": "parameters.reverse_confirm_require_no_breakeven_move",
+        "priority": 85,
+        "values": [True, False],
+        "search_mode": "values_only",
+        "rationale": "Require that breakeven stop management has not already protected the trade before suppressing a reverse exit.",
+    },
+    {
+        "kind": "white_box",
+        "lever": "time_decay_triage_confirmation_enabled",
+        "path": "parameters.time_decay_triage_confirmation_enabled",
+        "priority": 84,
+        "values": [True, False],
+        "search_mode": "values_only",
+        "rationale": "Enable or disable confirmation before time-decay exits can close a trade that has not progressed.",
+    },
+    {
+        "kind": "white_box",
+        "lever": "time_decay_confirm_max_unrealized_r",
+        "path": "parameters.time_decay_confirm_max_unrealized_r",
+        "priority": 83,
+        "values": [-0.5, -0.25, 0.0, 0.25],
+        "search_mode": "range",
+        "search_min": -2.0,
+        "search_max": 1.0,
+        "search_step": 0.05,
+        "rationale": "Tune how weak unrealized R must be before a time-decay exit is allowed.",
+    },
+    {
+        "kind": "white_box",
+        "lever": "time_decay_confirm_max_mfe_r",
+        "path": "parameters.time_decay_confirm_max_mfe_r",
+        "priority": 82,
+        "values": [0.1, 0.25, 0.35, 0.5, 0.75],
+        "search_mode": "range",
+        "search_min": 0.0,
+        "search_max": 2.0,
+        "search_step": 0.05,
+        "rationale": "Tune the maximum favorable excursion still considered a failed time-decay path.",
+    },
+    {
+        "kind": "white_box",
+        "lever": "time_decay_confirm_require_no_breakeven_move",
+        "path": "parameters.time_decay_confirm_require_no_breakeven_move",
+        "priority": 81,
+        "values": [True, False],
+        "search_mode": "values_only",
+        "rationale": "Require that breakeven stop management has not already protected the trade before suppressing a time-decay exit.",
     },
     {
         "kind": "white_box",
@@ -295,6 +423,16 @@ EXECUTION_PARAMETERS = {
 }
 
 PORTFOLIO_MUTATION_SPACE = [
+    {
+        "kind": "execution",
+        "lever": "execution_model",
+        "path": "parameters.execution_model",
+        "priority": 131,
+        "values": ["next_bar_open", "mt5_bar_proxy"],
+        "search_mode": "values_only",
+        "optimizable": False,
+        "rationale": "Choose the production-comparable bar execution proxy. next_bar_open fills closed-bar signals at the next open; mt5_bar_proxy additionally models MT5-style same-entry-bar stop eligibility and stop-modification rejection.",
+    },
     {
         "kind": "portfolio",
         "lever": "sizing_mode",
@@ -605,8 +743,8 @@ class MutationLabService:
                 mutation_space.append(json.loads(json.dumps(mutation)))
                 changed = True
                 continue
-            for key in ("priority", "values", "search_mode", "search_min", "search_max", "search_step", "rationale", "path", "kind"):
-                next_value = mutation.get(key)
+            for key in ("priority", "values", "search_mode", "search_min", "search_max", "search_step", "optimizable", "rationale", "path", "kind"):
+                next_value = mutation.get(key, True) if key == "optimizable" else mutation.get(key)
                 if existing.get(key) != next_value:
                     existing[key] = json.loads(json.dumps(next_value))
                     changed = True
@@ -700,6 +838,7 @@ class MutationLabService:
                 "search_min": mutation.get("search_min"),
                 "search_max": mutation.get("search_max"),
                 "search_step": mutation.get("search_step"),
+                "optimizable": mutation.get("optimizable", True),
             }
             edges.append(edge)
         return sorted(edges, key=lambda item: (-item["priority"], item["lever"]))
@@ -1115,6 +1254,8 @@ class MutationLabService:
         edge = next((item for item in edges if item["lever"] == lever), None)
         if not edge:
             raise HTTPException(status_code=404, detail="Tuning lever not found.")
+        if not edge.get("optimizable", True):
+            raise HTTPException(status_code=400, detail=f"{lever} is manually editable but not optimizable.")
         bars = self.data_service.load_bars(dataset_id)
         candidates: list[dict[str, Any]] = []
         skipped_candidates: list[dict[str, Any]] = []
@@ -1212,6 +1353,8 @@ class MutationLabService:
         for pass_index in range(1, passes + 1):
             improved = False
             for edge in self.list_tuning_edges(version_id):
+                if not edge.get("optimizable", True):
+                    continue
                 before = dict(overrides)
                 result = self.optimize_lever(version_id, dataset_id, edge["lever"], overrides, optimization_mode=optimization_mode)
                 best_overrides = result["best"]["parameter_overrides"]
@@ -2623,11 +2766,24 @@ class MutationLabService:
                 f"- Long signals: `{payload['diagnostics']['signals_long']}`",
                 f"- Short signals: `{payload['diagnostics']['signals_short']}`",
                 f"- Short quality gate blocks: `{payload['diagnostics'].get('short_quality_gate_blocks', 0)}`",
+                f"- Entry exposure gate blocks: `{payload['diagnostics'].get('entry_exposure_gate_blocks', 0)}`",
+                f"- Entry exposure gate long blocks: `{payload['diagnostics'].get('entry_exposure_gate_long_blocks', 0)}`",
+                f"- Entry exposure gate short blocks: `{payload['diagnostics'].get('entry_exposure_gate_short_blocks', 0)}`",
                 f"- Breakeven stop moves: `{payload['diagnostics'].get('breakeven_stop_moves', 0)}`",
+                f"- MT5 stop modify rejects: `{payload['diagnostics'].get('mt5_stop_modify_rejects', 0)}`",
                 f"- Time risk filter blocks: `{payload['diagnostics'].get('time_risk_filter_blocks', 0)}`",
                 f"- Stop exits: `{payload['diagnostics']['stop_exits']}`",
                 f"- Reverse exits: `{payload['diagnostics']['reverse_exits']}`",
+                f"- Reverse confirmation candidates: `{payload['diagnostics'].get('reverse_confirmation_candidates', 0)}`",
+                f"- Reverse confirmation exits allowed: `{payload['diagnostics'].get('reverse_confirmation_exits_allowed', 0)}`",
+                f"- Reverse confirmation adverse escapes allowed: `{payload['diagnostics'].get('reverse_confirmation_adverse_escape_allowed', 0)}`",
+                f"- Reverse confirmation suppressed: `{payload['diagnostics'].get('reverse_confirmation_suppressed', 0)}`",
+                f"- Reverse confirmation suppressed Net PnL: `{payload['diagnostics'].get('reverse_confirmation_suppressed_net_pnl', 0.0)}`",
                 f"- Time-decay exits: `{payload['diagnostics'].get('time_decay_exits', 0)}`",
+                f"- Time-decay confirmation candidates: `{payload['diagnostics'].get('time_decay_confirmation_candidates', 0)}`",
+                f"- Time-decay confirmation exits allowed: `{payload['diagnostics'].get('time_decay_confirmation_exits_allowed', 0)}`",
+                f"- Time-decay confirmation suppressed: `{payload['diagnostics'].get('time_decay_confirmation_suppressed', 0)}`",
+                f"- Time-decay confirmation suppressed Net PnL: `{payload['diagnostics'].get('time_decay_confirmation_suppressed_net_pnl', 0.0)}`",
                 f"- Time exits: `{payload['diagnostics']['time_exits']}`",
                 f"- Pending entry orders: `{payload['diagnostics'].get('pending_entry_orders', 0)}`",
                 f"- Pending order fills: `{payload['diagnostics'].get('pending_order_fills', 0)}`",

@@ -28,6 +28,8 @@ const promptsList = document.getElementById("promptsList");
 let previewTimer = null;
 const MIN_DATASET_BARS = 40000;
 const FULL_HISTORY_SENTINEL_BARS = 1000000;
+const OUTPUT_ARRAY_LIMIT = 20;
+const OUTPUT_MAX_CHARS = 60000;
 const OPTIMIZATION_POLL_MS = 2500;
 let optimizationInFlight = false;
 
@@ -37,8 +39,43 @@ function setStatus(elementId, message, tone = "") {
   node.className = `status ${tone}`.trim();
 }
 
+function summarizeForOutput(value, depth = 0, key = "") {
+  if (depth > 5) {
+    return "[nested object omitted]";
+  }
+  if (Array.isArray(value)) {
+    if (["trades", "equity_curve", "candidates", "steps"].includes(key) && value.length > OUTPUT_ARRAY_LIMIT) {
+      return {
+        omitted: value.length,
+        note: `${key} array omitted from UI output to keep the browser responsive.`,
+        sample: value.slice(0, 3).map((item) => summarizeForOutput(item, depth + 1)),
+      };
+    }
+    if (value.length > OUTPUT_ARRAY_LIMIT) {
+      return [
+        ...value.slice(0, OUTPUT_ARRAY_LIMIT).map((item) => summarizeForOutput(item, depth + 1)),
+        `[${value.length - OUTPUT_ARRAY_LIMIT} more items omitted]`,
+      ];
+    }
+    return value.map((item) => summarizeForOutput(item, depth + 1));
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([entryKey, entryValue]) => [
+        entryKey,
+        summarizeForOutput(entryValue, depth + 1, entryKey),
+      ]),
+    );
+  }
+  return value;
+}
+
 function showOutput(payload) {
-  outputBox.textContent = typeof payload === "string" ? payload : JSON.stringify(payload, null, 2);
+  const text = typeof payload === "string" ? payload : JSON.stringify(summarizeForOutput(payload), null, 2);
+  outputBox.textContent =
+    text.length > OUTPUT_MAX_CHARS
+      ? `${text.slice(0, OUTPUT_MAX_CHARS)}\n\n[output truncated to keep the browser responsive]`
+      : text;
 }
 
 function setOptimizationStatus(message, tone = "working") {
@@ -92,7 +129,10 @@ async function fetchJson(url, options = {}) {
   }
   if (!response.ok) {
     const detail = payload?.detail || raw || `Request failed with status ${response.status}`;
-    throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
+    const error = new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
+    error.status = response.status;
+    error.payload = payload;
+    throw error;
   }
   return payload;
 }
@@ -961,6 +1001,36 @@ async function optimizeLever(lever) {
   }
 }
 
+function applyOptimizeAllResult(result, recovered = false) {
+  const baseParameters = currentVersion().spec_json.parameters;
+  state.workingParameters = { ...baseParameters, ...result.parameter_overrides };
+  state.previewResult = result.preview;
+  renderSummary();
+  renderTuningEdges();
+  renderRuns();
+  showOutput(result);
+
+  const tunedCount = Object.entries(result.parameter_overrides).filter(
+    ([key, value]) => JSON.stringify(value) !== JSON.stringify(baseParameters[key]),
+  ).length;
+  const selectedCount = Object.keys(result.parameter_overrides).length;
+  const fallbackCount = Number(result.research_fallback_steps || 0);
+  const eligibleCount = Number(result.eligible_steps || 0);
+  const modeNote = fallbackCount
+    ? `${fallbackCount} research fallback steps, ${eligibleCount} production-eligible steps`
+    : `${eligibleCount} production-eligible steps`;
+  const selectedNote =
+    selectedCount === tunedCount ? "" : `; ${selectedCount} selected values matched or filled the base`;
+  const recoveredNote = recovered ? " Recovered completed preview from backend." : "";
+  const rejectedNote = result.final_candidate_rejected
+    ? " Optimized candidate failed production gates, so the starting values were kept."
+    : "";
+  const message = `Optimization complete. Applied ${tunedCount} changed values (${modeNote}${selectedNote}).${rejectedNote}${recoveredNote}`;
+  setStatus("familyStatus", message, "success");
+  setOptimizationStatus(message, "success");
+  clearOptimizationStatus(9000);
+}
+
 async function optimizeAll(optimizationMode = "production") {
   const version = currentVersion();
   const datasetId = selectedDatasetId();
@@ -987,16 +1057,7 @@ async function optimizeAll(optimizationMode = "production") {
     });
     setOptimizationStatus(`${modeLabel} optimization job ${job.job_id} started. You can keep the page open while it works.`);
     const result = await waitForOptimizationJob(job.job_id);
-    state.workingParameters = { ...currentVersion().spec_json.parameters, ...result.parameter_overrides };
-    state.previewResult = result.preview;
-    renderSummary();
-    renderTuningEdges();
-    renderRuns();
-    showOutput(result);
-    const tunedCount = Object.keys(result.parameter_overrides).length;
-    setStatus("familyStatus", `${modeLabel} optimization complete. Applied ${tunedCount} tuned values.`, "success");
-    setOptimizationStatus(`${modeLabel} optimization complete. Applied ${tunedCount} tuned values.`, "success");
-    clearOptimizationStatus(9000);
+    applyOptimizeAllResult(result);
   } catch (error) {
     setStatus("familyStatus", error.message, "error");
     showOutput({ error: error.message });

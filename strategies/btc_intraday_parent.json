@@ -19,6 +19,17 @@
     "time_decay_exit_enabled": false,
     "time_decay_bars": 96,
     "time_decay_min_mfe_r": 0.5,
+    "time_decay_triage_confirmation_enabled": false,
+    "time_decay_confirm_max_unrealized_r": 0.0,
+    "time_decay_confirm_max_mfe_r": 0.35,
+    "time_decay_confirm_require_no_breakeven_move": false,
+    "reverse_confirmation_enabled": false,
+    "reverse_confirm_max_bars": 2,
+    "reverse_confirm_min_mfe_r": 0.2,
+    "reverse_confirm_allow_if_unrealized_r_lte": -0.35,
+    "reverse_confirm_require_no_breakeven_move": false,
+    "entry_exposure_gate_enabled": false,
+    "entry_exposure_gate_max_pct": 75.0,
     "short_quality_gate_enabled": false,
     "short_quality_gate_rule": "block_below_sma",
     "short_quality_gate_len_bars": 19200,
@@ -70,6 +81,19 @@
     "benchmark_policy": "outperform_return_or_calmar"
   },
   "mutation_space": [
+    {
+      "kind": "execution",
+      "lever": "execution_model",
+      "path": "parameters.execution_model",
+      "priority": 131,
+      "values": [
+        "next_bar_open",
+        "mt5_bar_proxy"
+      ],
+      "search_mode": "values_only",
+      "optimizable": false,
+      "rationale": "Choose the production-comparable bar execution proxy. next_bar_open fills closed-bar signals at the next open; mt5_bar_proxy additionally models MT5-style same-entry-bar stop eligibility and stop-modification rejection."
+    },
     {
       "kind": "white_box",
       "lever": "fast_len",

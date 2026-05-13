@@ -41,7 +41,7 @@ def audit_saved_run_for_okx(run_payload: dict[str, Any], rules: InstrumentRules 
     warnings: list[str] = []
     samples: list[dict[str, Any]] = []
 
-    if parameters.get("execution_model", "next_bar_open") != "next_bar_open":
+    if parameters.get("execution_model", "next_bar_open") not in {"next_bar_open", "mt5_bar_proxy"}:
         failures.append("non_executable_research_execution_model")
     if parameters.get("sizing_mode") == "fixed_quantity":
         failures.append("diagnostic_fixed_quantity_sizing")
