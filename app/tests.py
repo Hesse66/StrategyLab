@@ -1019,6 +1019,56 @@ class MutationLabTests(unittest.TestCase):
         self.assertLessEqual(result["preview"]["spec"]["parameters"]["risk_pct"], 0.01)
         self.assertLessEqual(result["preview"]["spec"]["parameters"]["max_leverage"], 1.0)
 
+    def test_optimize_all_stores_recoverable_result(self) -> None:
+        dataset = self.data_service.import_fixture_dataset(
+            build_fixture_bars(),
+            symbol="BTCUSDT",
+            timeframe="15m",
+            name="fixture-btc-15m",
+        )
+        result = self.lab.optimize_all("ver_btc_intraday_parent", dataset["dataset_id"], {}, passes=1)
+        progress = self.lab.optimization_progress()
+        recovered = self.lab.optimization_result()
+        self.assertFalse(progress["active"])
+        self.assertTrue(progress["result_available"])
+        self.assertEqual(recovered["mode"], "optimize_all")
+        self.assertEqual(recovered["base_version_id"], result["base_version_id"])
+        self.assertEqual(recovered["dataset_id"], result["dataset_id"])
+        self.assertEqual(recovered["preview"]["metrics"], result["preview"]["metrics"])
+
+    def test_optimize_all_keeps_starting_values_when_final_candidate_is_not_eligible(self) -> None:
+        dataset = self.data_service.import_fixture_dataset(
+            build_fixture_bars(),
+            symbol="BTCUSDT",
+            timeframe="15m",
+            name="fixture-btc-15m",
+        )
+        with patch.object(self.lab, "_optimization_eligible", return_value=False):
+            result = self.lab.optimize_all("ver_btc_intraday_parent", dataset["dataset_id"], {}, passes=1)
+        self.assertTrue(result["final_candidate_rejected"])
+        self.assertEqual(result["rejection_reason"], "optimized_candidate_failed_production_gates")
+        self.assertEqual(result["preview"]["spec"]["parameters"]["sizing_mode"], "fixed_risk_pct")
+        self.assertIn("rejected_parameter_overrides", result)
+
+    def test_optimization_rejects_second_active_job(self) -> None:
+        dataset = self.data_service.import_fixture_dataset(
+            build_fixture_bars(),
+            symbol="BTCUSDT",
+            timeframe="15m",
+            name="fixture-btc-15m",
+        )
+        self.lab._start_optimization_progress(
+            mode="optimize_all",
+            version_id="ver_btc_intraday_parent",
+            dataset_id=dataset["dataset_id"],
+            total_candidates=10,
+            total_levers=2,
+            passes=1,
+        )
+        with self.assertRaises(HTTPException) as context:
+            self.lab.optimize_all("ver_btc_intraday_parent", dataset["dataset_id"], {}, passes=1)
+        self.assertEqual(context.exception.status_code, 409)
+
     def test_robustness_check_returns_walk_forward_and_cost_stress(self) -> None:
         dataset = self.data_service.import_fixture_dataset(
             build_fixture_bars(count=40000),

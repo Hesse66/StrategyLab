@@ -4,6 +4,8 @@ import json
 import uuid
 import math
 import threading
+import traceback
+import gc
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -19,6 +21,7 @@ from app.storage import Repository
 LENGTH_OPTIMIZATION_MAX = 300
 MAX_NO_CROSS_OPTIMIZATION_MAX = 50
 FLOAT_OPTIMIZATION_MAX_CANDIDATES = 200
+ERROR_TRACEBACK_MAX_CHARS = 4000
 
 PHASE_3_PARAMETERS = {
     "execution_model": "research_bar_close",
@@ -767,10 +770,23 @@ class MutationLabService:
             "active": False,
             "message": "No optimization running.",
         }
+        self._last_optimization_result: dict[str, Any] | None = None
 
     def optimization_progress(self) -> dict[str, Any]:
         with self._optimization_lock:
             return json.loads(json.dumps(self._optimization_progress))
+
+    def optimization_result(self) -> dict[str, Any]:
+        with self._optimization_lock:
+            if not self._last_optimization_result:
+                raise HTTPException(status_code=404, detail="No optimization result is available.")
+            return json.loads(json.dumps(self._last_optimization_result))
+
+    def _ensure_no_active_optimization(self) -> None:
+        with self._optimization_lock:
+            if self._optimization_progress.get("active"):
+                current = self._optimization_progress.get("message") or "Optimization already running."
+                raise HTTPException(status_code=409, detail=current)
 
     def _set_optimization_progress(self, **updates: Any) -> None:
         with self._optimization_lock:
@@ -815,7 +831,9 @@ class MutationLabService:
                 "updated_at": now,
                 "finished_at": None,
                 "error": None,
+                "result_available": False,
             }
+            self._last_optimization_result = None
         return job_id
 
     def _finish_optimization_progress(self, message: str, error: str | None = None) -> None:
@@ -825,6 +843,35 @@ class MutationLabService:
             error=error,
             finished_at=datetime.now(UTC).isoformat(),
         )
+
+    @staticmethod
+    def _format_exception(error: BaseException) -> str:
+        message = str(error).strip() or repr(error)
+        trace = "".join(traceback.format_exception(type(error), error, error.__traceback__)).strip()
+        if trace:
+            message = f"{message}\n{trace}"
+        return message[:ERROR_TRACEBACK_MAX_CHARS]
+
+    def _store_optimization_result(self, result: dict[str, Any]) -> None:
+        preview = result.get("preview", {})
+        metrics = preview.get("metrics", {}) if isinstance(preview, dict) else {}
+        with self._optimization_lock:
+            self._last_optimization_result = json.loads(json.dumps(result))
+            self._optimization_progress = {
+                **self._optimization_progress,
+                "result_available": True,
+                "result_mode": result.get("mode"),
+                "result_base_version_id": result.get("base_version_id"),
+                "result_dataset_id": result.get("dataset_id"),
+                "result_preview_verdict": preview.get("verdict") if isinstance(preview, dict) else None,
+                "result_preview_metrics": {
+                    "net_pnl": metrics.get("net_pnl"),
+                    "profit_factor": metrics.get("profit_factor"),
+                    "total_trades": metrics.get("total_trades"),
+                    "max_equity_drawdown_pct": metrics.get("max_equity_drawdown_pct"),
+                },
+                "updated_at": datetime.now(UTC).isoformat(),
+            }
 
     def ensure_seeded(self) -> None:
         settings.ensure_dirs()
@@ -1142,7 +1189,7 @@ class MutationLabService:
             "spec": tuned_spec,
             "metrics": result["metrics"],
             "diagnostics": result["diagnostics"],
-            "trades": result["trades"],
+            "trade_count": len(result["trades"]),
             "comparison": comparison,
             "verdict": self._verdict(tuned_spec, result["metrics"], comparison),
         }
@@ -1276,6 +1323,7 @@ class MutationLabService:
         lever: str,
         parameter_overrides: dict[str, Any] | None = None,
         _progress_context: dict[str, Any] | None = None,
+        _bars: list[Any] | None = None,
     ) -> dict[str, Any]:
         version = self._get_upgraded_version(version_id)
         if not version:
@@ -1287,7 +1335,9 @@ class MutationLabService:
             raise HTTPException(status_code=404, detail="Tuning lever not found.")
         if not edge.get("optimizable", True):
             raise HTTPException(status_code=400, detail=f"{lever} is manually editable but not optimizable.")
-        bars = self.data_service.load_bars(dataset_id)
+        if _progress_context is None:
+            self._ensure_no_active_optimization()
+        bars = _bars if _bars is not None else self.data_service.load_bars(dataset_id)
         candidates: list[dict[str, Any]] = []
         values = self._candidate_values(edge)
         own_progress = _progress_context is None
@@ -1345,6 +1395,9 @@ class MutationLabService:
                         "parameter_overrides": overrides,
                     }
                 )
+                del result
+                if index % 25 == 0:
+                    gc.collect()
             if not candidates:
                 raise HTTPException(status_code=400, detail="No candidates generated for this lever.")
             eligible_candidates = [candidate for candidate in candidates if candidate["eligible"]]
@@ -1388,7 +1441,7 @@ class MutationLabService:
             }
         except Exception as error:
             if own_progress:
-                self._finish_optimization_progress(f"{lever} optimization failed.", error=str(error))
+                self._finish_optimization_progress(f"{lever} optimization failed.", error=self._format_exception(error))
             raise
 
     def optimize_all(
@@ -1401,8 +1454,10 @@ class MutationLabService:
         version = self._get_upgraded_version(version_id)
         if not version:
             raise HTTPException(status_code=404, detail="Version not found.")
+        self._ensure_no_active_optimization()
         passes = max(1, min(int(passes), 5))
         overrides = self._production_baseline_overrides(version["spec_json"], dict(parameter_overrides or {}))
+        starting_overrides = dict(overrides)
         edges = [edge for edge in self.list_tuning_edges(version_id) if edge.get("optimizable", True)]
         candidate_counts = {edge["lever"]: len(self._candidate_values(edge)) for edge in edges}
         total_overall = sum(candidate_counts.values()) * passes
@@ -1423,7 +1478,10 @@ class MutationLabService:
             passes=passes,
         )
         steps: list[dict[str, Any]] = []
+        bars: list[Any] | None = None
         try:
+            self._set_optimization_progress(message="Loading dataset once for memory-stable optimization...")
+            bars = self.data_service.load_bars(dataset_id)
             for pass_index in range(1, passes + 1):
                 progress_context["pass_index"] = pass_index
                 improved = False
@@ -1436,6 +1494,7 @@ class MutationLabService:
                         edge["lever"],
                         overrides,
                         _progress_context=progress_context,
+                        _bars=bars,
                     )
                     progress_context["overall_done"] += candidate_counts[edge["lever"]]
                     best_overrides = result["best"]["parameter_overrides"]
@@ -1457,24 +1516,40 @@ class MutationLabService:
                 if not improved:
                     break
             self._set_optimization_progress(message="Building optimized preview...")
-            preview = self.preview_tuned_version(version_id, dataset_id, overrides)
-            self._finish_optimization_progress(
-                f"Optimization complete. Tested {progress_context['overall_done']} candidates."
-            )
-            return {
+            candidate_overrides = dict(overrides)
+            preview = self.preview_tuned_version(version_id, dataset_id, candidate_overrides)
+            final_candidate_rejected = False
+            rejection_reason = None
+            if not self._optimization_eligible(preview["spec"], preview["metrics"]):
+                final_candidate_rejected = True
+                rejection_reason = "optimized_candidate_failed_production_gates"
+                overrides = starting_overrides
+                preview = self.preview_tuned_version(version_id, dataset_id, overrides)
+            result = {
                 "mode": "optimize_all",
                 "base_version_id": version_id,
                 "dataset_id": dataset_id,
                 "passes_requested": passes,
                 "parameter_overrides": overrides,
+                "rejected_parameter_overrides": candidate_overrides if final_candidate_rejected else {},
+                "final_candidate_rejected": final_candidate_rejected,
+                "rejection_reason": rejection_reason,
                 "steps": steps,
                 "eligible_steps": sum(1 for step in steps if step["selection_mode"] == "eligible_only"),
                 "research_fallback_steps": sum(1 for step in steps if step["selection_mode"] == "research_score_fallback"),
                 "preview": preview,
             }
+            self._store_optimization_result(result)
+            self._finish_optimization_progress(
+                f"Optimization complete. Tested {progress_context['overall_done']} candidates."
+            )
+            return result
         except Exception as error:
-            self._finish_optimization_progress("Optimization failed.", error=str(error))
+            self._finish_optimization_progress("Optimization failed.", error=self._format_exception(error))
             raise
+        finally:
+            bars = None
+            gc.collect()
 
     @staticmethod
     def _production_baseline_overrides(spec: dict[str, Any], overrides: dict[str, Any]) -> dict[str, Any]:

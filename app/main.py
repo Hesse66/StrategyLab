@@ -131,6 +131,11 @@ def optimization_progress() -> dict:
     return lab.optimization_progress()
 
 
+@app.get("/api/optimization-result")
+def optimization_result() -> dict:
+    return lab.optimization_result()
+
+
 @app.post("/api/families/register")
 def register_family(request: RegisterBaselineRequest) -> dict:
     return lab.register_baseline(
