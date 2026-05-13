@@ -407,7 +407,7 @@ PRODUCTION_EVALUATION_DEFAULTS = {
     "maximum_entry_exposure_pct": 100.0,
     "maximum_avg_exposure_pct": 100.0,
     "maximum_worst_daily_loss_pct": 5.0,
-    "production_sizing_modes": ["fixed_notional_pct", "fixed_risk_pct"],
+    "production_sizing_modes": ["fixed_notional_pct", "fixed_risk_pct", "mt5_fixed_risk_lot"],
     "benchmark_policy": "outperform_return_or_calmar",
 }
 
@@ -416,6 +416,11 @@ PORTFOLIO_PARAMETERS = {
     "notional_pct": 0.25,
     "risk_pct": 0.005,
     "max_leverage": 1.0,
+    "contract_size": 100.0,
+    "min_lot": 0.01,
+    "lot_step": 0.01,
+    "max_lot": 100.0,
+    "skip_below_min_lot": True,
 }
 
 EXECUTION_PARAMETERS = {
@@ -438,9 +443,9 @@ PORTFOLIO_MUTATION_SPACE = [
         "lever": "sizing_mode",
         "path": "parameters.sizing_mode",
         "priority": 130,
-        "values": ["fixed_quantity", "fixed_notional_pct", "fixed_risk_pct"],
+        "values": ["fixed_quantity", "fixed_notional_pct", "fixed_risk_pct", "mt5_fixed_risk_lot"],
         "search_mode": "values_only",
-        "rationale": "Choose the capital model. fixed_quantity is an alpha-engine diagnostic, fixed_notional_pct compounds a notional share of current equity, and fixed_risk_pct sizes by loss budget to the stop.",
+        "rationale": "Choose the capital model. fixed_quantity is an alpha-engine diagnostic, fixed_notional_pct compounds a notional share of current equity, fixed_risk_pct sizes by loss budget to the stop, and mt5_fixed_risk_lot rounds that risk budget to broker lot constraints.",
     },
     {
         "kind": "portfolio",
@@ -477,6 +482,51 @@ PORTFOLIO_MUTATION_SPACE = [
         "search_max": 1.0,
         "search_step": 0.25,
         "rationale": "Cap position notional as a multiple of current equity. Production optimization defaults to unlevered exposure at 1.0 or lower; higher leverage should be tested only as an explicit research stress scenario.",
+    },
+    {
+        "kind": "portfolio",
+        "lever": "contract_size",
+        "path": "parameters.contract_size",
+        "priority": 126,
+        "values": [1.0, 10.0, 100.0],
+        "search_mode": "values_only",
+        "rationale": "Contract size used by mt5_fixed_risk_lot sizing.",
+    },
+    {
+        "kind": "portfolio",
+        "lever": "min_lot",
+        "path": "parameters.min_lot",
+        "priority": 125,
+        "values": [0.01, 0.1, 1.0],
+        "search_mode": "values_only",
+        "rationale": "Broker minimum lot used by mt5_fixed_risk_lot sizing.",
+    },
+    {
+        "kind": "portfolio",
+        "lever": "lot_step",
+        "path": "parameters.lot_step",
+        "priority": 124,
+        "values": [0.01, 0.1, 1.0],
+        "search_mode": "values_only",
+        "rationale": "Broker lot step used by mt5_fixed_risk_lot sizing.",
+    },
+    {
+        "kind": "portfolio",
+        "lever": "max_lot",
+        "path": "parameters.max_lot",
+        "priority": 123,
+        "values": [1.0, 10.0, 100.0],
+        "search_mode": "values_only",
+        "rationale": "Broker maximum lot cap used by mt5_fixed_risk_lot sizing.",
+    },
+    {
+        "kind": "portfolio",
+        "lever": "skip_below_min_lot",
+        "path": "parameters.skip_below_min_lot",
+        "priority": 122,
+        "values": [True, False],
+        "search_mode": "values_only",
+        "rationale": "Choose whether MT5 lot sizing skips entries below the minimum lot or floors them to min lot for an explicit stress test.",
     },
 ]
 

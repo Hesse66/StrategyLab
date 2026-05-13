@@ -850,6 +850,111 @@ class MutationLabTests(unittest.TestCase):
         )
         self.assertGreaterEqual(result["diagnostics"]["mt5_stop_modify_rejects"], 1)
 
+    def test_ghl_dc_engine_runs(self) -> None:
+        bars = build_fixture_bars(1200)
+        for bar in bars:
+            bar.symbol = "XAUUSD"
+            bar.timeframe = "30m"
+        spec = {
+            "engine_id": "ghl_dc_breakout_v1",
+            "parameters": {
+                "gann_high_period": 5,
+                "gann_low_period": 8,
+                "donchian_length": 13,
+                "max_breakout_bars": 10,
+                "allow_long": True,
+                "allow_short": True,
+                "atr_len": 8,
+                "stop_mode": "atr",
+                "stop_mult": 2.0,
+                "initial_capital": 100000.0,
+                "commission_pct": 0.0,
+                "slippage_ticks": 1,
+                "tick_size": 0.01,
+                "sizing_mode": "fixed_risk_pct",
+                "risk_pct": 0.005,
+                "max_leverage": 1.0,
+                "execution_model": "mt5_bar_proxy",
+            },
+            "evaluation": {},
+        }
+        result = BacktestEngine().run(spec, bars)
+        self.assertIn("metrics", result)
+        self.assertIn("diagnostics", result)
+        self.assertEqual(result["diagnostics"]["execution_model"], "mt5_bar_proxy")
+        self.assertGreaterEqual(result["diagnostics"]["bars"], 1200)
+        self.assertIn("breakeven_stop_moves", result["diagnostics"])
+        self.assertTrue(result["trades"])
+        features = result["trades"][0]["entry_features"]
+        for key in (
+            "atr_pct",
+            "normalized_ma_distance",
+            "recent_return_20",
+            "recent_range_20",
+            "recent_volatility_20",
+            "recent_cross_count",
+            "stop_distance_atr",
+            "donchian_breakout_distance_atr",
+            "breakout_age_bars",
+            "bars_since_gann_flip",
+        ):
+            self.assertIn(key, features)
+
+    def test_mt5_fixed_risk_lot_sizing_rounds_to_broker_step(self) -> None:
+        quantity = BacktestEngine._position_quantity(
+            {
+                "sizing_mode": "mt5_fixed_risk_lot",
+                "risk_pct": 0.01,
+                "max_leverage": 1.0,
+                "contract_size": 100.0,
+                "min_lot": 0.01,
+                "lot_step": 0.01,
+                "max_lot": 100.0,
+                "skip_below_min_lot": True,
+            },
+            equity=5000.0,
+            entry_price=2500.0,
+            stop_price=2490.0,
+        )
+        self.assertEqual(quantity, 2.0)
+
+    def test_ghl_dc_mt5_sizing_reports_invalid_lot_skips(self) -> None:
+        bars = build_fixture_bars(1200)
+        for bar in bars:
+            bar.symbol = "XAUUSD"
+            bar.timeframe = "30m"
+        spec = {
+            "engine_id": "ghl_dc_breakout_v1",
+            "parameters": {
+                "gann_high_period": 5,
+                "gann_low_period": 8,
+                "donchian_length": 13,
+                "max_breakout_bars": 10,
+                "allow_long": True,
+                "allow_short": False,
+                "atr_len": 8,
+                "stop_mode": "atr",
+                "stop_mult": 2.0,
+                "initial_capital": 5000.0,
+                "commission_pct": 0.0,
+                "slippage_ticks": 1,
+                "tick_size": 0.01,
+                "sizing_mode": "mt5_fixed_risk_lot",
+                "risk_pct": 0.0001,
+                "max_leverage": 1.0,
+                "contract_size": 100.0,
+                "min_lot": 100.0,
+                "lot_step": 0.01,
+                "max_lot": 100.0,
+                "skip_below_min_lot": True,
+                "execution_model": "mt5_bar_proxy",
+            },
+            "evaluation": {},
+        }
+        result = BacktestEngine().run(spec, bars)
+        self.assertGreater(result["diagnostics"]["mt5_invalid_lot_skips"], 0)
+        self.assertEqual(result["diagnostics"]["entries"], 0)
+
     def test_time_decay_confirmation_suppresses_unconfirmed_exit(self) -> None:
         diagnostics = {
             "time_decay_confirmation_candidates": 0,
