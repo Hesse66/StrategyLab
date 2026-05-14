@@ -28,9 +28,13 @@ agents/mutation-lab-01.txt
 Thumbs.db
 
 issues.txt
+artifacts/runs/run_10a82774ade2.json
 
 #Bridge
 
 AGENTS.md
 bridgecode/
+<<<<<<< master
+=======
 context4.txt
+>>>>>>> master

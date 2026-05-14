@@ -3,6 +3,9 @@ from __future__ import annotations
 import json
 import uuid
 import math
+import threading
+import traceback
+import gc
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -19,8 +22,10 @@ from app.storage import Repository
 LENGTH_OPTIMIZATION_MAX = 300
 MAX_NO_CROSS_OPTIMIZATION_MAX = 50
 FLOAT_OPTIMIZATION_MAX_CANDIDATES = 200
+ERROR_TRACEBACK_MAX_CHARS = 4000
 
 PHASE_3_PARAMETERS = {
+    "execution_model": "research_bar_close",
     "time_decay_exit_enabled": False,
     "time_decay_bars": 96,
     "time_decay_min_mfe_r": 0.5,
@@ -49,12 +54,139 @@ PHASE_3_PARAMETERS = {
 PHASE_3_MUTATION_SPACE = [
     {
         "kind": "white_box",
+        "lever": "execution_model",
+        "path": "parameters.execution_model",
+        "priority": 130,
+        "values": ["mt5_bar_proxy", "research_bar_close"],
+        "search_mode": "values_only",
+        "optimizable": False,
+        "rationale": "Switch between the fast research bar-close model and a conservative MT5 bar proxy where signals execute on the next bar with stops active immediately.",
+    },
+    {
+        "kind": "white_box",
+        "lever": "entry_exposure_gate_enabled",
+        "path": "parameters.entry_exposure_gate_enabled",
+        "priority": 91,
+        "values": [True, False],
+        "search_mode": "values_only",
+        "rationale": "Enable or disable a decision-time gate that rejects entries whose intended exposure is too high.",
+    },
+    {
+        "kind": "white_box",
+        "lever": "entry_exposure_gate_max_pct",
+        "path": "parameters.entry_exposure_gate_max_pct",
+        "priority": 90,
+        "values": [60.0, 75.0, 90.0],
+        "search_mode": "range",
+        "search_min": 50.0,
+        "search_max": 100.0,
+        "search_step": 5.0,
+        "rationale": "Tune the maximum intended entry exposure allowed before a candidate trade is skipped.",
+    },
+    {
+        "kind": "white_box",
+        "lever": "reverse_confirmation_enabled",
+        "path": "parameters.reverse_confirmation_enabled",
+        "priority": 89,
+        "values": [True, False],
+        "search_mode": "values_only",
+        "rationale": "Enable or disable early reverse-exit confirmation for short-cycle XAU/BTC-transplant parents.",
+    },
+    {
+        "kind": "white_box",
         "lever": "time_decay_exit_enabled",
         "path": "parameters.time_decay_exit_enabled",
         "priority": 88,
         "values": [True, False],
         "search_mode": "values_only",
         "rationale": "Enable or disable failed-entry time-decay exits as a full-whitebox rule mutation.",
+    },
+    {
+        "kind": "white_box",
+        "lever": "reverse_confirm_max_bars",
+        "path": "parameters.reverse_confirm_max_bars",
+        "priority": 87,
+        "values": [1, 2, 3],
+        "search_mode": "range",
+        "search_min": 1,
+        "search_max": 4,
+        "search_step": 1,
+        "rationale": "Tune how young a position must be before reverse confirmation can suppress an opposite signal.",
+    },
+    {
+        "kind": "white_box",
+        "lever": "time_decay_triage_confirmation_enabled",
+        "path": "parameters.time_decay_triage_confirmation_enabled",
+        "priority": 86,
+        "values": [True, False],
+        "search_mode": "values_only",
+        "rationale": "Confirm failed-entry time-decay exits only when the trade still looks weak at decision time.",
+    },
+    {
+        "kind": "white_box",
+        "lever": "reverse_confirm_min_mfe_r",
+        "path": "parameters.reverse_confirm_min_mfe_r",
+        "priority": 87,
+        "values": [0.10, 0.20, 0.30],
+        "search_mode": "range",
+        "search_min": 0.05,
+        "search_max": 0.50,
+        "search_step": 0.05,
+        "rationale": "Tune the favorable-excursion threshold required before a young reverse exit is trusted.",
+    },
+    {
+        "kind": "white_box",
+        "lever": "reverse_confirm_allow_if_unrealized_r_lte",
+        "path": "parameters.reverse_confirm_allow_if_unrealized_r_lte",
+        "priority": 86,
+        "values": [-0.50, -0.35, -0.20],
+        "search_mode": "range",
+        "search_min": -0.75,
+        "search_max": -0.10,
+        "search_step": 0.05,
+        "rationale": "Tune the adverse escape valve so reverse confirmation does not trap clearly failing trades.",
+    },
+    {
+        "kind": "white_box",
+        "lever": "reverse_confirm_require_no_breakeven_move",
+        "path": "parameters.reverse_confirm_require_no_breakeven_move",
+        "priority": 85,
+        "values": [False, True],
+        "search_mode": "values_only",
+        "rationale": "Optionally allow reverse exits normally after breakeven stop management has taken control.",
+    },
+    {
+        "kind": "white_box",
+        "lever": "time_decay_confirm_max_unrealized_r",
+        "path": "parameters.time_decay_confirm_max_unrealized_r",
+        "priority": 84,
+        "values": [-0.25, 0.0, 0.25],
+        "search_mode": "range",
+        "search_min": -1.0,
+        "search_max": 0.5,
+        "search_step": 0.05,
+        "rationale": "Tune how weak unrealized R must still be before a time-decay candidate is allowed to close.",
+    },
+    {
+        "kind": "white_box",
+        "lever": "time_decay_confirm_max_mfe_r",
+        "path": "parameters.time_decay_confirm_max_mfe_r",
+        "priority": 83,
+        "values": [0.25, 0.35, 0.5],
+        "search_mode": "range",
+        "search_min": 0.0,
+        "search_max": 1.0,
+        "search_step": 0.05,
+        "rationale": "Tune the favorable-excursion ceiling that still qualifies a time-decay candidate as failed-entry behavior.",
+    },
+    {
+        "kind": "white_box",
+        "lever": "time_decay_confirm_require_no_breakeven_move",
+        "path": "parameters.time_decay_confirm_require_no_breakeven_move",
+        "priority": 82,
+        "values": [False, True],
+        "search_mode": "values_only",
+        "rationale": "Optionally suppress time-decay exits after a breakeven/lock stop has already taken over management.",
     },
     {
         "kind": "white_box",
@@ -322,6 +454,91 @@ PHASE_3_MUTATION_SPACE = [
     },
 ]
 
+GHL_DC_PHASE_3_PARAMETERS = {
+    "breakeven_stop_enabled": False,
+    "breakeven_trigger_mfe_r": 0.75,
+    "breakeven_lock_r": 0.0,
+    "time_risk_filter_enabled": False,
+    "time_risk_block_utc_hours": [],
+    "time_risk_block_weekdays": [],
+}
+
+GHL_DC_PHASE_3_MUTATION_SPACE = [
+    {
+        "kind": "white_box",
+        "lever": "breakeven_stop_enabled",
+        "path": "parameters.breakeven_stop_enabled",
+        "priority": 58,
+        "values": [True, False],
+        "search_mode": "values_only",
+        "rationale": "Enable or disable MFE-activated breakeven stop management for the XAUUSD GHL+DC parent.",
+    },
+    {
+        "kind": "white_box",
+        "lever": "breakeven_trigger_mfe_r",
+        "path": "parameters.breakeven_trigger_mfe_r",
+        "priority": 57,
+        "values": [0.5, 0.75, 1.0, 1.25, 1.5],
+        "search_mode": "range",
+        "search_min": 0.5,
+        "search_max": 1.5,
+        "search_step": 0.25,
+        "rationale": "Tune the favorable-excursion R threshold that moves the GHL+DC stop to breakeven or profit lock.",
+    },
+    {
+        "kind": "white_box",
+        "lever": "breakeven_lock_r",
+        "path": "parameters.breakeven_lock_r",
+        "priority": 56,
+        "values": [0.0, 0.1, 0.25, 0.5],
+        "search_mode": "range",
+        "search_min": 0.0,
+        "search_max": 0.5,
+        "search_step": 0.1,
+        "rationale": "Tune how much R is locked after the GHL+DC breakeven stop is armed.",
+    },
+    {
+        "kind": "white_box",
+        "lever": "time_risk_filter_enabled",
+        "path": "parameters.time_risk_filter_enabled",
+        "priority": 62,
+        "values": [True, False],
+        "search_mode": "values_only",
+        "rationale": "Enable or disable the UTC entry-hour risk filter for the XAUUSD GHL+DC parent.",
+    },
+    {
+        "kind": "white_box",
+        "lever": "time_risk_block_utc_hours",
+        "path": "parameters.time_risk_block_utc_hours",
+        "priority": 61,
+        "values": [
+            [],
+            [1],
+            [7],
+            [21],
+            [14],
+            [1, 7],
+            [1, 21],
+            [7, 21],
+            [1, 7, 21],
+            [1, 7, 14, 21],
+            [1, 7, 12, 14, 21],
+            [1, 7, 8, 11, 12, 13, 14, 21],
+        ],
+        "search_mode": "values_only",
+        "rationale": "Tune evidenced weak UTC entry-hour exclusions for the XAUUSD GHL+DC parent.",
+    },
+    {
+        "kind": "white_box",
+        "lever": "time_risk_block_weekdays",
+        "path": "parameters.time_risk_block_weekdays",
+        "priority": 60,
+        "values": [[]],
+        "search_mode": "values_only",
+        "rationale": "Keep weekday blocking disabled for the first GHL+DC time-risk mutation.",
+    },
+]
+
 PHASE_4_PARAMETERS = {
     "hybrid_time_decay_triage_enabled": False,
     "hybrid_time_decay_triage_checkpoints": [10, 20, 30],
@@ -411,6 +628,21 @@ PRODUCTION_EVALUATION_DEFAULTS = {
     "benchmark_policy": "outperform_return_or_calmar",
 }
 
+
+def _ensure_production_evaluation_defaults(evaluation: dict[str, Any]) -> bool:
+    changed = False
+    for key, value in PRODUCTION_EVALUATION_DEFAULTS.items():
+        if key not in evaluation:
+            evaluation[key] = json.loads(json.dumps(value))
+            changed = True
+    allowed_modes = evaluation.setdefault("production_sizing_modes", [])
+    for mode in PRODUCTION_EVALUATION_DEFAULTS["production_sizing_modes"]:
+        if mode not in allowed_modes:
+            allowed_modes.append(mode)
+            changed = True
+    return changed
+
+
 PORTFOLIO_PARAMETERS = {
     "sizing_mode": "fixed_risk_pct",
     "notional_pct": 0.25,
@@ -421,10 +653,13 @@ PORTFOLIO_PARAMETERS = {
     "lot_step": 0.01,
     "max_lot": 100.0,
     "skip_below_min_lot": True,
+<<<<<<< master
+=======
 }
 
 EXECUTION_PARAMETERS = {
     "execution_model": "next_bar_open",
+>>>>>>> master
 }
 
 PORTFOLIO_MUTATION_SPACE = [
@@ -437,6 +672,16 @@ PORTFOLIO_MUTATION_SPACE = [
         "search_mode": "values_only",
         "optimizable": False,
         "rationale": "Choose the production-comparable bar execution proxy. next_bar_open fills closed-bar signals at the next open; mt5_bar_proxy additionally models MT5-style same-entry-bar stop eligibility and stop-modification rejection.",
+    },
+    {
+        "kind": "portfolio",
+        "lever": "initial_capital",
+        "path": "parameters.initial_capital",
+        "priority": 131,
+        "values": [5000.0, 100000.0],
+        "search_mode": "values_only",
+        "optimizable": False,
+        "rationale": "Switch between research account equity and funded-account sizing scenarios.",
     },
     {
         "kind": "portfolio",
@@ -488,16 +733,26 @@ PORTFOLIO_MUTATION_SPACE = [
         "lever": "contract_size",
         "path": "parameters.contract_size",
         "priority": 126,
+<<<<<<< master
+        "values": [100.0],
+        "search_mode": "values_only",
+        "rationale": "XAUUSD contract size used by mt5_fixed_risk_lot sizing.",
+=======
         "values": [1.0, 10.0, 100.0],
         "search_mode": "values_only",
         "rationale": "Contract size used by mt5_fixed_risk_lot sizing.",
+>>>>>>> master
     },
     {
         "kind": "portfolio",
         "lever": "min_lot",
         "path": "parameters.min_lot",
         "priority": 125,
+<<<<<<< master
+        "values": [0.01],
+=======
         "values": [0.01, 0.1, 1.0],
+>>>>>>> master
         "search_mode": "values_only",
         "rationale": "Broker minimum lot used by mt5_fixed_risk_lot sizing.",
     },
@@ -506,7 +761,11 @@ PORTFOLIO_MUTATION_SPACE = [
         "lever": "lot_step",
         "path": "parameters.lot_step",
         "priority": 124,
+<<<<<<< master
+        "values": [0.01],
+=======
         "values": [0.01, 0.1, 1.0],
+>>>>>>> master
         "search_mode": "values_only",
         "rationale": "Broker lot step used by mt5_fixed_risk_lot sizing.",
     },
@@ -515,7 +774,11 @@ PORTFOLIO_MUTATION_SPACE = [
         "lever": "max_lot",
         "path": "parameters.max_lot",
         "priority": 123,
+<<<<<<< master
+        "values": [100.0],
+=======
         "values": [1.0, 10.0, 100.0],
+>>>>>>> master
         "search_mode": "values_only",
         "rationale": "Broker maximum lot cap used by mt5_fixed_risk_lot sizing.",
     },
@@ -656,6 +919,113 @@ class MutationLabService:
         self.repo = repo or Repository()
         self.data_service = data_service or DataService(self.repo)
         self.engine = engine or BacktestEngine()
+        self._optimization_lock = threading.Lock()
+        self._optimization_progress: dict[str, Any] = {
+            "active": False,
+            "message": "No optimization running.",
+        }
+        self._last_optimization_result: dict[str, Any] | None = None
+
+    def optimization_progress(self) -> dict[str, Any]:
+        with self._optimization_lock:
+            return json.loads(json.dumps(self._optimization_progress))
+
+    def optimization_result(self) -> dict[str, Any]:
+        with self._optimization_lock:
+            if not self._last_optimization_result:
+                raise HTTPException(status_code=404, detail="No optimization result is available.")
+            return json.loads(json.dumps(self._last_optimization_result))
+
+    def _ensure_no_active_optimization(self) -> None:
+        with self._optimization_lock:
+            if self._optimization_progress.get("active"):
+                current = self._optimization_progress.get("message") or "Optimization already running."
+                raise HTTPException(status_code=409, detail=current)
+
+    def _set_optimization_progress(self, **updates: Any) -> None:
+        with self._optimization_lock:
+            self._optimization_progress = {
+                **self._optimization_progress,
+                **updates,
+                "updated_at": datetime.now(UTC).isoformat(),
+            }
+
+    def _start_optimization_progress(
+        self,
+        *,
+        mode: str,
+        version_id: str,
+        dataset_id: str,
+        total_candidates: int,
+        total_levers: int = 1,
+        passes: int = 1,
+        lever: str | None = None,
+    ) -> str:
+        job_id = f"opt_{uuid.uuid4().hex[:12]}"
+        now = datetime.now(UTC).isoformat()
+        with self._optimization_lock:
+            self._optimization_progress = {
+                "active": True,
+                "job_id": job_id,
+                "mode": mode,
+                "version_id": version_id,
+                "dataset_id": dataset_id,
+                "lever": lever,
+                "current_lever": lever,
+                "current_pass": 1,
+                "passes": passes,
+                "current_lever_index": 1 if lever else 0,
+                "total_levers": total_levers,
+                "candidate_index": 0,
+                "total_candidates": total_candidates,
+                "overall_index": 0,
+                "total_overall": total_candidates,
+                "message": "Starting optimization...",
+                "started_at": now,
+                "updated_at": now,
+                "finished_at": None,
+                "error": None,
+                "result_available": False,
+            }
+            self._last_optimization_result = None
+        return job_id
+
+    def _finish_optimization_progress(self, message: str, error: str | None = None) -> None:
+        self._set_optimization_progress(
+            active=False,
+            message=message,
+            error=error,
+            finished_at=datetime.now(UTC).isoformat(),
+        )
+
+    @staticmethod
+    def _format_exception(error: BaseException) -> str:
+        message = str(error).strip() or repr(error)
+        trace = "".join(traceback.format_exception(type(error), error, error.__traceback__)).strip()
+        if trace:
+            message = f"{message}\n{trace}"
+        return message[:ERROR_TRACEBACK_MAX_CHARS]
+
+    def _store_optimization_result(self, result: dict[str, Any]) -> None:
+        preview = result.get("preview", {})
+        metrics = preview.get("metrics", {}) if isinstance(preview, dict) else {}
+        with self._optimization_lock:
+            self._last_optimization_result = json.loads(json.dumps(result))
+            self._optimization_progress = {
+                **self._optimization_progress,
+                "result_available": True,
+                "result_mode": result.get("mode"),
+                "result_base_version_id": result.get("base_version_id"),
+                "result_dataset_id": result.get("dataset_id"),
+                "result_preview_verdict": preview.get("verdict") if isinstance(preview, dict) else None,
+                "result_preview_metrics": {
+                    "net_pnl": metrics.get("net_pnl"),
+                    "profit_factor": metrics.get("profit_factor"),
+                    "total_trades": metrics.get("total_trades"),
+                    "max_equity_drawdown_pct": metrics.get("max_equity_drawdown_pct"),
+                },
+                "updated_at": datetime.now(UTC).isoformat(),
+            }
 
     def ensure_seeded(self) -> None:
         settings.ensure_dirs()
@@ -769,6 +1139,32 @@ class MutationLabService:
         upgraded = json.loads(json.dumps(spec))
         changed = False
         if upgraded.get("engine_id") != "ma_cross_atr_stop_v1":
+            if upgraded.get("engine_id") == "ghl_dc_breakout_v1":
+                parameters = upgraded.setdefault("parameters", {})
+                for key, value in {**GHL_DC_PHASE_3_PARAMETERS, **PORTFOLIO_PARAMETERS}.items():
+                    if key not in parameters:
+                        parameters[key] = value
+                        changed = True
+                evaluation = upgraded.setdefault("evaluation", {})
+                if _ensure_production_evaluation_defaults(evaluation):
+                    changed = True
+                mutation_space = upgraded.setdefault("mutation_space", [])
+                existing_by_lever = {item.get("lever"): item for item in mutation_space}
+                for mutation in [*GHL_DC_PHASE_3_MUTATION_SPACE, *PORTFOLIO_MUTATION_SPACE]:
+                    existing = existing_by_lever.get(mutation["lever"])
+                    if existing is None:
+                        mutation_space.append(json.loads(json.dumps(mutation)))
+                        changed = True
+                        continue
+                    for key in ("priority", "values", "search_mode", "search_min", "search_max", "search_step", "optimizable", "rationale", "path", "kind"):
+                        next_value = mutation.get(key)
+                        if existing.get(key) != next_value:
+                            existing[key] = json.loads(json.dumps(next_value))
+                            changed = True
+            for mutation in upgraded.get("mutation_space", []):
+                if mutation.get("search_mode") is None:
+                    mutation["search_mode"] = "values_only"
+                    changed = True
             return upgraded, changed
         parameters = upgraded.setdefault("parameters", {})
         for key, value in {**PHASE_3_PARAMETERS, **PHASE_4_PARAMETERS, **PORTFOLIO_PARAMETERS, **EXECUTION_PARAMETERS}.items():
@@ -776,10 +1172,8 @@ class MutationLabService:
                 parameters[key] = value
                 changed = True
         evaluation = upgraded.setdefault("evaluation", {})
-        for key, value in PRODUCTION_EVALUATION_DEFAULTS.items():
-            if key not in evaluation:
-                evaluation[key] = json.loads(json.dumps(value))
-                changed = True
+        if _ensure_production_evaluation_defaults(evaluation):
+            changed = True
         mutation_space = upgraded.setdefault("mutation_space", [])
         next_mutation_space = [item for item in mutation_space if item.get("lever") != "quality_gate_placeholder"]
         if len(next_mutation_space) != len(mutation_space):
@@ -794,7 +1188,11 @@ class MutationLabService:
                 changed = True
                 continue
             for key in ("priority", "values", "search_mode", "search_min", "search_max", "search_step", "optimizable", "rationale", "path", "kind"):
+<<<<<<< master
+                next_value = mutation.get(key)
+=======
                 next_value = mutation.get(key, True) if key == "optimizable" else mutation.get(key)
+>>>>>>> master
                 if existing.get(key) != next_value:
                     existing[key] = json.loads(json.dumps(next_value))
                     changed = True
@@ -884,6 +1282,7 @@ class MutationLabService:
                 "suggested_down": lower[-1] if lower else None,
                 "suggested_up": upper[0] if upper else None,
                 "alternatives": suggestions,
+                "optimizable": mutation.get("optimizable", True),
                 "search_mode": mutation.get("search_mode", "auto"),
                 "search_min": mutation.get("search_min"),
                 "search_max": mutation.get("search_max"),
@@ -1005,7 +1404,7 @@ class MutationLabService:
             "spec": tuned_spec,
             "metrics": result["metrics"],
             "diagnostics": result["diagnostics"],
-            "trades": result["trades"],
+            "trade_count": len(result["trades"]),
             "comparison": comparison,
             "verdict": self._verdict(tuned_spec, result["metrics"], comparison),
         }
@@ -1293,7 +1692,12 @@ class MutationLabService:
         dataset_id: str,
         lever: str,
         parameter_overrides: dict[str, Any] | None = None,
+<<<<<<< master
+        _progress_context: dict[str, Any] | None = None,
+        _bars: list[Any] | None = None,
+=======
         optimization_mode: str = "production",
+>>>>>>> master
     ) -> dict[str, Any]:
         optimization_mode = self._normalize_optimization_mode(optimization_mode)
         version = self._get_upgraded_version(version_id)
@@ -1306,10 +1710,121 @@ class MutationLabService:
             raise HTTPException(status_code=404, detail="Tuning lever not found.")
         if not edge.get("optimizable", True):
             raise HTTPException(status_code=400, detail=f"{lever} is manually editable but not optimizable.")
+<<<<<<< master
+        if _progress_context is None:
+            self._ensure_no_active_optimization()
+        bars = _bars if _bars is not None else self.data_service.load_bars(dataset_id)
+=======
         bars = self.data_service.load_bars(dataset_id)
+>>>>>>> master
         candidates: list[dict[str, Any]] = []
         skipped_candidates: list[dict[str, Any]] = []
         values = self._candidate_values(edge)
+<<<<<<< master
+        own_progress = _progress_context is None
+        if own_progress:
+            self._start_optimization_progress(
+                mode="optimize_lever",
+                version_id=version_id,
+                dataset_id=dataset_id,
+                lever=lever,
+                total_candidates=len(values),
+            )
+        try:
+            for index, value in enumerate(values, start=1):
+                if _progress_context is None:
+                    overall_index = index
+                    total_overall = len(values)
+                    current_pass = 1
+                    passes = 1
+                    current_lever_index = 1
+                    total_levers = 1
+                else:
+                    overall_index = int(_progress_context.get("overall_done", 0)) + index
+                    total_overall = int(_progress_context.get("total_overall", len(values)))
+                    current_pass = int(_progress_context.get("pass_index", 1))
+                    passes = int(_progress_context.get("passes", 1))
+                    current_lever_index = int(_progress_context.get("lever_index", 1))
+                    total_levers = int(_progress_context.get("total_levers", 1))
+                self._set_optimization_progress(
+                    current_lever=lever,
+                    current_pass=current_pass,
+                    passes=passes,
+                    current_lever_index=current_lever_index,
+                    total_levers=total_levers,
+                    candidate_index=index,
+                    total_candidates=len(values),
+                    overall_index=overall_index,
+                    total_overall=total_overall,
+                    message=f"Pass {current_pass}/{passes}: optimizing {lever} candidate {index}/{len(values)}.",
+                )
+                overrides = {**base_overrides, lever: value}
+                tuned_spec = self._apply_parameter_overrides(version["spec_json"], overrides)
+                result = self.engine.run(tuned_spec, bars)
+                comparison = self._comparison(version_id, dataset_id, result["metrics"])
+                verdict = self._verdict(tuned_spec, result["metrics"], comparison)
+                candidates.append(
+                    {
+                        "lever": lever,
+                        "value": value,
+                        "score": self._optimization_score(tuned_spec, result["metrics"]),
+                        "score_components": self._optimization_score_components(tuned_spec, result["metrics"]),
+                        "eligible": self._optimization_eligible(tuned_spec, result["metrics"]),
+                        "verdict": verdict,
+                        "metrics": result["metrics"],
+                        "comparison": comparison,
+                        "parameter_overrides": overrides,
+                    }
+                )
+                del result
+                if index % 25 == 0:
+                    gc.collect()
+            if not candidates:
+                raise HTTPException(status_code=400, detail="No candidates generated for this lever.")
+            eligible_candidates = [candidate for candidate in candidates if candidate["eligible"]]
+            if eligible_candidates:
+                best = max(eligible_candidates, key=lambda item: item["score"])
+                selection_mode = "eligible_only"
+            else:
+                current_value = base_overrides.get(lever, version["spec_json"].get("parameters", {}).get(lever))
+                current_candidates = [candidate for candidate in candidates if candidate["value"] == current_value]
+                current_best = current_candidates[0] if current_candidates else max(candidates, key=lambda item: item["score"])
+                research_best = max(candidates, key=lambda item: item["score"])
+                if research_best["score"] > current_best["score"] and research_best["metrics"].get("net_pnl", 0.0) > 0:
+                    best = research_best
+                    selection_mode = "research_score_fallback"
+                else:
+                    best = {**current_best, "parameter_overrides": base_overrides}
+                    selection_mode = "no_production_eligible_keep_current"
+            best_spec = self._apply_parameter_overrides(version["spec_json"], best["parameter_overrides"])
+            if own_progress:
+                self._finish_optimization_progress(
+                    f"{lever} optimization complete. Tested {len(candidates)} candidates."
+                )
+            return {
+                "mode": "optimize_lever",
+                "family_id": version["family_id"],
+                "base_version_id": version_id,
+                "dataset_id": dataset_id,
+                "lever": lever,
+                "objective": (
+                    "first require enough trade evidence, positive net PnL, profit factor, drawdown, Sharpe/Sortino/Calmar, "
+                    "bounded trade risk, production sizing, and benchmark comparability when any candidate satisfies them; "
+                    "then maximize a balanced risk-adjusted score using capped profit factor, trade evidence, net return, "
+                    "buy-and-hold outperformance, Calmar efficiency, win rate, payoff, and drawdown"
+                ),
+                "search": self._search_summary(edge, values),
+                "eligible_count": len(eligible_candidates),
+                "selection_mode": selection_mode,
+                "best": best,
+                "best_spec": best_spec,
+                "candidates": sorted(candidates, key=lambda item: (item["eligible"], item["score"]), reverse=True),
+            }
+        except Exception as error:
+            if own_progress:
+                self._finish_optimization_progress(f"{lever} optimization failed.", error=self._format_exception(error))
+            raise
+=======
         for value in values:
             overrides = {**base_overrides, lever: value}
             tuned_spec = self._apply_parameter_overrides(version["spec_json"], overrides)
@@ -1384,6 +1899,7 @@ class MutationLabService:
             "best_spec": best_spec,
             "candidates": sorted(candidates, key=lambda item: (item["eligible"], item["score"]), reverse=True),
         }
+>>>>>>> master
 
     def optimize_all(
         self,
@@ -1397,8 +1913,22 @@ class MutationLabService:
         version = self._get_upgraded_version(version_id)
         if not version:
             raise HTTPException(status_code=404, detail="Version not found.")
+        self._ensure_no_active_optimization()
         passes = max(1, min(int(passes), 5))
         overrides = self._production_baseline_overrides(version["spec_json"], dict(parameter_overrides or {}))
+<<<<<<< master
+        starting_overrides = dict(overrides)
+        edges = [edge for edge in self.list_tuning_edges(version_id) if edge.get("optimizable", True)]
+        candidate_counts = {edge["lever"]: len(self._candidate_values(edge)) for edge in edges}
+        total_overall = sum(candidate_counts.values()) * passes
+        progress_context = {
+            "overall_done": 0,
+            "total_overall": total_overall,
+            "passes": passes,
+            "total_levers": len(edges),
+            "pass_index": 1,
+            "lever_index": 1,
+=======
         steps: list[dict[str, Any]] = []
         for pass_index in range(1, passes + 1):
             improved = False
@@ -1434,7 +1964,89 @@ class MutationLabService:
             "parameter_overrides": overrides,
             "steps": steps,
             "preview": preview,
+>>>>>>> master
         }
+        self._start_optimization_progress(
+            mode="optimize_all",
+            version_id=version_id,
+            dataset_id=dataset_id,
+            total_candidates=total_overall,
+            total_levers=len(edges),
+            passes=passes,
+        )
+        steps: list[dict[str, Any]] = []
+        bars: list[Any] | None = None
+        try:
+            self._set_optimization_progress(message="Loading dataset once for memory-stable optimization...")
+            bars = self.data_service.load_bars(dataset_id)
+            for pass_index in range(1, passes + 1):
+                progress_context["pass_index"] = pass_index
+                improved = False
+                for lever_index, edge in enumerate(edges, start=1):
+                    progress_context["lever_index"] = lever_index
+                    before = dict(overrides)
+                    result = self.optimize_lever(
+                        version_id,
+                        dataset_id,
+                        edge["lever"],
+                        overrides,
+                        _progress_context=progress_context,
+                        _bars=bars,
+                    )
+                    progress_context["overall_done"] += candidate_counts[edge["lever"]]
+                    best_overrides = result["best"]["parameter_overrides"]
+                    if best_overrides != before:
+                        improved = True
+                        overrides = best_overrides
+                    steps.append(
+                        {
+                            "pass": pass_index,
+                            "lever": edge["lever"],
+                            "before": before.get(edge["lever"], edge["current_value"]),
+                            "after": overrides.get(edge["lever"], edge["current_value"]),
+                            "selection_mode": result["selection_mode"],
+                            "eligible_count": result["eligible_count"],
+                            "best_score": result["best"]["score"],
+                            "best_metrics": result["best"]["metrics"],
+                        }
+                    )
+                if not improved:
+                    break
+            self._set_optimization_progress(message="Building optimized preview...")
+            candidate_overrides = dict(overrides)
+            preview = self.preview_tuned_version(version_id, dataset_id, candidate_overrides)
+            final_candidate_rejected = False
+            rejection_reason = None
+            if not self._optimization_eligible(preview["spec"], preview["metrics"]):
+                final_candidate_rejected = True
+                rejection_reason = "optimized_candidate_failed_production_gates"
+                overrides = starting_overrides
+                preview = self.preview_tuned_version(version_id, dataset_id, overrides)
+            result = {
+                "mode": "optimize_all",
+                "base_version_id": version_id,
+                "dataset_id": dataset_id,
+                "passes_requested": passes,
+                "parameter_overrides": overrides,
+                "rejected_parameter_overrides": candidate_overrides if final_candidate_rejected else {},
+                "final_candidate_rejected": final_candidate_rejected,
+                "rejection_reason": rejection_reason,
+                "steps": steps,
+                "eligible_steps": sum(1 for step in steps if step["selection_mode"] == "eligible_only"),
+                "research_fallback_steps": sum(1 for step in steps if step["selection_mode"] == "research_score_fallback"),
+                "preview": preview,
+            }
+            self._store_optimization_result(result)
+            self._finish_optimization_progress(
+                f"Optimization complete. Tested {progress_context['overall_done']} candidates."
+            )
+            return result
+        except Exception as error:
+            self._finish_optimization_progress("Optimization failed.", error=self._format_exception(error))
+            raise
+        finally:
+            bars = None
+            gc.collect()
 
     @staticmethod
     def _normalize_optimization_mode(optimization_mode: str) -> str:
@@ -1467,6 +2079,10 @@ class MutationLabService:
         max_exposure = float(rules.get("maximum_entry_exposure_pct", 100.0)) / 100
         if selected_leverage <= 0 or selected_leverage > max_exposure:
             output["max_leverage"] = max_exposure
+        if spec.get("engine_id") == "ma_cross_atr_stop_v1" and output.get(
+            "sizing_mode", parameters.get("sizing_mode")
+        ) == "mt5_fixed_risk_lot":
+            output.setdefault("execution_model", "mt5_bar_proxy")
         return output
 
     def save_tuned_version(
@@ -2497,8 +3113,10 @@ class MutationLabService:
 
     @staticmethod
     def _optimization_eligible(spec: dict[str, Any], metrics: dict[str, Any]) -> bool:
-        return not MutationLabService._core_gate_failures(spec, metrics) and not MutationLabService._portfolio_gate_failures(
-            spec, metrics
+        return (
+            not MutationLabService._core_gate_failures(spec, metrics)
+            and not MutationLabService._portfolio_gate_failures(spec, metrics)
+            and not MutationLabService._live_execution_gate_failures(spec, metrics)
         )
 
     @staticmethod
@@ -2586,6 +3204,12 @@ class MutationLabService:
                 parameters[key] = float(value)
             else:
                 parameters[key] = value
+        if (
+            tuned_spec.get("engine_id") == "ma_cross_atr_stop_v1"
+            and parameters.get("sizing_mode") == "mt5_fixed_risk_lot"
+            and "execution_model" not in overrides
+        ):
+            parameters["execution_model"] = "mt5_bar_proxy"
         return tuned_spec
 
     @staticmethod
@@ -2651,10 +3275,44 @@ class MutationLabService:
                 failures.append("weak_vs_buy_hold_benchmark")
         return failures
 
+    @staticmethod
+    def _live_execution_gate_failures(spec: dict[str, Any], metrics: dict[str, Any]) -> list[str]:
+        rules = spec.get("evaluation", {})
+        if not rules.get("require_live_execution_review", True):
+            return []
+        parameters = spec.get("parameters", {})
+        failures: list[str] = []
+        managed_stop_rules = bool(parameters.get("breakeven_stop_enabled", False)) or bool(
+            parameters.get("time_decay_exit_enabled", False)
+        )
+        if spec.get("engine_id") != "ma_cross_atr_stop_v1" or not managed_stop_rules:
+            return failures
+        if parameters.get("execution_model", "research_bar_close") != "mt5_bar_proxy":
+            failures.append("requires_mt5_execution_model")
+        if not rules.get("mt5_parity_validated", False):
+            failures.append("requires_mt5_parity_validation")
+
+        stop_net = float(metrics.get("stop_exit_net_pnl", 0.0))
+        reverse_net = float(metrics.get("reverse_exit_net_pnl", 0.0))
+        total_net = float(metrics.get("net_pnl", 0.0))
+        stop_pf = float(metrics.get("stop_exit_profit_factor", 0.0))
+        stop_win_rate = float(metrics.get("stop_exit_win_rate_pct", 0.0))
+        stop_share = float(metrics.get("stop_exit_pnl_share_pct", 0.0))
+        if (
+            total_net > 0
+            and stop_net > 0
+            and reverse_net < 0
+            and stop_share >= float(rules.get("maximum_managed_stop_pnl_share_pct", 125.0))
+            and stop_pf >= float(rules.get("maximum_managed_stop_profit_factor", 20.0))
+            and stop_win_rate >= float(rules.get("maximum_managed_stop_win_rate_pct", 90.0))
+        ):
+            failures.append("managed_stop_execution_dependency")
+        return failures
+
     def _verdict(self, spec: dict[str, Any], metrics: dict[str, Any], comparison: dict[str, Any] | None) -> str:
         if self._core_gate_failures(spec, metrics):
             return "graveyard"
-        if self._portfolio_gate_failures(spec, metrics):
+        if self._portfolio_gate_failures(spec, metrics) or self._live_execution_gate_failures(spec, metrics):
             return "research_survivor"
         if comparison and comparison["profit_factor_delta"] > 0 and comparison["drawdown_pct_delta"] <= 0.5:
             return "promotion_candidate"
@@ -2699,6 +3357,7 @@ class MutationLabService:
         capital_warnings = self._capital_model_warnings(payload["spec"], metrics)
         core_failures = self._core_gate_failures(payload["spec"], metrics)
         portfolio_failures = self._portfolio_gate_failures(payload["spec"], metrics)
+        live_execution_failures = self._live_execution_gate_failures(payload["spec"], metrics)
         parameters = payload["spec"].get("parameters", {})
         rules = payload["spec"].get("evaluation", {})
         trades = payload["trades"]
@@ -2774,6 +3433,7 @@ class MutationLabService:
                 "",
                 f"- Core failures: `{core_failures or []}`",
                 f"- Portfolio / benchmark failures: `{portfolio_failures or []}`",
+                f"- Live execution review failures: `{live_execution_failures or []}`",
                 f"- Production sizing modes: `{rules.get('production_sizing_modes', [])}`",
                 f"- Benchmark policy: `{rules.get('benchmark_policy', 'outperform_return_or_calmar')}`",
                 f"- Execution model: `{parameters.get('execution_model', 'next_bar_open')}`",
@@ -2782,6 +3442,21 @@ class MutationLabService:
                 "",
             ]
         )
+        if live_execution_failures:
+            lines.extend(
+                [
+                    "## Live Execution Review",
+                    "",
+                    "This run is blocked from production-candidate routing until MT5 parity is validated. A StrategyLab run with managed stops may be useful for research, but it is not production-comparable when MT5 live-like execution produces materially different trade count, profit factor, drawdown, or net PnL. Mark `mt5_parity_validated=true` in evaluation only after an exported MT5 backtest is close enough to the StrategyLab result to make optimization decisions actionable.",
+                    "",
+                    f"- Stop-exit Net PnL: `{metrics.get('stop_exit_net_pnl', 0.0)}`",
+                    f"- Stop-exit PF: `{metrics.get('stop_exit_profit_factor', 0.0)}`",
+                    f"- Stop-exit Win Rate %: `{metrics.get('stop_exit_win_rate_pct', 0.0)}`",
+                    f"- Stop-exit PnL Share %: `{metrics.get('stop_exit_pnl_share_pct', 0.0)}`",
+                    f"- Reverse-exit Net PnL: `{metrics.get('reverse_exit_net_pnl', 0.0)}`",
+                    "",
+                ]
+            )
         if capital_warnings:
             lines.extend(["## Capital Model Warning", ""])
             lines.extend([f"- {warning}" for warning in capital_warnings])
@@ -2822,6 +3497,10 @@ class MutationLabService:
                 f"- Breakeven stop moves: `{payload['diagnostics'].get('breakeven_stop_moves', 0)}`",
                 f"- MT5 stop modify rejects: `{payload['diagnostics'].get('mt5_stop_modify_rejects', 0)}`",
                 f"- Time risk filter blocks: `{payload['diagnostics'].get('time_risk_filter_blocks', 0)}`",
+                f"- Entry exposure gate blocks: `{payload['diagnostics'].get('entry_exposure_gate_blocks', 0)}`",
+                f"- Entry exposure gate long blocks: `{payload['diagnostics'].get('entry_exposure_gate_long_blocks', 0)}`",
+                f"- Entry exposure gate short blocks: `{payload['diagnostics'].get('entry_exposure_gate_short_blocks', 0)}`",
+                f"- MT5 invalid lot skips: `{payload['diagnostics'].get('mt5_invalid_lot_skips', 0)}`",
                 f"- Stop exits: `{payload['diagnostics']['stop_exits']}`",
                 f"- Reverse exits: `{payload['diagnostics']['reverse_exits']}`",
                 f"- Reverse confirmation candidates: `{payload['diagnostics'].get('reverse_confirmation_candidates', 0)}`",
@@ -2831,9 +3510,16 @@ class MutationLabService:
                 f"- Reverse confirmation suppressed Net PnL: `{payload['diagnostics'].get('reverse_confirmation_suppressed_net_pnl', 0.0)}`",
                 f"- Time-decay exits: `{payload['diagnostics'].get('time_decay_exits', 0)}`",
                 f"- Time-decay confirmation candidates: `{payload['diagnostics'].get('time_decay_confirmation_candidates', 0)}`",
+<<<<<<< master
+                f"- Time-decay confirmation exits: `{payload['diagnostics'].get('time_decay_confirmation_exits', 0)}`",
+                f"- Time-decay confirmation suppressed: `{payload['diagnostics'].get('time_decay_confirmation_suppressed', 0)}`",
+                f"- Time-decay confirmation suppressed Net PnL: `{payload['diagnostics'].get('time_decay_confirmation_suppressed_net_pnl', 0.0)}`",
+                f"- MT5 stop modify rejects: `{payload['diagnostics'].get('mt5_stop_modify_rejects', 0)}`",
+=======
                 f"- Time-decay confirmation exits allowed: `{payload['diagnostics'].get('time_decay_confirmation_exits_allowed', 0)}`",
                 f"- Time-decay confirmation suppressed: `{payload['diagnostics'].get('time_decay_confirmation_suppressed', 0)}`",
                 f"- Time-decay confirmation suppressed Net PnL: `{payload['diagnostics'].get('time_decay_confirmation_suppressed_net_pnl', 0.0)}`",
+>>>>>>> master
                 f"- Time exits: `{payload['diagnostics']['time_exits']}`",
                 f"- Pending entry orders: `{payload['diagnostics'].get('pending_entry_orders', 0)}`",
                 f"- Pending order fills: `{payload['diagnostics'].get('pending_order_fills', 0)}`",
