@@ -14,10 +14,10 @@ __pycache__/
 
 #artifacts/
 agents/histdata/
-agents/docs/
-agents/codex-writing.txt
+#agents/docs/
+#agents/codex-writing.txt
 agents/mutation-lab-01.txt
-agents/new-frontend.txt 
+#agents/new-frontend.txt 
 
 
 *.sqlite3
@@ -34,3 +34,7 @@ artifacts/runs/run_10a82774ade2.json
 
 AGENTS.md
 bridgecode/
+<<<<<<< master
+=======
+context4.txt
+>>>>>>> master

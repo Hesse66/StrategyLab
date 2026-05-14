@@ -16,6 +16,7 @@ const metricsGrid = document.getElementById("metricsGrid");
 const familySelect = document.getElementById("familySelect");
 const versionSelect = document.getElementById("versionSelect");
 const datasetSelect = document.getElementById("datasetSelect");
+const optimizeResearchButton = document.getElementById("optimizeResearchButton");
 const optimizeAllButton = document.getElementById("optimizeAllButton");
 const optimizationStatus = document.getElementById("optimizationStatus");
 const barsInput = document.getElementById("barsInput");
@@ -31,6 +32,10 @@ const MIN_DATASET_BARS = 40000;
 const FULL_HISTORY_SENTINEL_BARS = 1000000;
 const OUTPUT_ARRAY_LIMIT = 20;
 const OUTPUT_MAX_CHARS = 60000;
+<<<<<<< master
+=======
+const OPTIMIZATION_POLL_MS = 2500;
+>>>>>>> master
 let optimizationInFlight = false;
 let optimizationProgressTimer = null;
 
@@ -72,8 +77,12 @@ function summarizeForOutput(value, depth = 0, key = "") {
 }
 
 function showOutput(payload) {
+<<<<<<< master
   const text =
     typeof payload === "string" ? payload : JSON.stringify(summarizeForOutput(payload), null, 2);
+=======
+  const text = typeof payload === "string" ? payload : JSON.stringify(summarizeForOutput(payload), null, 2);
+>>>>>>> master
   outputBox.textContent =
     text.length > OUTPUT_MAX_CHARS
       ? `${text.slice(0, OUTPUT_MAX_CHARS)}\n\n[output truncated to keep the browser responsive]`
@@ -252,11 +261,15 @@ async function recoverOptimizationResult() {
 
 function setOptimizationBusy(isBusy, activeLever = "") {
   optimizationInFlight = isBusy;
+<<<<<<< master
   if (isBusy) {
     startOptimizationProgressPolling();
   } else {
     stopOptimizationProgressPolling();
   }
+=======
+  optimizeResearchButton.disabled = isBusy;
+>>>>>>> master
   optimizeAllButton.disabled = isBusy;
   proposalsTable.querySelectorAll('[data-action="optimize-lever"]').forEach((button) => {
     button.disabled = isBusy && button.dataset.key !== activeLever;
@@ -299,6 +312,7 @@ async function fetchJson(url, options = {}) {
   return payload;
 }
 
+<<<<<<< master
 async function attachActiveOptimizationIfAny() {
   try {
     const progress = await fetchJson("/api/optimization-progress");
@@ -312,6 +326,10 @@ async function attachActiveOptimizationIfAny() {
   } catch {
     return false;
   }
+=======
+function wait(ms) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+>>>>>>> master
 }
 
 function selectedFamilyId() {
@@ -833,6 +851,7 @@ function renderRuns() {
               <div class="table-actions">
                 <button class="ghost" data-action="select-version" data-version="${run.version_id}">Tune</button>
                 ${promoteButton}
+                <button class="ghost" data-action="execution-audit" data-id="${run.run_id}">Audit Execution</button>
                 <button class="danger" data-action="delete-run" data-id="${run.run_id}">Delete</button>
               </div>
             </td>
@@ -1249,7 +1268,37 @@ async function optimizeLever(lever) {
   }
 }
 
-async function optimizeAll() {
+function applyOptimizeAllResult(result, recovered = false) {
+  const baseParameters = currentVersion().spec_json.parameters;
+  state.workingParameters = { ...baseParameters, ...result.parameter_overrides };
+  state.previewResult = result.preview;
+  renderSummary();
+  renderTuningEdges();
+  renderRuns();
+  showOutput(result);
+
+  const tunedCount = Object.entries(result.parameter_overrides).filter(
+    ([key, value]) => JSON.stringify(value) !== JSON.stringify(baseParameters[key]),
+  ).length;
+  const selectedCount = Object.keys(result.parameter_overrides).length;
+  const fallbackCount = Number(result.research_fallback_steps || 0);
+  const eligibleCount = Number(result.eligible_steps || 0);
+  const modeNote = fallbackCount
+    ? `${fallbackCount} research fallback steps, ${eligibleCount} production-eligible steps`
+    : `${eligibleCount} production-eligible steps`;
+  const selectedNote =
+    selectedCount === tunedCount ? "" : `; ${selectedCount} selected values matched or filled the base`;
+  const recoveredNote = recovered ? " Recovered completed preview from backend." : "";
+  const rejectedNote = result.final_candidate_rejected
+    ? " Optimized candidate failed production gates, so the starting values were kept."
+    : "";
+  const message = `Optimization complete. Applied ${tunedCount} changed values (${modeNote}${selectedNote}).${rejectedNote}${recoveredNote}`;
+  setStatus("familyStatus", message, "success");
+  setOptimizationStatus(message, "success");
+  clearOptimizationStatus(9000);
+}
+
+async function optimizeAll(optimizationMode = "production") {
   const version = currentVersion();
   const datasetId = selectedDatasetId();
   if (!version || !datasetId) {
@@ -1260,18 +1309,29 @@ async function optimizeAll() {
     return;
   }
   setOptimizationBusy(true);
+<<<<<<< master
   setOptimizationStatus("Running two-pass production optimization. Fixed-quantity and over-levered candidates are not eligible...");
   let reattachedExistingJob = false;
+=======
+  const modeLabel = optimizationMode === "research" ? "baseline research" : "production";
+  setOptimizationStatus(`Starting background two-pass ${modeLabel} optimization...`);
+>>>>>>> master
   try {
-    const result = await fetchJson(`/api/versions/${version.version_id}/optimize-all`, {
+    const job = await fetchJson(`/api/versions/${version.version_id}/optimize-all/jobs`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         dataset_id: datasetId,
         parameter_overrides: collectOverrides(),
         passes: 2,
+        optimization_mode: optimizationMode,
       }),
     });
+<<<<<<< master
+=======
+    setOptimizationStatus(`${modeLabel} optimization job ${job.job_id} started. You can keep the page open while it works.`);
+    const result = await waitForOptimizationJob(job.job_id);
+>>>>>>> master
     applyOptimizeAllResult(result);
   } catch (error) {
     if (error.status === 409) {
@@ -1288,6 +1348,33 @@ async function optimizeAll() {
     if (!reattachedExistingJob) {
       setOptimizationBusy(false);
     }
+  }
+}
+
+async function waitForOptimizationJob(jobId) {
+  let connectionFailures = 0;
+  while (true) {
+    await wait(OPTIMIZATION_POLL_MS);
+    let job;
+    try {
+      job = await fetchJson(`/api/optimization-jobs/${jobId}`);
+      connectionFailures = 0;
+    } catch (error) {
+      connectionFailures += 1;
+      setOptimizationStatus(
+        `Optimization job ${jobId} is still being tracked, but the browser lost contact (${connectionFailures}). Retrying...`,
+        "working",
+      );
+      continue;
+    }
+    if (job.status === "completed") {
+      return job.result;
+    }
+    if (job.status === "failed") {
+      throw new Error(job.error || "Optimization job failed.");
+    }
+    const startedAt = job.created_at ? new Date(job.created_at).toLocaleTimeString() : "unknown time";
+    setOptimizationStatus(`Optimization job ${jobId} is ${job.status}. Started ${startedAt}. Waiting for result...`);
   }
 }
 
@@ -1312,7 +1399,7 @@ async function runRobustnessGate() {
     const summary = result.summary || {};
     setStatus(
       "familyStatus",
-      `Robustness: ${summary.label}. Walk-forward ${summary.walk_forward_passed}/${summary.walk_forward_total}; cost stress ${summary.cost_stress_passed}/${summary.cost_stress_total}.`,
+      `Robustness: ${summary.label}. Walk-forward ${summary.walk_forward_passed}/${summary.walk_forward_total}; anchored OOS ${summary.anchored_train_test_passed}/${summary.anchored_train_test_total}; cost stress ${summary.cost_stress_passed}/${summary.cost_stress_total}.`,
       summary.passed ? "success" : "error",
     );
   } catch (error) {
@@ -1499,6 +1586,17 @@ async function handleTableClick(event) {
       await fetchJson(`/api/runs/${button.dataset.id}`, { method: "DELETE" });
       await refreshFamilyDetail();
       showOutput({ status: "deleted", run_id: button.dataset.id });
+      return;
+    }
+    if (action === "execution-audit") {
+      setStatus("familyStatus", "Running execution feasibility audit for the saved run...", "");
+      const result = await fetchJson(`/api/runs/${button.dataset.id}/execution-audit`, { method: "POST" });
+      showOutput(result);
+      setStatus(
+        "familyStatus",
+        `Execution audit ${result.status}. ${result.failures?.length || 0} failures; ${result.warnings?.length || 0} warnings.`,
+        result.passed ? "success" : "error",
+      );
     }
   } catch (error) {
     setStatus("familyStatus", error.message, "error");
@@ -1558,7 +1656,8 @@ document.getElementById("productionDefaultsButton").addEventListener("click", ap
 document.getElementById("robustnessButton").addEventListener("click", runRobustnessGate);
 document.getElementById("resetTuneButton").addEventListener("click", resetTune);
 document.getElementById("saveTuneButton").addEventListener("click", saveTune);
-optimizeAllButton.addEventListener("click", optimizeAll);
+optimizeResearchButton.addEventListener("click", () => optimizeAll("research"));
+optimizeAllButton.addEventListener("click", () => optimizeAll("production"));
 document.getElementById("registerButton").addEventListener("click", registerBaseline);
 familySelect.addEventListener("change", refreshFamilyDetail);
 versionSelect.addEventListener("change", refreshSelectedVersion);

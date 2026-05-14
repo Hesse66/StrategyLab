@@ -1,0 +1,826 @@
+{
+  "engine_id": "asm_fib_liquidity_fvg_v1",
+  "asset": "BTCUSDT",
+  "venue": "Binance Spot",
+  "timeframe": "15m",
+  "metadata": {
+    "family_id": "asm_fib_liquidity",
+    "title": "ASM Fibonacci Liquidity FVG Universal Parent",
+    "translation_target": "universal_inspired_strategy_candidate",
+    "source_class": "semi_formal_discretionary_setup_from_transcript",
+    "source_repos": [
+      "https://github.com/Hesse66/ASM_Strategy",
+      "https://github.com/LycurgusxLycurgus/StrategyLab"
+    ],
+    "source_video_note": "2026 Fibonacci Trading Strategy transcription supplied by user; not a faithful replication claim.",
+    "universalization_scope": {
+      "default_asset_timeframe": "BTCUSDT 15m",
+      "supported_timeframes_for_first_research": [
+        "5m",
+        "15m"
+      ],
+      "clone_per_asset_timeframe": true,
+      "candidate_symbols": [
+        "BTCUSDT",
+        "ETHUSDT",
+        "SOLUSDT",
+        "BNBUSDT",
+        "XRPUSDT"
+      ],
+      "venue_constraint": "Current StrategyLab downloader is Binance public spot; use Binance symbols unless a new data adapter is added."
+    },
+    "causal_story": "For the intraday version, completed higher-timeframe context bars define the directional bias, execution-timeframe external market structure defines the active dealing range, and execution-timeframe internal market structure confirms entry timing inside that range. On BTCUSDT 15m, the engine resamples completed 15m candles into 1h context bars before accepting a 15m external BOS or CHoCH. After that external range creates an impulsive move and leaves imbalance, price must retrace into the correct premium/discount side near the 67 percent Fibonacci entry and fair value gap, sweep local liquidity, and then print an aligned internal BOS or CHoCH before entry. The stop remains anchored to the execution-range invalidation point and the target remains the opposing range extreme, preserving the set-and-forget risk model.",
+    "timeframe_context_note": "The strategy is not one flat parameter set across all timeframes. Intraday/day-trading and swing-trading use different Fibonacci depths and structure roles. The current active research target is BTCUSDT 15m, but the parent preserves explicit profiles for 5m, 15m, and 4H/swing variants.",
+    "timeframe_translation_components": [
+      "15m intraday uses external structure for active dealing range and internal structure for execution timing",
+      "5m intraday is treated as faster execution and should usually use a higher context timeframe",
+      "4H swing mode uses a deeper Fibonacci retracement around 71 percent and does not necessarily require the same fast internal confirmation behavior",
+      "profile-specific defaults must be tested as separate baselines, not blended into one optimized parameter soup"
+    ],
+    "direct_translation_components": [
+      "external structure defines the active dealing range and directional context",
+      "internal structure confirms intraday execution timing",
+      "premium/discount midpoint filter",
+      "67 percent intraday Fibonacci retracement for 5m-15m execution",
+      "FVG/imbalance confluence",
+      "liquidity sweep before entry",
+      "internal BOS or CHoCH after retracement as execution confirmation",
+      "set-and-forget stop at range invalidation and target at opposing range extreme"
+    ],
+    "transparent_approximations": [
+      "external swings are confirmed symmetric pivots with a slower pivot period",
+      "internal swings are confirmed symmetric pivots with a faster pivot period",
+      "external structure is used for context and range construction",
+      "internal structure is used for execution confirmation after retracement and sweep",
+      "liquidity purge is approximated as a rolling-low/high stop sweep with close back inside",
+      "imbalance is approximated as a three-candle fair value gap with ATR-normalized minimum size",
+      "limit entry fills use deterministic OHLC intrabar rules, not order-book proof"
+    ],
+    "implementation_integrity_requirements": [
+      "Use confirmed pivots only after pivot_right bars have closed.",
+      "Do not use repainting values or future FVG information.",
+      "If stop and target are both reachable on the entry/exit bar, use same_bar_exit_policy default stop_first.",
+      "Emit diagnostic counters for every blocked setup and every exit reason."
+    ]
+  },
+  "parameters": {
+    "allow_long": true,
+    "allow_short": true,
+    "one_position_at_time": true,
+    "active_timeframe_profile": "intraday_15m",
+    "use_timeframe_profile_overrides": true,
+    "execution_timeframe": "15m",
+    "context_timeframe": "1h",
+    "higher_context_timeframe": "4h",
+    "resample_context_from_execution_bars": true,
+    "context_bias_required": true,
+    "context_bias_source": "context_external_structure",
+    "context_bias_event": "bos_or_choch",
+    "context_bias_max_age_bars": 96,
+    "context_bias_must_align_with_external_bias": true,
+    "timeframe_profiles": {
+      "intraday_5m": {
+        "execution_timeframe": "5m",
+        "context_timeframe": "15m",
+        "higher_context_timeframe": "1h",
+        "fib_entry_retracement": 0.67,
+        "external_pivot_period": 4,
+        "internal_pivot_period": 2,
+        "internal_confirmation_required": true,
+        "internal_confirmation_max_age_bars": 36,
+        "max_setup_age_bars": 144,
+        "sweep_lookback_bars": 30,
+        "sweep_window_bars": 72,
+        "context_bias_required": true
+      },
+      "intraday_15m": {
+        "execution_timeframe": "15m",
+        "context_timeframe": "1h",
+        "higher_context_timeframe": "4h",
+        "fib_entry_retracement": 0.67,
+        "external_pivot_period": 4,
+        "internal_pivot_period": 2,
+        "internal_confirmation_required": true,
+        "internal_confirmation_max_age_bars": 24,
+        "max_setup_age_bars": 96,
+        "sweep_lookback_bars": 20,
+        "sweep_window_bars": 48,
+        "context_bias_required": true
+      },
+      "swing_4h": {
+        "execution_timeframe": "4h",
+        "context_timeframe": "1d",
+        "higher_context_timeframe": "1d",
+        "fib_entry_retracement": 0.71,
+        "external_pivot_period": 4,
+        "internal_pivot_period": 2,
+        "internal_confirmation_required": false,
+        "internal_confirmation_max_age_bars": 12,
+        "max_setup_age_bars": 60,
+        "sweep_lookback_bars": 12,
+        "sweep_window_bars": 24,
+        "context_bias_required": false
+      }
+    },
+    "external_pivot_period": 4,
+    "internal_pivot_period": 2,
+    "structure_stream": "external_and_internal_intraday",
+    "external_role": "context_range",
+    "internal_role": "entry_confirmation",
+    "fib_range_source": "external_structure",
+    "fvg_context_source": "external_or_internal",
+    "entry_validation_stream": "internal_structure",
+    "internal_confirmation_required": true,
+    "internal_confirmation_event": "bos_or_choch",
+    "internal_confirmation_timing": "after_retracement_and_sweep",
+    "internal_confirmation_max_age_bars": 24,
+    "internal_must_align_with_external_bias": true,
+    "break_confirmation": "close",
+    "setup_after_break": "bos_or_choch",
+    "max_setup_age_bars": 96,
+    "range_min_atr": 1.0,
+    "range_max_atr": 12.0,
+    "displacement_atr_len": 14,
+    "min_displacement_atr": 0.8,
+    "fib_entry_retracement": 0.67,
+    "fib_stop_retracement": 1.0,
+    "fib_target_retracement": 0.0,
+    "stop_buffer_atr_mult": 0.0,
+    "require_discount_for_longs": true,
+    "require_premium_for_shorts": true,
+    "premium_discount_midpoint": 0.5,
+    "fvg_enabled": true,
+    "fvg_min_gap_atr": 0.05,
+    "fvg_max_age_bars": 96,
+    "fvg_overlap_required": true,
+    "fvg_overlap_tolerance_atr": 0.1,
+    "fvg_mitigation_rule": "touch_through_far_edge",
+    "liquidity_sweep_required": true,
+    "sweep_lookback_bars": 20,
+    "sweep_window_bars": 48,
+    "sweep_close_back_inside": true,
+    "entry_order_type": "limit_touch",
+    "entry_price_source": "fib_level",
+    "same_bar_exit_policy": "stop_first",
+    "exit_policy": "set_and_forget_stop_target",
+    "time_stop_enabled": false,
+    "time_stop_bars": 96,
+    "time_stop_min_mfe_r": 0.25,
+    "time_risk_filter_enabled": false,
+    "time_risk_block_weekdays": [],
+    "time_risk_block_utc_hours": [],
+    "sizing_mode": "fixed_risk_pct",
+    "risk_pct": 0.005,
+    "notional_pct": 0.25,
+    "max_leverage": 1.0,
+    "quantity": 1.0,
+    "initial_capital": 100000.0,
+    "commission_pct": 0.04,
+    "slippage_ticks": 2,
+    "tick_size": 0.01,
+    "execution_model": "next_bar_open"
+  },
+  "evaluation": {
+    "minimum_trades": 30,
+    "minimum_profit_factor": 1.15,
+    "maximum_drawdown_pct": 12.0,
+    "minimum_net_pnl": 0.0,
+    "minimum_sharpe": 0.5,
+    "minimum_sortino": 0.75,
+    "minimum_daily_sharpe": 0.75,
+    "minimum_daily_sortino": 1.0,
+    "minimum_calmar": 0.5,
+    "minimum_expectancy_r": 0.15,
+    "maximum_initial_risk_pct": 1.0,
+    "maximum_entry_exposure_pct": 100.0,
+    "maximum_avg_exposure_pct": 100.0,
+    "maximum_worst_daily_loss_pct": 5.0,
+    "production_sizing_modes": [
+      "fixed_notional_pct",
+      "fixed_risk_pct"
+    ],
+    "benchmark_policy": "outperform_return_or_calmar"
+  },
+  "mutation_space": [
+    {
+      "kind": "white_box",
+      "lever": "active_timeframe_profile",
+      "path": "parameters.active_timeframe_profile",
+      "priority": 120,
+      "values": [
+        "intraday_5m",
+        "intraday_15m",
+        "swing_4h"
+      ],
+      "search_mode": "values_only",
+      "rationale": "Run profile-specific baselines. Do not treat all timeframes as one flat strategy."
+    },
+    {
+      "kind": "white_box",
+      "lever": "context_bias_required",
+      "path": "parameters.context_bias_required",
+      "priority": 118,
+      "values": [
+        true,
+        false
+      ],
+      "search_mode": "values_only",
+      "rationale": "Test whether higher-timeframe context bias is necessary for intraday execution."
+    },
+    {
+      "kind": "white_box",
+      "lever": "context_bias_max_age_bars",
+      "path": "parameters.context_bias_max_age_bars",
+      "priority": 116,
+      "values": [
+        24,
+        48,
+        96,
+        192
+      ],
+      "search_mode": "range",
+      "search_min": 12,
+      "search_max": 300,
+      "search_step": 12,
+      "rationale": "Tune how stale a higher-timeframe bias may be before blocking execution setups."
+    },
+    {
+      "kind": "white_box",
+      "lever": "context_bias_must_align_with_external_bias",
+      "path": "parameters.context_bias_must_align_with_external_bias",
+      "priority": 114,
+      "values": [
+        true,
+        false
+      ],
+      "search_mode": "values_only",
+      "rationale": "Test whether higher-timeframe context must agree with the execution external dealing-range direction."
+    },
+    {
+      "kind": "white_box",
+      "lever": "context_bias_event",
+      "path": "parameters.context_bias_event",
+      "priority": 112,
+      "values": [
+        "bos_or_choch",
+        "bos_only",
+        "choch_only"
+      ],
+      "search_mode": "values_only",
+      "rationale": "Test which higher-timeframe structure event should define context bias."
+    },
+    {
+      "kind": "white_box",
+      "lever": "fib_entry_retracement",
+      "path": "parameters.fib_entry_retracement",
+      "priority": 100,
+      "values": [
+        0.62,
+        0.67,
+        0.71,
+        0.75
+      ],
+      "search_mode": "range",
+      "search_min": 0.55,
+      "search_max": 0.82,
+      "search_step": 0.01,
+      "rationale": "Test whether the 5m-15m version prefers the transcript's 67 percent intraday retracement or a deeper swing-style retracement."
+    },
+    {
+      "kind": "white_box",
+      "lever": "external_pivot_period",
+      "path": "parameters.external_pivot_period",
+      "priority": 96,
+      "values": [
+        3,
+        4,
+        5,
+        6
+      ],
+      "search_mode": "range",
+      "search_min": 2,
+      "search_max": 10,
+      "search_step": 1,
+      "rationale": "Change how strict external structure must be before a range is accepted."
+    },
+    {
+      "kind": "white_box",
+      "lever": "internal_confirmation_required",
+      "path": "parameters.internal_confirmation_required",
+      "priority": 98,
+      "values": [
+        true,
+        false
+      ],
+      "search_mode": "values_only",
+      "rationale": "Test whether intraday execution requires internal structure confirmation or whether external range plus FVG/sweep is enough."
+    },
+    {
+      "kind": "white_box",
+      "lever": "internal_confirmation_event",
+      "path": "parameters.internal_confirmation_event",
+      "priority": 97,
+      "values": [
+        "bos_or_choch",
+        "choch_only",
+        "bos_only"
+      ],
+      "search_mode": "values_only",
+      "rationale": "Test which internal structure event best confirms intraday execution."
+    },
+    {
+      "kind": "white_box",
+      "lever": "internal_confirmation_max_age_bars",
+      "path": "parameters.internal_confirmation_max_age_bars",
+      "priority": 96,
+      "values": [
+        8,
+        16,
+        24,
+        48
+      ],
+      "search_mode": "range",
+      "search_min": 4,
+      "search_max": 96,
+      "search_step": 4,
+      "rationale": "Tune how recently internal confirmation must occur before entry."
+    },
+    {
+      "kind": "white_box",
+      "lever": "internal_pivot_period",
+      "path": "parameters.internal_pivot_period",
+      "priority": 95,
+      "values": [
+        1,
+        2,
+        3,
+        4
+      ],
+      "search_mode": "range",
+      "search_min": 1,
+      "search_max": 6,
+      "search_step": 1,
+      "rationale": "Tune the faster intraday structure stream used for entry confirmation."
+    },
+    {
+      "kind": "white_box",
+      "lever": "internal_must_align_with_external_bias",
+      "path": "parameters.internal_must_align_with_external_bias",
+      "priority": 93,
+      "values": [
+        true,
+        false
+      ],
+      "search_mode": "values_only",
+      "rationale": "Test whether internal confirmation must align with the external dealing-range bias."
+    },
+    {
+      "kind": "white_box",
+      "lever": "min_displacement_atr",
+      "path": "parameters.min_displacement_atr",
+      "priority": 94,
+      "values": [
+        0.5,
+        0.8,
+        1.2,
+        1.6
+      ],
+      "search_mode": "range",
+      "search_min": 0.2,
+      "search_max": 3.0,
+      "search_step": 0.1,
+      "rationale": "Tune how impulsive the structure break must be to qualify as institutional displacement."
+    },
+    {
+      "kind": "white_box",
+      "lever": "range_min_atr",
+      "path": "parameters.range_min_atr",
+      "priority": 90,
+      "values": [
+        0.75,
+        1.0,
+        1.5,
+        2.0
+      ],
+      "search_mode": "range",
+      "search_min": 0.25,
+      "search_max": 5.0,
+      "search_step": 0.25,
+      "rationale": "Avoid tiny swing ranges where Fibonacci levels are mostly noise."
+    },
+    {
+      "kind": "white_box",
+      "lever": "range_max_atr",
+      "path": "parameters.range_max_atr",
+      "priority": 89,
+      "values": [
+        8.0,
+        12.0,
+        16.0,
+        24.0
+      ],
+      "search_mode": "range",
+      "search_min": 4.0,
+      "search_max": 30.0,
+      "search_step": 1.0,
+      "rationale": "Avoid extremely extended ranges where the retracement target may be stale."
+    },
+    {
+      "kind": "white_box",
+      "lever": "fvg_min_gap_atr",
+      "path": "parameters.fvg_min_gap_atr",
+      "priority": 88,
+      "values": [
+        0.02,
+        0.05,
+        0.1,
+        0.2
+      ],
+      "search_mode": "range",
+      "search_min": 0.0,
+      "search_max": 0.5,
+      "search_step": 0.01,
+      "rationale": "Tune the minimum imbalance size relative to ATR."
+    },
+    {
+      "kind": "white_box",
+      "lever": "fvg_overlap_required",
+      "path": "parameters.fvg_overlap_required",
+      "priority": 86,
+      "values": [
+        true,
+        false
+      ],
+      "search_mode": "values_only",
+      "rationale": "Test whether FVG confluence is essential or whether Fibonacci plus sweep carries the edge."
+    },
+    {
+      "kind": "white_box",
+      "lever": "fvg_overlap_tolerance_atr",
+      "path": "parameters.fvg_overlap_tolerance_atr",
+      "priority": 84,
+      "values": [
+        0.0,
+        0.05,
+        0.1,
+        0.2
+      ],
+      "search_mode": "range",
+      "search_min": 0.0,
+      "search_max": 0.5,
+      "search_step": 0.01,
+      "rationale": "Tune how close the Fibonacci entry must be to an active FVG."
+    },
+    {
+      "kind": "white_box",
+      "lever": "fvg_max_age_bars",
+      "path": "parameters.fvg_max_age_bars",
+      "priority": 82,
+      "values": [
+        24,
+        48,
+        96,
+        192
+      ],
+      "search_mode": "range",
+      "search_min": 5,
+      "search_max": 300,
+      "search_step": 5,
+      "rationale": "Tune how long an imbalance remains valid before it is considered stale."
+    },
+    {
+      "kind": "white_box",
+      "lever": "liquidity_sweep_required",
+      "path": "parameters.liquidity_sweep_required",
+      "priority": 80,
+      "values": [
+        true,
+        false
+      ],
+      "search_mode": "values_only",
+      "rationale": "Check whether the stop-hunt proxy improves selectivity or blocks too many valid continuation trades."
+    },
+    {
+      "kind": "white_box",
+      "lever": "sweep_lookback_bars",
+      "path": "parameters.sweep_lookback_bars",
+      "priority": 78,
+      "values": [
+        10,
+        20,
+        40,
+        80
+      ],
+      "search_mode": "range",
+      "search_min": 5,
+      "search_max": 120,
+      "search_step": 5,
+      "rationale": "Tune the local liquidity pool horizon used by the sweep proxy."
+    },
+    {
+      "kind": "white_box",
+      "lever": "sweep_window_bars",
+      "path": "parameters.sweep_window_bars",
+      "priority": 76,
+      "values": [
+        12,
+        24,
+        48,
+        96
+      ],
+      "search_mode": "range",
+      "search_min": 5,
+      "search_max": 150,
+      "search_step": 5,
+      "rationale": "Tune how recently the liquidity purge must occur before the Fibonacci entry."
+    },
+    {
+      "kind": "white_box",
+      "lever": "max_setup_age_bars",
+      "path": "parameters.max_setup_age_bars",
+      "priority": 74,
+      "values": [
+        48,
+        96,
+        192,
+        288
+      ],
+      "search_mode": "range",
+      "search_min": 10,
+      "search_max": 500,
+      "search_step": 10,
+      "rationale": "Tune how long a structure-break range remains tradable."
+    },
+    {
+      "kind": "white_box",
+      "lever": "stop_buffer_atr_mult",
+      "path": "parameters.stop_buffer_atr_mult",
+      "priority": 72,
+      "values": [
+        0.0,
+        0.05,
+        0.1,
+        0.2
+      ],
+      "search_mode": "range",
+      "search_min": 0.0,
+      "search_max": 0.5,
+      "search_step": 0.01,
+      "rationale": "Test whether the literal 100 percent stop needs a small ATR buffer to survive normal wick noise."
+    },
+    {
+      "kind": "white_box",
+      "lever": "time_stop_enabled",
+      "path": "parameters.time_stop_enabled",
+      "priority": 60,
+      "values": [
+        false,
+        true
+      ],
+      "search_mode": "values_only",
+      "rationale": "Optional diagnostic only; default preserves set-and-forget exits."
+    },
+    {
+      "kind": "white_box",
+      "lever": "time_stop_bars",
+      "path": "parameters.time_stop_bars",
+      "priority": 58,
+      "values": [
+        48,
+        96,
+        144,
+        192
+      ],
+      "search_mode": "range",
+      "search_min": 10,
+      "search_max": 300,
+      "search_step": 10,
+      "rationale": "If the optional time stop is enabled, tune how long a trade may remain unresolved."
+    },
+    {
+      "kind": "white_box",
+      "lever": "allow_long",
+      "path": "parameters.allow_long",
+      "priority": 50,
+      "values": [
+        true,
+        false
+      ],
+      "search_mode": "values_only",
+      "rationale": "Decompose whether the long side is carrying or degrading the parent on each asset."
+    },
+    {
+      "kind": "white_box",
+      "lever": "allow_short",
+      "path": "parameters.allow_short",
+      "priority": 49,
+      "values": [
+        true,
+        false
+      ],
+      "search_mode": "values_only",
+      "rationale": "Decompose whether the short side is carrying or degrading the parent on each asset."
+    },
+    {
+      "kind": "white_box",
+      "lever": "time_risk_filter_enabled",
+      "path": "parameters.time_risk_filter_enabled",
+      "priority": 45,
+      "values": [
+        false,
+        true
+      ],
+      "search_mode": "values_only",
+      "rationale": "Enable or disable time-of-week/hour exclusion after diagnostics identify weak pockets."
+    },
+    {
+      "kind": "white_box",
+      "lever": "time_risk_block_weekdays",
+      "path": "parameters.time_risk_block_weekdays",
+      "priority": 44,
+      "values": [
+        [],
+        [
+          0
+        ],
+        [
+          1
+        ],
+        [
+          2
+        ],
+        [
+          3
+        ],
+        [
+          4
+        ],
+        [
+          5
+        ],
+        [
+          6
+        ],
+        [
+          5,
+          6
+        ],
+        [
+          0,
+          6
+        ],
+        [
+          0,
+          1,
+          2,
+          3,
+          4
+        ]
+      ],
+      "search_mode": "values_only",
+      "rationale": "Tune weekday entry exclusion; Python weekdays are Monday=0 through Sunday=6."
+    },
+    {
+      "kind": "white_box",
+      "lever": "time_risk_block_utc_hours",
+      "path": "parameters.time_risk_block_utc_hours",
+      "priority": 43,
+      "values": [
+        [],
+        [
+          0
+        ],
+        [
+          1
+        ],
+        [
+          2
+        ],
+        [
+          3
+        ],
+        [
+          4
+        ],
+        [
+          5
+        ],
+        [
+          6
+        ],
+        [
+          7
+        ],
+        [
+          8
+        ],
+        [
+          9
+        ],
+        [
+          10
+        ],
+        [
+          11
+        ],
+        [
+          12
+        ],
+        [
+          13
+        ],
+        [
+          14
+        ],
+        [
+          15
+        ],
+        [
+          16
+        ],
+        [
+          17
+        ],
+        [
+          18
+        ],
+        [
+          19
+        ],
+        [
+          20
+        ],
+        [
+          21
+        ],
+        [
+          22
+        ],
+        [
+          23
+        ],
+        [
+          12,
+          13,
+          14
+        ],
+        [
+          14,
+          15,
+          16
+        ],
+        [
+          20,
+          21,
+          22
+        ]
+      ],
+      "search_mode": "values_only",
+      "rationale": "Tune UTC entry-hour exclusions only after the first diagnostic run shows a time-risk concentration."
+    },
+    {
+      "kind": "portfolio",
+      "lever": "sizing_mode",
+      "path": "parameters.sizing_mode",
+      "priority": 130,
+      "values": [
+        "fixed_quantity",
+        "fixed_notional_pct",
+        "fixed_risk_pct"
+      ],
+      "search_mode": "values_only",
+      "rationale": "Choose the capital model. Fixed risk is the intended research default because the source is defined around percent account risk."
+    },
+    {
+      "kind": "portfolio",
+      "lever": "risk_pct",
+      "path": "parameters.risk_pct",
+      "priority": 128,
+      "values": [
+        0.0025,
+        0.005,
+        0.01
+      ],
+      "search_mode": "range",
+      "search_min": 0.001,
+      "search_max": 0.01,
+      "search_step": 0.001,
+      "rationale": "Tune day-trading risk between 0.1 percent and 1 percent while defaulting to the transcript's conservative 0.5 percent."
+    },
+    {
+      "kind": "portfolio",
+      "lever": "max_leverage",
+      "path": "parameters.max_leverage",
+      "priority": 127,
+      "values": [
+        0.5,
+        1.0
+      ],
+      "search_mode": "range",
+      "search_min": 0.25,
+      "search_max": 1.0,
+      "search_step": 0.25,
+      "rationale": "Cap notional exposure for production-style tests; higher leverage should be a separate stress scenario."
+    }
+  ]
+}

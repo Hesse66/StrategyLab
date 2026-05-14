@@ -1,0 +1,289 @@
+{
+  "engine_id": "bos_demand_pullback_v1",
+  "asset": "BTCUSDT",
+  "venue": "Binance Spot",
+  "timeframe": "15m",
+  "metadata": {
+    "family_id": "bos_demand_pullback",
+    "title": "BOS Demand Pullback Baseline",
+    "translation_phase": "2A_parentization",
+    "source_class": "open_source_tradingview_strategy",
+    "source_strategy": "BOS + Demand Pullback Strategy",
+    "causal_story": "Long-only BTCUSDT 15m baseline that preserves the selected open-source Pine logic: a confirmed pivot high defines structure, a bullish wick BOS plus ATR-sized green impulse creates a demand zone from the most recent bearish candle, and a later pullback/reclaim with a bullish candle pattern and EMA trend filter enters long. This is not the full ASM/Fib/liquidity strategy. It is the baseline parent used to decide whether the open-source BOS-demand engine has enough full-history life before phase-3 ASM mutations are allowed.",
+    "future_asm_mutation_queue": [
+      "Add short-side symmetry.",
+      "Replace EMA100 trend filter with completed 1h structure bias.",
+      "Add completed 1h context bars resampled from 15m.",
+      "Separate external 15m structure from internal 15m structure.",
+      "Require external BOS/CHoCH before active dealing range is created.",
+      "Define dealing range from structural origin to impulse extreme.",
+      "Add FVG/imbalance requirement inside impulse leg.",
+      "Add Fib retracement filter: 67 percent, with 71 and 79 percent alternatives.",
+      "Add premium/discount side validation.",
+      "Add liquidity sweep before entry: wick through local liquidity, close back inside.",
+      "Add internal BOS/CHoCH confirmation after sweep.",
+      "Replace fixed 1.5R target with opposing range extreme.",
+      "Add range-expiration and invalidation rules.",
+      "Test continuation and reversal branches separately."
+    ],
+    "integrity_notes": [
+      "Confirmed pivots must be known only after pivot_len right bars close.",
+      "The exact Pine baseline uses wick BOS, not body-close BOS.",
+      "The close-BOS and no-EMA variants are diagnostic controls, not phase-3 mutations.",
+      "Production-comparable runs use next_bar_open execution instead of same-close fills."
+    ]
+  },
+  "parameters": {
+    "variant": "v0_exact_pine",
+    "allow_long": true,
+    "allow_short": false,
+    "pivot_len": 5,
+    "atr_len": 14,
+    "atr_mult": 2.0,
+    "min_green": 1,
+    "max_zone_age": 20,
+    "demand_lookback_bars": 10,
+    "tp_r": 1.5,
+    "bos_break_mode": "wick",
+    "ema_filter_enabled": true,
+    "ema_len": 100,
+    "same_bar_exit_policy": "stop_first",
+    "sizing_mode": "fixed_risk_pct",
+    "risk_pct": 0.005,
+    "notional_pct": 0.25,
+    "max_leverage": 1.0,
+    "quantity": 1.0,
+    "initial_capital": 100000.0,
+    "commission_pct": 0.04,
+    "slippage_ticks": 2,
+    "tick_size": 0.01,
+    "execution_model": "next_bar_open"
+  },
+  "evaluation": {
+    "minimum_trades": 30,
+    "minimum_profit_factor": 1.15,
+    "maximum_drawdown_pct": 12.0,
+    "minimum_net_pnl": 0.0,
+    "minimum_sharpe": 0.5,
+    "minimum_sortino": 0.75,
+    "minimum_daily_sharpe": 0.75,
+    "minimum_daily_sortino": 1.0,
+    "minimum_calmar": 0.5,
+    "maximum_initial_risk_pct": 1.0,
+    "maximum_entry_exposure_pct": 100.0,
+    "maximum_avg_exposure_pct": 100.0,
+    "maximum_worst_daily_loss_pct": 5.0,
+    "production_sizing_modes": [
+      "fixed_notional_pct",
+      "fixed_risk_pct"
+    ],
+    "benchmark_policy": "outperform_return_or_calmar"
+  },
+  "mutation_space": [
+    {
+      "kind": "white_box",
+      "lever": "variant",
+      "path": "parameters.variant",
+      "priority": 120,
+      "values": [
+        "v0_exact_pine",
+        "v0_integrity_close_bos",
+        "v0_no_ema_diagnostic",
+        "custom_controls"
+      ],
+      "search_mode": "values_only",
+      "rationale": "Controlled baseline variants: exact Pine, body-close BOS diagnostic, and no-EMA diagnostic."
+    },
+    {
+      "kind": "white_box",
+      "lever": "bos_break_mode",
+      "path": "parameters.bos_break_mode",
+      "priority": 118,
+      "values": [
+        "wick",
+        "close"
+      ],
+      "search_mode": "values_only",
+      "rationale": "Preserve exact Pine wick BOS or test body-close BOS as an integrity diagnostic."
+    },
+    {
+      "kind": "white_box",
+      "lever": "ema_filter_enabled",
+      "path": "parameters.ema_filter_enabled",
+      "priority": 116,
+      "values": [
+        true,
+        false
+      ],
+      "search_mode": "values_only",
+      "rationale": "Test whether the baseline edge comes from BOS-demand behavior or mostly from the EMA trend filter."
+    },
+    {
+      "kind": "white_box",
+      "lever": "pivot_len",
+      "path": "parameters.pivot_len",
+      "priority": 110,
+      "values": [
+        3,
+        4,
+        5,
+        6,
+        8,
+        10
+      ],
+      "search_mode": "range",
+      "search_min": 2,
+      "search_max": 20,
+      "search_step": 1,
+      "rationale": "Tune confirmed pivot strictness while preserving non-repainting right-bar confirmation."
+    },
+    {
+      "kind": "white_box",
+      "lever": "atr_len",
+      "path": "parameters.atr_len",
+      "priority": 100,
+      "values": [
+        10,
+        14,
+        20,
+        28
+      ],
+      "search_mode": "range",
+      "search_min": 1,
+      "search_max": 300,
+      "search_step": 1,
+      "rationale": "Tune volatility memory for impulse qualification."
+    },
+    {
+      "kind": "white_box",
+      "lever": "atr_mult",
+      "path": "parameters.atr_mult",
+      "priority": 98,
+      "values": [
+        1.0,
+        1.5,
+        2.0,
+        2.5,
+        3.0
+      ],
+      "search_mode": "range",
+      "search_min": 0.5,
+      "search_max": 5.0,
+      "search_step": 0.1,
+      "rationale": "Tune how large the green impulse must be relative to ATR."
+    },
+    {
+      "kind": "white_box",
+      "lever": "max_zone_age",
+      "path": "parameters.max_zone_age",
+      "priority": 96,
+      "values": [
+        10,
+        15,
+        20,
+        30,
+        40
+      ],
+      "search_mode": "range",
+      "search_min": 1,
+      "search_max": 120,
+      "search_step": 1,
+      "rationale": "Tune how long a demand zone remains actionable."
+    },
+    {
+      "kind": "white_box",
+      "lever": "min_green",
+      "path": "parameters.min_green",
+      "priority": 94,
+      "values": [
+        1,
+        2,
+        3
+      ],
+      "search_mode": "range",
+      "search_min": 1,
+      "search_max": 8,
+      "search_step": 1,
+      "rationale": "Tune consecutive bullish candle requirement in the impulse leg."
+    },
+    {
+      "kind": "white_box",
+      "lever": "tp_r",
+      "path": "parameters.tp_r",
+      "priority": 92,
+      "values": [
+        1.0,
+        1.25,
+        1.5,
+        2.0,
+        2.5
+      ],
+      "search_mode": "range",
+      "search_min": 0.5,
+      "search_max": 5.0,
+      "search_step": 0.25,
+      "rationale": "Tune fixed R target while preserving the source stop at demand zone bottom."
+    },
+    {
+      "kind": "white_box",
+      "lever": "ema_len",
+      "path": "parameters.ema_len",
+      "priority": 90,
+      "values": [
+        50,
+        100,
+        150,
+        200
+      ],
+      "search_mode": "range",
+      "search_min": 1,
+      "search_max": 300,
+      "search_step": 1,
+      "rationale": "Tune trend-filter horizon only if the EMA filter remains enabled."
+    },
+    {
+      "kind": "portfolio",
+      "lever": "sizing_mode",
+      "path": "parameters.sizing_mode",
+      "priority": 130,
+      "values": [
+        "fixed_quantity",
+        "fixed_notional_pct",
+        "fixed_risk_pct"
+      ],
+      "search_mode": "values_only",
+      "rationale": "Fixed risk is the production-style baseline; fixed quantity remains diagnostic only."
+    },
+    {
+      "kind": "portfolio",
+      "lever": "risk_pct",
+      "path": "parameters.risk_pct",
+      "priority": 128,
+      "values": [
+        0.0025,
+        0.005,
+        0.01
+      ],
+      "search_mode": "range",
+      "search_min": 0.001,
+      "search_max": 0.01,
+      "search_step": 0.001,
+      "rationale": "Tune account risk budget per trade before leverage caps."
+    },
+    {
+      "kind": "portfolio",
+      "lever": "max_leverage",
+      "path": "parameters.max_leverage",
+      "priority": 127,
+      "values": [
+        0.5,
+        1.0
+      ],
+      "search_mode": "range",
+      "search_min": 0.25,
+      "search_max": 1.0,
+      "search_step": 0.25,
+      "rationale": "Cap exposure for production-comparable runs."
+    }
+  ]
+}

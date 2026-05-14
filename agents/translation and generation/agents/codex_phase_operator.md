@@ -2,7 +2,7 @@
 
 This guide explains how a human operator and a Codex-like coding agent should run the four Mutation Lab phases in this repository. It is written to be usable by humans and LLM agents. The goal is repeatability: a new strategy idea should move through translation, baseline optimization, full-whitebox improvement, and hybrid/blackbox sharpening without inventing a new workflow each time.
 
-The core rule is simple: each phase must produce evidence before the next phase begins. Do not promote a strategy because it sounds plausible. Promote only after the app or scripts test it against the frozen parent and the same dataset contract. The final research label before live use is not "production-ready"; it is "production robustness candidate." A strategy earns that label only after the saved final candidate passes full-history portfolio gates, chronological walk-forward checks, and execution-cost stress checks.
+The core rule is simple: each phase must produce evidence before the next phase begins. Do not promote a strategy because it sounds plausible. Promote only after the app or scripts test it against the frozen parent and the same dataset contract. The final research label before live use is not "production-ready"; it is "production robustness candidate." A strategy earns that label only after the saved final candidate passes full-history portfolio gates, chronological walk-forward checks, execution-cost stress checks, and a realistic execution-model review. The current engine is a research engine until it can prove closed-candle order timing, mark-to-market portfolio equity, exchange feasibility, and forward paper execution.
 
 ## Repository Map
 
@@ -19,6 +19,8 @@ Use these prompts in order:
 | 4 | `04_hybrid-blackbox.md` | Add one narrow hybrid or blackbox mutation to a surviving full-whitebox parent. |
 | 4.1 | `04-1_hybrid_diagnostics.md` | Produce the ranked hybrid mutation queue and validation contract before coding phase-4 experiments. |
 | Final Gate | App robustness gate | Test the saved final candidate with walk-forward folds and cost/slippage stress before paper trading. |
+| Engine Audit | `agents/docs/production_backtest_engine_audit.md` | Confirm whether the current simulator assumptions are research-only or production-comparable. |
+| Phase 5 | Execution feasibility and paper runner | Convert the final candidate into legal exchange orders, then compare paper execution against backtest intent. |
 
 Generated evidence belongs in `artifacts/`. Saved run JSON files live in `artifacts/runs/`, saved run Markdown reports live in `artifacts/reports/`, and phase diagnostics live in `artifacts/diagnostics/`. Do not put generated diagnostics into `bridgecode/`; that folder is only for execution playbooks such as `EYE.md`.
 
@@ -32,27 +34,33 @@ Keep the implementation vanilla-first and local. The app is intentionally a smal
 
 A report is enough for phase routing when it contains the frozen contract, parent comparison, headline metrics, buy-and-hold comparison, side decomposition, exit-reason decomposition, period decomposition, duration statistics, MFE/MAE, and diagnostic counters. Open the JSON only when the next task requires trade-level rows, exact parameter payloads, exported features, or model labels that are not present in the Markdown.
 
+Before a strategy is described as production-ready, read `agents/docs/production_backtest_engine_audit.md`. The app can discover research edge before it has a fully production-grade execution simulator, but the labels must stay honest. Same-close fills, same-bar entry/exit behavior, realized-only equity, full-sample optimization, and simplified exchange costs are research assumptions unless the engine explicitly replaces them with an executable model. If a strategy looks excellent only under those assumptions, route it to engine hardening or paper-runner parity work instead of promoting it.
+
 ## Phase 1: Translation
 
-Phase 1 starts with a user idea, source code, open-source strategy, course notes, or a compact strategy description. The agent reads `01_translation.md` and translates the idea into one executable parent candidate. The parent must be explicit enough for Mutation Lab to run: asset, venue, timeframe, signal logic, entry rules, exit rules, risk rules, cost assumptions, parameter schema, and a mutation space for ordinary parameter tuning.
+Phase 1 starts with a user idea, source code, open-source strategy, course notes, or a compact strategy description. The agent reads `01_translation.md` and first produces an inspectable open-source candidate shortlist before creating a Mutation Lab parent whenever the source is discretionary, transcript-derived, course-derived, screenshot-derived, or otherwise only partially codified. The shortlist is the normal phase-1 output. Fresh Pine creation from scratch is a fallback, not the default: use it only when the source is already a formal rule set that can be translated without inventing mechanics, or when no suitable open-source baseline exists and the output is explicitly a visual/debug prototype rather than a parent.
 
-The output of this phase is not a promoted strategy. It is a runnable candidate. If source material is vague, the agent should make the smallest defensible translation and state assumptions in the strategy notes. If the source material is too vague to code honestly, the agent should ask for the specific missing trading rule rather than inventing one.
+The output of this phase is not a promoted strategy. It is a tested candidate path. If source material is code and can be transformed cleanly, preserve the source logic and create the Pine or Mutation Lab handoff from that code. If source code cannot be transformed cleanly, find the closest inspectable open-source candidate and keep any original-source-inspired mutations as tentative phase-3 ideas only. If the source is discretionary, transcript-based, or partially codified, provide several inspectable candidates for TradingView testing and tell the user to choose the one with the best behavior on the desired asset and timeframe. For each candidate, also state which future rule-level mutations would be needed to make it a fuller translation of the original source. Do not apply those mutations in phase 1. If source material is too vague to code honestly, the agent should ask for the specific missing trading rule rather than inventing one.
 
 For this repo, phase-1 coding usually touches the strategy JSON, `app/backtest.py` if a new engine rule is needed, and tests in `app/tests.py`. If the candidate can be expressed with the existing engine, prefer only updating the JSON and mutation space.
 
-The pass gate is that the app can run the candidate on a valid dataset without crashing, produces non-empty metrics, and exposes tunable edges in the Mutation Edges panel.
+The pass gate is that TradingView or the app can run the candidate on a valid dataset without crashing, produces non-empty metrics, exposes visually auditable behavior, and has enough tunable edges for phase 2. A direct Mutation Lab JSON parent without Pine/open-source validation is allowed only when the source is already explicit enough that the implementation can be audited bar by bar.
 
 ## Phase 2: Baseline Optimization
 
-Phase 2 uses `02_baseline.md`. The purpose is not to make clever rule changes. It is to optimize ordinary parameters until the translated candidate proves whether it has enough baseline edge to deserve deeper research.
+Phase 2 uses `02_baseline.md`. The purpose is not to make clever rule changes. It has two subphases. Phase 2A turns the user-selected open-source candidate into a Mutation Lab parent while preserving the selected candidate's executable identity and carrying forward phase-1 mutation ideas as future-only notes. Phase 2B reads the research and production optimization reports and decides whether the optimized baseline deserves phase 3, should be preserved as a component, should be retried with a different open-source candidate, or should go to the graveyard.
 
 In the app, choose the family, choose the dataset, and run live tuning or automated lever optimization. Use broad history whenever possible. For BTCUSDT 15m, use the full Binance history dataset rather than a small 40k-bar sample once the candidate becomes serious.
 
-The agent should treat `Optimize` and `Optimize All Twice` as parameter search tools, not as proof of generalization. If a strategy cannot become at least a survivor after two full optimization passes over the main parameter space, route it to graveyard and test another translation candidate. Do not proceed to phase 3 with a strategy that only has a small-sample artifact or a low-trade high-PF result.
+There are two full-pass optimizer buttons and they serve different purposes. `Optimize Baseline Twice` is the phase-2 research optimizer. It is allowed to move to the best-scoring parameter set even when the result is not production-eligible yet, because its job is to find out whether a weak translated parent can become a serious baseline. `Optimize Production Twice` is the strict gate-aware optimizer. It should be run after the research pass, using the research-tuned working values as input. If every tested candidate fails the production contract, it must preserve the current values and may report that zero values were applied. Zero applied values in production mode is evidence, not necessarily a bug.
 
-The minimum evidence gate should include trade count, profit factor, max drawdown, net PnL, outperformance versus buy-and-hold, and chronological period decomposition. Raw profit factor is not enough. A high PF with too few trades or narrow-period concentration is not a serious baseline.
+The agent should treat `Optimize`, `Optimize Baseline Twice`, and `Optimize Production Twice` as parameter search tools, not as proof of generalization. If a strategy cannot become at least a survivor after the baseline research pass and cannot remain credible under the production pass, route it to graveyard and test another translation candidate. Do not proceed to phase 3 with a strategy that only has a small-sample artifact or a low-trade high-PF result.
 
-The output of phase 2 is a saved run report in `artifacts/reports/` and JSON in `artifacts/runs/`. The saved run becomes the frozen parent for phase 3.
+The minimum evidence gate should include trade count, profit factor, max drawdown, net PnL, daily portfolio Sharpe and Sortino, maximum initial trade risk, outperformance versus buy-and-hold, Calmar delta, and chronological period decomposition. Raw profit factor is not enough. A high PF with too few trades, excess trade risk, weak daily portfolio quality, or narrow-period concentration is not a serious baseline.
+
+The general routing principle is that partial life is not enough for phase 3. A candidate can have non-trivial trades, positive net PnL, positive profit factor, and low drawdown while still failing daily portfolio quality, trade-risk bounds, or benchmark efficiency. That is not a phase-3 parent. It is a research-only lesson or possible component, and the correct next move is to test a backup candidate or a structurally different translation rather than applying full-whitebox mutations to rescue a weak full-strategy baseline.
+
+The output of phase 2A is a runnable parent in the app plus a first full-history run plan. The output of phase 2B is a saved run report in `artifacts/reports/`, JSON in `artifacts/runs/`, and a routing decision. Only a saved phase-2 run with credible research life and production-comparable evidence becomes the frozen parent for phase 3.
 
 ## Phase 3: Full-Whitebox Diagnostics and Rule Mutations
 
@@ -80,13 +88,17 @@ For the BTCUSDT intraday parent, the phase-4 process produced this practical les
 
 The output of phase 4 is a saved hybrid/full strategy run. If it becomes the best current strategy, it can be promoted as the new parent for later research. Any rejected hybrid experiments should remain as disposable diagnostic artifacts only; do not add failed branches to the app unless they are useful disabled controls for future optimization.
 
-## Final Research Gate: Robustness and Paper Trading
+## Final Research Gate: Robustness, Execution Feasibility, and Paper Trading
 
 After phase 4 is complete, or after hybrid work is explicitly skipped because no narrow hybrid candidate is justified, the operator must freeze one exact saved version and dataset. Run the app's robustness gate on that exact candidate. The gate must pass chronological walk-forward folds and execution-cost stress scenarios. The current required stress scenarios are doubled commission, doubled slippage, and combined doubled commission plus doubled slippage.
 
 If the robustness gate fails, do not paper trade. Use the failed fold or failed stress scenario as the next research target. A candidate that cannot survive cost stress or chronological splits is still a research artifact even if the full-history metrics look excellent.
 
-If the robustness gate passes, label the strategy a production robustness candidate and create a candidate dossier. The dossier should reference the saved run report, saved run JSON, dataset id, parameter set, robustness output, capital model, benchmark comparison, known remaining risks, and paper-trading plan. This freeze step prevents accidental continued tuning after the strategy has already passed the research gate.
+If the robustness gate passes, label the strategy a production robustness candidate and create a candidate dossier. The dossier should reference the saved run report, saved run JSON, dataset id, parameter set, robustness output, capital model, benchmark comparison, known remaining risks, execution-model assumptions, and paper-trading plan. This freeze step prevents accidental continued tuning after the strategy has already passed the research gate.
+
+The next gate is execution feasibility. Convert the strategy's theoretical actions into exchange-compatible order instructions before paper trading. For an OKX-style perpetual route, audit instrument metadata, tick size, lot size, contract value, minimum order size, minimum notional, leverage or margin limits, stop trigger behavior, reduce-only behavior, position rounding, and whether breakeven or stop replacement can be represented safely. This audit does not prove profitability, but it prevents a backtest artifact from being sent to an exchange where its orders cannot legally or faithfully exist.
+
+TradingView plus an exchange signal bot is useful as Phase 5-lite for simple signal executability, but it is not the final proof of Mutation Lab parity. The full route is a native paper runner that uses the same Python strategy state, closed-candle timing, sizing rules, and stop-management logic, then reconciles intended orders against exchange responses and fill reports.
 
 Paper trading should not be "a few days" by default. Choose the duration from historical trade frequency. For a strategy with hundreds of trades over many years but only around one or two trades per week on average, paper trading should usually run for several weeks to a few months, or until at least 20 to 30 live paper trades are observed, whichever takes longer. A few days is acceptable only for much higher-frequency systems that can generate a meaningful sample quickly. During paper trading, track live frequency, fills, slippage, stop behavior, exposure, drawdown rhythm, execution errors, and whether the observed trades resemble the backtest diagnostics.
 
@@ -124,7 +136,7 @@ A candidate can move from phase 3 to phase 4 when it is a strong full-whitebox p
 
 A phase-4 mutation can be saved only after live-engine optimization confirms the edge. Offline previews are not enough. A saved phase-4 child should show meaningful improvement in at least one major metric without damaging the others: PF, net PnL, max drawdown, expected payoff, trade count, buy-and-hold outperformance, side decomposition, and period robustness.
 
-A saved final candidate can move to paper trading only after the robustness gate passes. Passing the robustness gate means "production robustness candidate," not "production-ready." Production readiness requires paper-trading evidence and operational controls.
+A saved final candidate can move to paper trading only after the robustness gate and execution-feasibility audit pass. Passing the robustness gate means "production robustness candidate," not "production-ready." Production readiness requires paper-trading evidence, exchange-order parity, and operational controls.
 
 Reject a branch if it improves only by deleting most trades, relies on future information, concentrates gains in one short period, worsens drawdown materially, damages the best side, or cannot be explained as a narrow layer on top of the whitebox parent.
 

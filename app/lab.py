@@ -15,6 +15,7 @@ from fastapi import HTTPException
 from app.backtest import BacktestEngine, apply_patch_to_spec, buy_hold_drawdown_pct
 from app.config import settings
 from app.data import DataService
+from app.execution_audit import audit_saved_run_for_okx
 from app.storage import Repository
 
 
@@ -210,6 +211,123 @@ PHASE_3_MUTATION_SPACE = [
         "search_max": 2.0,
         "search_step": 0.05,
         "rationale": "Tune the minimum favorable excursion required before the time-decay window expires.",
+    },
+    {
+        "kind": "white_box",
+        "lever": "entry_exposure_gate_enabled",
+        "path": "parameters.entry_exposure_gate_enabled",
+        "priority": 95,
+        "values": [True, False],
+        "search_mode": "values_only",
+        "rationale": "Enable or disable an entry gate that blocks new trades when current exposure already exceeds a production cap.",
+    },
+    {
+        "kind": "white_box",
+        "lever": "entry_exposure_gate_max_pct",
+        "path": "parameters.entry_exposure_gate_max_pct",
+        "priority": 94,
+        "values": [25.0, 50.0, 75.0, 100.0],
+        "search_mode": "range",
+        "search_min": 10.0,
+        "search_max": 100.0,
+        "search_step": 5.0,
+        "rationale": "Tune the maximum existing exposure allowed before a new entry is blocked.",
+    },
+    {
+        "kind": "white_box",
+        "lever": "reverse_confirmation_enabled",
+        "path": "parameters.reverse_confirmation_enabled",
+        "priority": 89,
+        "values": [True, False],
+        "search_mode": "values_only",
+        "rationale": "Enable or disable confirmation before reverse-exit signals can close an open trade.",
+    },
+    {
+        "kind": "white_box",
+        "lever": "reverse_confirm_max_bars",
+        "path": "parameters.reverse_confirm_max_bars",
+        "priority": 88,
+        "values": [1, 2, 3, 4, 6],
+        "search_mode": "range",
+        "search_min": 1,
+        "search_max": 12,
+        "search_step": 1,
+        "rationale": "Tune how many bars after entry remain too early for an unconfirmed reverse exit.",
+    },
+    {
+        "kind": "white_box",
+        "lever": "reverse_confirm_min_mfe_r",
+        "path": "parameters.reverse_confirm_min_mfe_r",
+        "priority": 87,
+        "values": [0.0, 0.1, 0.2, 0.35, 0.5],
+        "search_mode": "range",
+        "search_min": 0.0,
+        "search_max": 2.0,
+        "search_step": 0.05,
+        "rationale": "Tune the favorable excursion required before a reverse signal is trusted as a real exit.",
+    },
+    {
+        "kind": "white_box",
+        "lever": "reverse_confirm_allow_if_unrealized_r_lte",
+        "path": "parameters.reverse_confirm_allow_if_unrealized_r_lte",
+        "priority": 86,
+        "values": [-1.0, -0.5, -0.35, -0.2, 0.0],
+        "search_mode": "range",
+        "search_min": -2.0,
+        "search_max": 0.0,
+        "search_step": 0.05,
+        "rationale": "Tune the adverse unrealized R level where a reverse exit is allowed even if confirmation is weak.",
+    },
+    {
+        "kind": "white_box",
+        "lever": "reverse_confirm_require_no_breakeven_move",
+        "path": "parameters.reverse_confirm_require_no_breakeven_move",
+        "priority": 85,
+        "values": [True, False],
+        "search_mode": "values_only",
+        "rationale": "Require that breakeven stop management has not already protected the trade before suppressing a reverse exit.",
+    },
+    {
+        "kind": "white_box",
+        "lever": "time_decay_triage_confirmation_enabled",
+        "path": "parameters.time_decay_triage_confirmation_enabled",
+        "priority": 84,
+        "values": [True, False],
+        "search_mode": "values_only",
+        "rationale": "Enable or disable confirmation before time-decay exits can close a trade that has not progressed.",
+    },
+    {
+        "kind": "white_box",
+        "lever": "time_decay_confirm_max_unrealized_r",
+        "path": "parameters.time_decay_confirm_max_unrealized_r",
+        "priority": 83,
+        "values": [-0.5, -0.25, 0.0, 0.25],
+        "search_mode": "range",
+        "search_min": -2.0,
+        "search_max": 1.0,
+        "search_step": 0.05,
+        "rationale": "Tune how weak unrealized R must be before a time-decay exit is allowed.",
+    },
+    {
+        "kind": "white_box",
+        "lever": "time_decay_confirm_max_mfe_r",
+        "path": "parameters.time_decay_confirm_max_mfe_r",
+        "priority": 82,
+        "values": [0.1, 0.25, 0.35, 0.5, 0.75],
+        "search_mode": "range",
+        "search_min": 0.0,
+        "search_max": 2.0,
+        "search_step": 0.05,
+        "rationale": "Tune the maximum favorable excursion still considered a failed time-decay path.",
+    },
+    {
+        "kind": "white_box",
+        "lever": "time_decay_confirm_require_no_breakeven_move",
+        "path": "parameters.time_decay_confirm_require_no_breakeven_move",
+        "priority": 81,
+        "values": [True, False],
+        "search_mode": "values_only",
+        "rationale": "Require that breakeven stop management has not already protected the trade before suppressing a time-decay exit.",
     },
     {
         "kind": "white_box",
@@ -535,9 +653,26 @@ PORTFOLIO_PARAMETERS = {
     "lot_step": 0.01,
     "max_lot": 100.0,
     "skip_below_min_lot": True,
+<<<<<<< master
+=======
+}
+
+EXECUTION_PARAMETERS = {
+    "execution_model": "next_bar_open",
+>>>>>>> master
 }
 
 PORTFOLIO_MUTATION_SPACE = [
+    {
+        "kind": "execution",
+        "lever": "execution_model",
+        "path": "parameters.execution_model",
+        "priority": 131,
+        "values": ["next_bar_open", "mt5_bar_proxy"],
+        "search_mode": "values_only",
+        "optimizable": False,
+        "rationale": "Choose the production-comparable bar execution proxy. next_bar_open fills closed-bar signals at the next open; mt5_bar_proxy additionally models MT5-style same-entry-bar stop eligibility and stop-modification rejection.",
+    },
     {
         "kind": "portfolio",
         "lever": "initial_capital",
@@ -598,16 +733,26 @@ PORTFOLIO_MUTATION_SPACE = [
         "lever": "contract_size",
         "path": "parameters.contract_size",
         "priority": 126,
+<<<<<<< master
         "values": [100.0],
         "search_mode": "values_only",
         "rationale": "XAUUSD contract size used by mt5_fixed_risk_lot sizing.",
+=======
+        "values": [1.0, 10.0, 100.0],
+        "search_mode": "values_only",
+        "rationale": "Contract size used by mt5_fixed_risk_lot sizing.",
+>>>>>>> master
     },
     {
         "kind": "portfolio",
         "lever": "min_lot",
         "path": "parameters.min_lot",
         "priority": 125,
+<<<<<<< master
         "values": [0.01],
+=======
+        "values": [0.01, 0.1, 1.0],
+>>>>>>> master
         "search_mode": "values_only",
         "rationale": "Broker minimum lot used by mt5_fixed_risk_lot sizing.",
     },
@@ -616,7 +761,11 @@ PORTFOLIO_MUTATION_SPACE = [
         "lever": "lot_step",
         "path": "parameters.lot_step",
         "priority": 124,
+<<<<<<< master
         "values": [0.01],
+=======
+        "values": [0.01, 0.1, 1.0],
+>>>>>>> master
         "search_mode": "values_only",
         "rationale": "Broker lot step used by mt5_fixed_risk_lot sizing.",
     },
@@ -625,7 +774,11 @@ PORTFOLIO_MUTATION_SPACE = [
         "lever": "max_lot",
         "path": "parameters.max_lot",
         "priority": 123,
+<<<<<<< master
         "values": [100.0],
+=======
+        "values": [1.0, 10.0, 100.0],
+>>>>>>> master
         "search_mode": "values_only",
         "rationale": "Broker maximum lot cap used by mt5_fixed_risk_lot sizing.",
     },
@@ -662,6 +815,7 @@ SEED_SPEC = {
         **PHASE_3_PARAMETERS,
         **PHASE_4_PARAMETERS,
         **PORTFOLIO_PARAMETERS,
+        **EXECUTION_PARAMETERS,
         "quantity": 1.0,
         "initial_capital": 100000.0,
         "commission_pct": 0.04,
@@ -880,6 +1034,7 @@ class MutationLabService:
         family = self.repo.get_family("btc_intraday")
         if family:
             self._upgrade_family_versions("btc_intraday")
+            self._register_strategy_specs()
             return
         source_code = settings.seed_strategy_path.read_text(encoding="utf-8")
         spec = json.loads(settings.seed_spec_path.read_text(encoding="utf-8"))
@@ -915,6 +1070,61 @@ class MutationLabService:
             }
         )
         self._upgrade_family_versions("btc_intraday")
+        self._register_strategy_specs()
+
+    def _register_strategy_specs(self) -> None:
+        for spec_path in sorted(settings.strategy_specs_dir.glob("*_parent.json")):
+            try:
+                spec = json.loads(spec_path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError as exc:
+                raise HTTPException(status_code=500, detail=f"Invalid strategy spec JSON in {spec_path.name}: {exc}") from exc
+            metadata = spec.get("metadata", {})
+            family_id = metadata.get("family_id")
+            if not family_id or family_id == "btc_intraday":
+                continue
+            if self.repo.get_family(family_id):
+                version_id = f"ver_{family_id}_parent"
+                existing_version = self.repo.get_version(version_id)
+                if existing_version and existing_version.get("spec_json") != spec:
+                    metadata = spec.get("metadata", {})
+                    existing_version["source_code"] = spec_path.read_text(encoding="utf-8")
+                    existing_version["spec_json"] = spec
+                    existing_version["causal_story"] = metadata.get("causal_story") or spec.get("causal_story") or existing_version.get("causal_story", "")
+                    existing_version["mutation_json"] = {"origin": "strategy_spec", "path": str(spec_path)}
+                    self.repo.put_version(existing_version)
+                self._upgrade_family_versions(family_id)
+                continue
+            created_at = datetime.now(UTC).isoformat()
+            version_id = f"ver_{family_id}_parent"
+            title = metadata.get("title") or family_id.replace("_", " ").title()
+            causal_story = metadata.get("causal_story") or spec.get("causal_story") or "Imported strategy spec."
+            notes = metadata.get("source_video_note") or metadata.get("translation_target") or f"Imported from {spec_path.name}"
+            self.repo.put_family(
+                {
+                    "family_id": family_id,
+                    "title": title,
+                    "asset": spec.get("asset", "unknown"),
+                    "venue": spec.get("venue", "unknown"),
+                    "timeframe": spec.get("timeframe", "unknown"),
+                    "current_version_id": version_id,
+                    "created_at": created_at,
+                }
+            )
+            self.repo.put_version(
+                {
+                    "version_id": version_id,
+                    "family_id": family_id,
+                    "parent_version_id": None,
+                    "name": title,
+                    "stage": "white_box",
+                    "source_code": spec_path.read_text(encoding="utf-8"),
+                    "spec_json": spec,
+                    "causal_story": causal_story,
+                    "mutation_json": {"origin": "strategy_spec", "path": str(spec_path)},
+                    "notes": notes,
+                    "created_at": created_at,
+                }
+            )
 
     def _upgrade_family_versions(self, family_id: str) -> None:
         for version in self.repo.list_versions(family_id):
@@ -957,7 +1167,7 @@ class MutationLabService:
                     changed = True
             return upgraded, changed
         parameters = upgraded.setdefault("parameters", {})
-        for key, value in {**PHASE_3_PARAMETERS, **PHASE_4_PARAMETERS, **PORTFOLIO_PARAMETERS}.items():
+        for key, value in {**PHASE_3_PARAMETERS, **PHASE_4_PARAMETERS, **PORTFOLIO_PARAMETERS, **EXECUTION_PARAMETERS}.items():
             if key not in parameters:
                 parameters[key] = value
                 changed = True
@@ -978,7 +1188,11 @@ class MutationLabService:
                 changed = True
                 continue
             for key in ("priority", "values", "search_mode", "search_min", "search_max", "search_step", "optimizable", "rationale", "path", "kind"):
+<<<<<<< master
                 next_value = mutation.get(key)
+=======
+                next_value = mutation.get(key, True) if key == "optimizable" else mutation.get(key)
+>>>>>>> master
                 if existing.get(key) != next_value:
                     existing[key] = json.loads(json.dumps(next_value))
                     changed = True
@@ -1073,6 +1287,7 @@ class MutationLabService:
                 "search_min": mutation.get("search_min"),
                 "search_max": mutation.get("search_max"),
                 "search_step": mutation.get("search_step"),
+                "optimizable": mutation.get("optimizable", True),
             }
             edges.append(edge)
         return sorted(edges, key=lambda item: (-item["priority"], item["lever"]))
@@ -1210,8 +1425,9 @@ class MutationLabService:
         base_result = self.engine.run(tuned_spec, bars)
         base_verdict = self._verdict(tuned_spec, base_result["metrics"], None)
         walk_forward = self._walk_forward_checks(tuned_spec, bars)
+        train_test = self._anchored_train_test_checks(version_id, tuned_spec, bars)
         cost_stress = self._cost_stress_checks(tuned_spec, bars)
-        summary = self._robustness_summary(base_verdict, walk_forward, cost_stress)
+        summary = self._robustness_summary(base_verdict, walk_forward, cost_stress, train_test)
         return {
             "mode": "robustness_check",
             "version_id": version_id,
@@ -1220,6 +1436,7 @@ class MutationLabService:
             "base_verdict": base_verdict,
             "base_metrics": base_result["metrics"],
             "walk_forward": walk_forward,
+            "anchored_train_test": train_test,
             "cost_stress": cost_stress,
             "summary": summary,
         }
@@ -1248,6 +1465,134 @@ class MutationLabService:
                 }
             )
         return folds
+
+    def _anchored_train_test_checks(self, version_id: str, spec: dict[str, Any], bars: list[Any]) -> list[dict[str, Any]]:
+        folds: list[dict[str, Any]] = []
+        if len(bars) < 40_000:
+            return folds
+        fold_count = 4
+        fold_size = len(bars) // fold_count
+        for fold_index in range(1, fold_count):
+            train_bars = bars[: fold_index * fold_size]
+            test_bars = bars[fold_index * fold_size : (fold_index + 1) * fold_size if fold_index < fold_count - 1 else len(bars)]
+            if len(train_bars) < 10_000 or len(test_bars) < 500:
+                continue
+            try:
+                train_spec, train_steps = self._optimize_spec_on_bars(version_id, spec, train_bars)
+                test_result = self.engine.run(train_spec, test_bars)
+            except HTTPException as exc:
+                folds.append(
+                    {
+                        "fold": fold_index,
+                        "train_start_ts": train_bars[0].ts.isoformat(),
+                        "train_end_ts": train_bars[-1].ts.isoformat(),
+                        "test_start_ts": test_bars[0].ts.isoformat(),
+                        "test_end_ts": test_bars[-1].ts.isoformat(),
+                        "passed": False,
+                        "failures": [str(exc.detail)],
+                        "train_steps": [],
+                        "metrics": {},
+                    }
+                )
+                continue
+            failures = self._core_gate_failures(train_spec, test_result["metrics"]) + self._portfolio_gate_failures(
+                train_spec, test_result["metrics"]
+            )
+            folds.append(
+                {
+                    "fold": fold_index,
+                    "train_start_ts": train_bars[0].ts.isoformat(),
+                    "train_end_ts": train_bars[-1].ts.isoformat(),
+                    "test_start_ts": test_bars[0].ts.isoformat(),
+                    "test_end_ts": test_bars[-1].ts.isoformat(),
+                    "train_bars": len(train_bars),
+                    "test_bars": len(test_bars),
+                    "passed": not failures,
+                    "failures": failures,
+                    "train_steps": train_steps,
+                    "metrics": self._compact_metrics(test_result["metrics"]),
+                }
+            )
+        return folds
+
+    def _optimize_spec_on_bars(self, version_id: str, spec: dict[str, Any], bars: list[Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        overrides: dict[str, Any] = {}
+        base_spec = json.loads(json.dumps(spec))
+        steps: list[dict[str, Any]] = []
+        train_edges = sorted(
+            [
+                edge
+                for edge in self.list_tuning_edges(version_id)
+                if edge["kind"] in {"white_box", "hybrid"} and edge["lever"] != "execution_model"
+            ],
+            key=lambda item: int(item.get("priority", 0)),
+            reverse=True,
+        )[:8]
+        for edge in train_edges:
+            values = self._train_candidate_values(base_spec, edge)
+            if not values:
+                continue
+            candidates: list[dict[str, Any]] = []
+            for value in values:
+                candidate_spec = self._apply_parameter_overrides(base_spec, {**overrides, edge["lever"]: value})
+                try:
+                    result = self.engine.run(candidate_spec, bars)
+                except HTTPException as exc:
+                    if self._is_dataset_incompatible_candidate_error(exc):
+                        continue
+                    raise
+                candidates.append(
+                    {
+                        "value": value,
+                        "eligible": self._optimization_eligible(candidate_spec, result["metrics"]),
+                        "score": self._optimization_score(candidate_spec, result["metrics"]),
+                        "metrics": result["metrics"],
+                    }
+                )
+            if not candidates:
+                continue
+            eligible = [item for item in candidates if item["eligible"]]
+            if not eligible:
+                continue
+            best = max(eligible, key=lambda item: item["score"])
+            current_value = self._read_path(base_spec, edge["path"])
+            if best["value"] != current_value:
+                overrides[edge["lever"]] = best["value"]
+                steps.append(
+                    {
+                        "lever": edge["lever"],
+                        "from": current_value,
+                        "to": best["value"],
+                        "score": round(best["score"], 4),
+                        "candidate_count": len(candidates),
+                    }
+                )
+        return self._apply_parameter_overrides(base_spec, overrides), steps
+
+    def _train_candidate_values(self, spec: dict[str, Any], edge: dict[str, Any]) -> list[Any]:
+        current = self._read_path(spec, edge["path"])
+        values = [current, *edge.get("values", [])]
+        seen: set[str] = set()
+        unique: list[Any] = []
+        for value in values:
+            token = json.dumps(value, sort_keys=True)
+            if token in seen:
+                continue
+            seen.add(token)
+            unique.append(value)
+        return unique[:10]
+
+    @staticmethod
+    def _bounded_train_values(current: Any, values: list[Any]) -> list[Any]:
+        if not isinstance(current, (int, float)) or isinstance(current, bool):
+            return values[:25]
+        numeric = [value for value in values if isinstance(value, (int, float)) and not isinstance(value, bool)]
+        if not numeric:
+            return values[:25]
+        below = sorted([value for value in numeric if value < current])[-8:]
+        above = sorted([value for value in numeric if value > current])[:8]
+        selected = sorted(set([current, *below, *above]))
+        return selected[:25]
 
     def _cost_stress_checks(self, spec: dict[str, Any], bars: list[Any]) -> list[dict[str, Any]]:
         parameters = spec.get("parameters", {})
@@ -1297,10 +1642,23 @@ class MutationLabService:
         return {key: metrics.get(key, 0.0) for key in keys}
 
     @staticmethod
-    def _robustness_summary(base_verdict: str, walk_forward: list[dict[str, Any]], cost_stress: list[dict[str, Any]]) -> dict[str, Any]:
+    def _robustness_summary(
+        base_verdict: str,
+        walk_forward: list[dict[str, Any]],
+        cost_stress: list[dict[str, Any]],
+        train_test: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
         walk_passed = sum(1 for item in walk_forward if item["passed"])
         stress_passed = sum(1 for item in cost_stress if item["passed"])
-        passed = base_verdict == "promotion_candidate" and walk_passed == len(walk_forward) and stress_passed == len(cost_stress)
+        train_test = train_test or []
+        train_test_passed = sum(1 for item in train_test if item["passed"])
+        train_test_required = bool(train_test)
+        passed = (
+            base_verdict == "promotion_candidate"
+            and walk_passed == len(walk_forward)
+            and stress_passed == len(cost_stress)
+            and (not train_test_required or train_test_passed == len(train_test))
+        )
         if passed:
             label = "production_robustness_candidate"
         elif walk_passed >= max(1, len(walk_forward) - 1) and stress_passed >= max(1, len(cost_stress) - 1):
@@ -1314,7 +1672,19 @@ class MutationLabService:
             "walk_forward_total": len(walk_forward),
             "cost_stress_passed": stress_passed,
             "cost_stress_total": len(cost_stress),
+            "anchored_train_test_passed": train_test_passed,
+            "anchored_train_test_total": len(train_test),
         }
+
+    def execution_feasibility_audit(self, run_id: str) -> dict[str, Any]:
+        run = self.repo.get_run(run_id)
+        if not run:
+            raise HTTPException(status_code=404, detail="Run not found.")
+        artifact_path = Path(run["artifact_path"])
+        if not artifact_path.exists():
+            raise HTTPException(status_code=404, detail="Run artifact not found.")
+        payload = json.loads(artifact_path.read_text(encoding="utf-8"))
+        return audit_saved_run_for_okx(payload)
 
     def optimize_lever(
         self,
@@ -1322,9 +1692,14 @@ class MutationLabService:
         dataset_id: str,
         lever: str,
         parameter_overrides: dict[str, Any] | None = None,
+<<<<<<< master
         _progress_context: dict[str, Any] | None = None,
         _bars: list[Any] | None = None,
+=======
+        optimization_mode: str = "production",
+>>>>>>> master
     ) -> dict[str, Any]:
+        optimization_mode = self._normalize_optimization_mode(optimization_mode)
         version = self._get_upgraded_version(version_id)
         if not version:
             raise HTTPException(status_code=404, detail="Version not found.")
@@ -1335,11 +1710,17 @@ class MutationLabService:
             raise HTTPException(status_code=404, detail="Tuning lever not found.")
         if not edge.get("optimizable", True):
             raise HTTPException(status_code=400, detail=f"{lever} is manually editable but not optimizable.")
+<<<<<<< master
         if _progress_context is None:
             self._ensure_no_active_optimization()
         bars = _bars if _bars is not None else self.data_service.load_bars(dataset_id)
+=======
+        bars = self.data_service.load_bars(dataset_id)
+>>>>>>> master
         candidates: list[dict[str, Any]] = []
+        skipped_candidates: list[dict[str, Any]] = []
         values = self._candidate_values(edge)
+<<<<<<< master
         own_progress = _progress_context is None
         if own_progress:
             self._start_optimization_progress(
@@ -1443,6 +1824,82 @@ class MutationLabService:
             if own_progress:
                 self._finish_optimization_progress(f"{lever} optimization failed.", error=self._format_exception(error))
             raise
+=======
+        for value in values:
+            overrides = {**base_overrides, lever: value}
+            tuned_spec = self._apply_parameter_overrides(version["spec_json"], overrides)
+            try:
+                result = self.engine.run(tuned_spec, bars)
+            except HTTPException as exc:
+                if self._is_dataset_incompatible_candidate_error(exc):
+                    skipped_candidates.append(
+                        {
+                            "lever": lever,
+                            "value": value,
+                            "reason": str(exc.detail),
+                            "parameter_overrides": overrides,
+                        }
+                    )
+                    continue
+                raise
+            comparison = self._comparison(version_id, dataset_id, result["metrics"])
+            verdict = self._verdict(tuned_spec, result["metrics"], comparison)
+            candidates.append(
+                {
+                    "lever": lever,
+                    "value": value,
+                    "score": self._optimization_score(tuned_spec, result["metrics"]),
+                    "score_components": self._optimization_score_components(tuned_spec, result["metrics"]),
+                    "eligible": self._optimization_eligible(tuned_spec, result["metrics"]),
+                    "verdict": verdict,
+                    "metrics": result["metrics"],
+                    "comparison": comparison,
+                    "parameter_overrides": overrides,
+                }
+            )
+        if not candidates:
+            if skipped_candidates:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"No dataset-compatible candidates generated for {lever}.",
+                )
+            raise HTTPException(status_code=400, detail="No candidates generated for this lever.")
+        eligible_candidates = [candidate for candidate in candidates if candidate["eligible"]]
+        if eligible_candidates:
+            best = max(eligible_candidates, key=lambda item: item["score"])
+            selection_mode = "eligible_only"
+        elif optimization_mode == "research":
+            best = max(candidates, key=lambda item: item["score"])
+            selection_mode = "research_best_score"
+        else:
+            current_value = base_overrides.get(lever, version["spec_json"].get("parameters", {}).get(lever))
+            current_candidates = [candidate for candidate in candidates if candidate["value"] == current_value]
+            best = current_candidates[0] if current_candidates else max(candidates, key=lambda item: item["score"])
+            best = {**best, "parameter_overrides": base_overrides}
+            selection_mode = "no_production_eligible_keep_current"
+        best_spec = self._apply_parameter_overrides(version["spec_json"], best["parameter_overrides"])
+        return {
+            "mode": "optimize_lever",
+            "family_id": version["family_id"],
+            "base_version_id": version_id,
+            "dataset_id": dataset_id,
+            "lever": lever,
+            "optimization_mode": optimization_mode,
+            "objective": (
+                "production mode first requires enough trade evidence, positive net PnL, profit factor, drawdown, "
+                "Sharpe/Sortino/Calmar, bounded trade risk, production sizing, and benchmark comparability; research mode "
+                "uses the same balanced score to climb from a weak phase-2 baseline without claiming production eligibility"
+            ),
+            "search": self._search_summary(edge, values),
+            "skipped_count": len(skipped_candidates),
+            "skipped_candidates": skipped_candidates,
+            "eligible_count": len(eligible_candidates),
+            "selection_mode": selection_mode,
+            "best": best,
+            "best_spec": best_spec,
+            "candidates": sorted(candidates, key=lambda item: (item["eligible"], item["score"]), reverse=True),
+        }
+>>>>>>> master
 
     def optimize_all(
         self,
@@ -1450,13 +1907,16 @@ class MutationLabService:
         dataset_id: str,
         parameter_overrides: dict[str, Any] | None = None,
         passes: int = 2,
+        optimization_mode: str = "production",
     ) -> dict[str, Any]:
+        optimization_mode = self._normalize_optimization_mode(optimization_mode)
         version = self._get_upgraded_version(version_id)
         if not version:
             raise HTTPException(status_code=404, detail="Version not found.")
         self._ensure_no_active_optimization()
         passes = max(1, min(int(passes), 5))
         overrides = self._production_baseline_overrides(version["spec_json"], dict(parameter_overrides or {}))
+<<<<<<< master
         starting_overrides = dict(overrides)
         edges = [edge for edge in self.list_tuning_edges(version_id) if edge.get("optimizable", True)]
         candidate_counts = {edge["lever"]: len(self._candidate_values(edge)) for edge in edges}
@@ -1468,6 +1928,43 @@ class MutationLabService:
             "total_levers": len(edges),
             "pass_index": 1,
             "lever_index": 1,
+=======
+        steps: list[dict[str, Any]] = []
+        for pass_index in range(1, passes + 1):
+            improved = False
+            for edge in self.list_tuning_edges(version_id):
+                if not edge.get("optimizable", True):
+                    continue
+                before = dict(overrides)
+                result = self.optimize_lever(version_id, dataset_id, edge["lever"], overrides, optimization_mode=optimization_mode)
+                best_overrides = result["best"]["parameter_overrides"]
+                if best_overrides != before:
+                    improved = True
+                    overrides = best_overrides
+                steps.append(
+                    {
+                        "pass": pass_index,
+                        "lever": edge["lever"],
+                        "before": before.get(edge["lever"], edge["current_value"]),
+                        "after": overrides.get(edge["lever"], edge["current_value"]),
+                        "best_score": result["best"]["score"],
+                        "best_metrics": result["best"]["metrics"],
+                        "skipped_count": result.get("skipped_count", 0),
+                    }
+                )
+            if not improved:
+                break
+        preview = self.preview_tuned_version(version_id, dataset_id, overrides)
+        return {
+            "mode": "optimize_all",
+            "base_version_id": version_id,
+            "dataset_id": dataset_id,
+            "optimization_mode": optimization_mode,
+            "passes_requested": passes,
+            "parameter_overrides": overrides,
+            "steps": steps,
+            "preview": preview,
+>>>>>>> master
         }
         self._start_optimization_progress(
             mode="optimize_all",
@@ -1550,6 +2047,20 @@ class MutationLabService:
         finally:
             bars = None
             gc.collect()
+
+    @staticmethod
+    def _normalize_optimization_mode(optimization_mode: str) -> str:
+        mode = str(optimization_mode or "production").strip().lower()
+        if mode not in {"production", "research"}:
+            raise HTTPException(status_code=400, detail="optimization_mode must be `production` or `research`.")
+        return mode
+
+    @staticmethod
+    def _is_dataset_incompatible_candidate_error(exc: HTTPException) -> bool:
+        if exc.status_code != 400:
+            return False
+        detail = str(exc.detail)
+        return "Dataset timeframe `" in detail and "does not match" in detail
 
     @staticmethod
     def _production_baseline_overrides(spec: dict[str, Any], overrides: dict[str, Any]) -> dict[str, Any]:
@@ -2888,6 +3399,8 @@ class MutationLabService:
             f"- Win Rate %: `{metrics['percent_profitable']}`",
             f"- Avg Win / Avg Loss Ratio: `{metrics['ratio_avg_win_loss']}`",
             f"- Approx Breakeven Win Rate: `{breakeven_win_rate}`",
+            f"- Execution Model: `{parameters.get('execution_model', 'next_bar_open')}`",
+            "- Equity Marking: `mark_to_market`",
             f"- Trade-Level Sharpe: `{metrics.get('sharpe', 0.0)}`",
             f"- Trade-Level Sortino: `{metrics.get('sortino', 0.0)}`",
             f"- Daily Portfolio Sharpe: `{metrics.get('daily_sharpe', 0.0)}`",
@@ -2923,8 +3436,9 @@ class MutationLabService:
                 f"- Live execution review failures: `{live_execution_failures or []}`",
                 f"- Production sizing modes: `{rules.get('production_sizing_modes', [])}`",
                 f"- Benchmark policy: `{rules.get('benchmark_policy', 'outperform_return_or_calmar')}`",
+                f"- Execution model: `{parameters.get('execution_model', 'next_bar_open')}`",
                 "",
-                "The platform-level rule is deliberately generic: first prove the strategy has enough activity, positive expectancy, bounded drawdown, acceptable daily portfolio Sharpe/Sortino/Calmar, bounded daily loss, and bounded per-trade risk; then judge it under a portfolio sizing model against buy-and-hold. Trade-level Sharpe/Sortino are diagnostic only and may overstate deployable portfolio quality. A strategy does not need to beat buy-and-hold on raw return if it delivers better drawdown-adjusted efficiency, but if it loses on both raw return and Calmar it is not production-comparable yet.",
+                "The platform-level rule is deliberately generic: first prove the strategy has enough activity, positive expectancy, bounded mark-to-market drawdown, acceptable daily portfolio Sharpe/Sortino/Calmar, bounded daily loss, and bounded per-trade risk; then judge it under a portfolio sizing model against buy-and-hold. Trade-level Sharpe/Sortino are diagnostic only and may overstate deployable portfolio quality. A strategy does not need to beat buy-and-hold on raw return if it delivers better drawdown-adjusted efficiency, but if it loses on both raw return and Calmar it is not production-comparable yet.",
                 "",
             ]
         )
@@ -2977,7 +3491,11 @@ class MutationLabService:
                 f"- Long signals: `{payload['diagnostics']['signals_long']}`",
                 f"- Short signals: `{payload['diagnostics']['signals_short']}`",
                 f"- Short quality gate blocks: `{payload['diagnostics'].get('short_quality_gate_blocks', 0)}`",
+                f"- Entry exposure gate blocks: `{payload['diagnostics'].get('entry_exposure_gate_blocks', 0)}`",
+                f"- Entry exposure gate long blocks: `{payload['diagnostics'].get('entry_exposure_gate_long_blocks', 0)}`",
+                f"- Entry exposure gate short blocks: `{payload['diagnostics'].get('entry_exposure_gate_short_blocks', 0)}`",
                 f"- Breakeven stop moves: `{payload['diagnostics'].get('breakeven_stop_moves', 0)}`",
+                f"- MT5 stop modify rejects: `{payload['diagnostics'].get('mt5_stop_modify_rejects', 0)}`",
                 f"- Time risk filter blocks: `{payload['diagnostics'].get('time_risk_filter_blocks', 0)}`",
                 f"- Entry exposure gate blocks: `{payload['diagnostics'].get('entry_exposure_gate_blocks', 0)}`",
                 f"- Entry exposure gate long blocks: `{payload['diagnostics'].get('entry_exposure_gate_long_blocks', 0)}`",
@@ -2992,11 +3510,20 @@ class MutationLabService:
                 f"- Reverse confirmation suppressed Net PnL: `{payload['diagnostics'].get('reverse_confirmation_suppressed_net_pnl', 0.0)}`",
                 f"- Time-decay exits: `{payload['diagnostics'].get('time_decay_exits', 0)}`",
                 f"- Time-decay confirmation candidates: `{payload['diagnostics'].get('time_decay_confirmation_candidates', 0)}`",
+<<<<<<< master
                 f"- Time-decay confirmation exits: `{payload['diagnostics'].get('time_decay_confirmation_exits', 0)}`",
                 f"- Time-decay confirmation suppressed: `{payload['diagnostics'].get('time_decay_confirmation_suppressed', 0)}`",
                 f"- Time-decay confirmation suppressed Net PnL: `{payload['diagnostics'].get('time_decay_confirmation_suppressed_net_pnl', 0.0)}`",
                 f"- MT5 stop modify rejects: `{payload['diagnostics'].get('mt5_stop_modify_rejects', 0)}`",
+=======
+                f"- Time-decay confirmation exits allowed: `{payload['diagnostics'].get('time_decay_confirmation_exits_allowed', 0)}`",
+                f"- Time-decay confirmation suppressed: `{payload['diagnostics'].get('time_decay_confirmation_suppressed', 0)}`",
+                f"- Time-decay confirmation suppressed Net PnL: `{payload['diagnostics'].get('time_decay_confirmation_suppressed_net_pnl', 0.0)}`",
+>>>>>>> master
                 f"- Time exits: `{payload['diagnostics']['time_exits']}`",
+                f"- Pending entry orders: `{payload['diagnostics'].get('pending_entry_orders', 0)}`",
+                f"- Pending order fills: `{payload['diagnostics'].get('pending_order_fills', 0)}`",
+                f"- Dropped pending orders at end of data: `{payload['diagnostics'].get('dropped_pending_orders_eod', 0)}`",
                 "",
                 "## Side Decomposition",
                 "",
