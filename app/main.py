@@ -221,6 +221,7 @@ def start_optimize_all_job(version_id: str, request: OptimizeAllRequest) -> dict
             "status": "queued",
             "version_id": version_id,
             "dataset_id": request.dataset_id,
+            "progress": None,
             "created_at": now,
             "updated_at": now,
             "result": None,
@@ -259,13 +260,14 @@ def _run_optimize_all_job(
             parameter_overrides=parameter_overrides,
             passes=passes,
             optimization_mode=optimization_mode,
+            progress_callback=lambda progress: _update_optimization_job(job_id, progress=progress),
         )
     except HTTPException as exc:
         _update_optimization_job(job_id, status="failed", error=str(exc.detail))
     except Exception as exc:  # pragma: no cover - defensive boundary for long-running operator jobs.
         _update_optimization_job(job_id, status="failed", error=f"{type(exc).__name__}: {exc}")
     else:
-        _update_optimization_job(job_id, status="completed", result=result)
+        _update_optimization_job(job_id, status="completed", result=result, progress=None)
 
 
 def _update_optimization_job(job_id: str, **updates: object) -> None:

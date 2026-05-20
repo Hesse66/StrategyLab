@@ -397,6 +397,42 @@ PHASE_4_MUTATION_SPACE = [
     },
 ]
 
+PHASE_4_2_PARAMETERS = {
+    "entry_blackbox_veto_enabled": False,
+    "entry_blackbox_veto_utc_hours": [],
+    "entry_blackbox_veto_side_months": [],
+}
+
+PHASE_4_2_MUTATION_SPACE = [
+    {
+        "kind": "black_box",
+        "lever": "entry_blackbox_veto_enabled",
+        "path": "parameters.entry_blackbox_veto_enabled",
+        "priority": 82,
+        "values": [True, False],
+        "search_mode": "values_only",
+        "rationale": "Enable or disable the phase-4.2 decision-time entry veto after a viability pocket reproduces in the live engine.",
+    },
+    {
+        "kind": "black_box",
+        "lever": "entry_blackbox_veto_utc_hours",
+        "path": "parameters.entry_blackbox_veto_utc_hours",
+        "priority": 81,
+        "values": [[], [15], [11], [15, 11], [14, 15, 16]],
+        "search_mode": "values_only",
+        "rationale": "Choose UTC entry-hour buckets vetoed by the phase-4.2 decision-time pocket.",
+    },
+    {
+        "kind": "black_box",
+        "lever": "entry_blackbox_veto_side_months",
+        "path": "parameters.entry_blackbox_veto_side_months",
+        "priority": 80,
+        "values": [[], ["long:8"], ["short:12"], ["long:8", "short:12"]],
+        "search_mode": "values_only",
+        "rationale": "Choose side-month entry veto buckets encoded as side:month, for example long:8 for long entries during August.",
+    },
+]
+
 PRODUCTION_EVALUATION_DEFAULTS = {
     "minimum_sharpe": 0.5,
     "minimum_sortino": 0.75,
@@ -407,12 +443,12 @@ PRODUCTION_EVALUATION_DEFAULTS = {
     "maximum_entry_exposure_pct": 100.0,
     "maximum_avg_exposure_pct": 100.0,
     "maximum_worst_daily_loss_pct": 5.0,
-    "production_sizing_modes": ["fixed_notional_pct", "fixed_risk_pct", "mt5_fixed_risk_lot"],
+    "production_sizing_modes": ["mt5_fixed_risk_lot"],
     "benchmark_policy": "outperform_return_or_calmar",
 }
 
 PORTFOLIO_PARAMETERS = {
-    "sizing_mode": "fixed_risk_pct",
+    "sizing_mode": "mt5_fixed_risk_lot",
     "notional_pct": 0.25,
     "risk_pct": 0.005,
     "max_leverage": 1.0,
@@ -424,58 +460,29 @@ PORTFOLIO_PARAMETERS = {
 }
 
 EXECUTION_PARAMETERS = {
-    "execution_model": "next_bar_open",
+    "execution_model": "mt5_bar_proxy",
 }
 
+OPERATOR_HIDDEN_LEVERS = {"execution_model", "sizing_mode", "notional_pct"}
+
 PORTFOLIO_MUTATION_SPACE = [
-    {
-        "kind": "execution",
-        "lever": "execution_model",
-        "path": "parameters.execution_model",
-        "priority": 131,
-        "values": ["next_bar_open", "mt5_bar_proxy"],
-        "search_mode": "values_only",
-        "optimizable": False,
-        "rationale": "Choose the production-comparable bar execution proxy. next_bar_open fills closed-bar signals at the next open; mt5_bar_proxy additionally models MT5-style same-entry-bar stop eligibility and stop-modification rejection.",
-    },
-    {
-        "kind": "portfolio",
-        "lever": "sizing_mode",
-        "path": "parameters.sizing_mode",
-        "priority": 130,
-        "values": ["fixed_quantity", "fixed_notional_pct", "fixed_risk_pct", "mt5_fixed_risk_lot"],
-        "search_mode": "values_only",
-        "rationale": "Choose the capital model. fixed_quantity is an alpha-engine diagnostic, fixed_notional_pct compounds a notional share of current equity, fixed_risk_pct sizes by loss budget to the stop, and mt5_fixed_risk_lot rounds that risk budget to broker lot constraints.",
-    },
-    {
-        "kind": "portfolio",
-        "lever": "notional_pct",
-        "path": "parameters.notional_pct",
-        "priority": 129,
-        "values": [0.1, 0.25, 0.5, 1.0],
-        "search_mode": "range",
-        "search_min": 0.05,
-        "search_max": 1.0,
-        "search_step": 0.05,
-        "rationale": "When sizing_mode is fixed_notional_pct, tune the current-equity fraction used as trade notional. 1.0 means every new trade uses 100% of current equity and compounds after each closed trade.",
-    },
     {
         "kind": "portfolio",
         "lever": "risk_pct",
         "path": "parameters.risk_pct",
-        "priority": 128,
+        "priority": 130,
         "values": [0.0025, 0.005, 0.01],
         "search_mode": "range",
         "search_min": 0.001,
         "search_max": 0.01,
         "search_step": 0.001,
-        "rationale": "When sizing_mode is fixed_risk_pct, tune the current-equity fraction risked to the stop. 0.01 means a 1% account-loss budget before max-leverage caps.",
+        "rationale": "Tune the current-equity loss budget that mt5_fixed_risk_lot converts into broker-rounded lots at the initial stop.",
     },
     {
         "kind": "portfolio",
         "lever": "max_leverage",
         "path": "parameters.max_leverage",
-        "priority": 127,
+        "priority": 129,
         "values": [0.5, 1.0],
         "search_mode": "range",
         "search_min": 0.25,
@@ -487,7 +494,7 @@ PORTFOLIO_MUTATION_SPACE = [
         "kind": "portfolio",
         "lever": "contract_size",
         "path": "parameters.contract_size",
-        "priority": 126,
+        "priority": 128,
         "values": [1.0, 10.0, 100.0],
         "search_mode": "values_only",
         "rationale": "Contract size used by mt5_fixed_risk_lot sizing.",
@@ -496,7 +503,7 @@ PORTFOLIO_MUTATION_SPACE = [
         "kind": "portfolio",
         "lever": "min_lot",
         "path": "parameters.min_lot",
-        "priority": 125,
+        "priority": 127,
         "values": [0.01, 0.1, 1.0],
         "search_mode": "values_only",
         "rationale": "Broker minimum lot used by mt5_fixed_risk_lot sizing.",
@@ -505,7 +512,7 @@ PORTFOLIO_MUTATION_SPACE = [
         "kind": "portfolio",
         "lever": "lot_step",
         "path": "parameters.lot_step",
-        "priority": 124,
+        "priority": 126,
         "values": [0.01, 0.1, 1.0],
         "search_mode": "values_only",
         "rationale": "Broker lot step used by mt5_fixed_risk_lot sizing.",
@@ -514,7 +521,7 @@ PORTFOLIO_MUTATION_SPACE = [
         "kind": "portfolio",
         "lever": "max_lot",
         "path": "parameters.max_lot",
-        "priority": 123,
+        "priority": 125,
         "values": [1.0, 10.0, 100.0],
         "search_mode": "values_only",
         "rationale": "Broker maximum lot cap used by mt5_fixed_risk_lot sizing.",
@@ -523,7 +530,7 @@ PORTFOLIO_MUTATION_SPACE = [
         "kind": "portfolio",
         "lever": "skip_below_min_lot",
         "path": "parameters.skip_below_min_lot",
-        "priority": 122,
+        "priority": 124,
         "values": [True, False],
         "search_mode": "values_only",
         "rationale": "Choose whether MT5 lot sizing skips entries below the minimum lot or floors them to min lot for an explicit stress test.",
@@ -757,37 +764,104 @@ class MutationLabService:
             )
 
     def _upgrade_family_versions(self, family_id: str) -> None:
-        for version in self.repo.list_versions(family_id):
+        versions = self.repo.list_versions(family_id)
+        for version in versions:
             upgraded_spec, changed = self._upgrade_spec(version["spec_json"])
             if not changed:
                 continue
             version["spec_json"] = upgraded_spec
             self.repo.put_version(version)
+        self._inherit_parent_schema(family_id)
+
+    def _inherit_parent_schema(self, family_id: str) -> None:
+        parent = self.repo.get_version(f"ver_{family_id}_parent")
+        if not parent:
+            return
+        parent_spec = parent.get("spec_json", {})
+        parent_parameters = parent_spec.get("parameters", {})
+        parent_edges = parent_spec.get("mutation_space", [])
+        parent_evaluation = parent_spec.get("evaluation", {})
+        parent_edge_by_lever = {edge.get("lever"): edge for edge in parent_edges if edge.get("lever")}
+        for version in self.repo.list_versions(family_id):
+            if version["version_id"] == parent["version_id"]:
+                continue
+            spec = json.loads(json.dumps(version["spec_json"]))
+            if spec.get("engine_id") != parent_spec.get("engine_id"):
+                continue
+            changed = False
+            parameters = spec.setdefault("parameters", {})
+            for key, value in parent_parameters.items():
+                if key not in parameters:
+                    parameters[key] = json.loads(json.dumps(value))
+                    changed = True
+            evaluation = spec.setdefault("evaluation", {})
+            for key, value in parent_evaluation.items():
+                if key not in evaluation:
+                    evaluation[key] = json.loads(json.dumps(value))
+                    changed = True
+            mutation_space = spec.setdefault("mutation_space", [])
+            child_edge_levers = {edge.get("lever") for edge in mutation_space}
+            for lever, edge in parent_edge_by_lever.items():
+                if lever not in child_edge_levers:
+                    mutation_space.append(json.loads(json.dumps(edge)))
+                    changed = True
+            if changed:
+                version["spec_json"] = spec
+                self.repo.put_version(version)
 
     @staticmethod
     def _upgrade_spec(spec: dict[str, Any]) -> tuple[dict[str, Any], bool]:
         upgraded = json.loads(json.dumps(spec))
         changed = False
+        parameters = upgraded.setdefault("parameters", {})
+        if parameters.get("execution_model") in {None, "next_bar_open"}:
+            parameters["execution_model"] = "mt5_bar_proxy"
+            changed = True
+        if parameters.get("sizing_mode") in {None, "fixed_quantity", "fixed_notional_pct", "fixed_risk_pct"}:
+            parameters["sizing_mode"] = "mt5_fixed_risk_lot"
+            changed = True
         if upgraded.get("engine_id") != "ma_cross_atr_stop_v1":
             return upgraded, changed
-        parameters = upgraded.setdefault("parameters", {})
-        for key, value in {**PHASE_3_PARAMETERS, **PHASE_4_PARAMETERS, **PORTFOLIO_PARAMETERS, **EXECUTION_PARAMETERS}.items():
+        metadata = upgraded.get("metadata", {})
+        baseline_only = metadata.get("phase") == "phase_2_baseline"
+        parameter_defaults = {**PORTFOLIO_PARAMETERS, **EXECUTION_PARAMETERS}
+        if not baseline_only:
+            parameter_defaults = {**PHASE_3_PARAMETERS, **PHASE_4_PARAMETERS, **PHASE_4_2_PARAMETERS, **parameter_defaults}
+        for key, value in parameter_defaults.items():
             if key not in parameters:
                 parameters[key] = value
                 changed = True
         evaluation = upgraded.setdefault("evaluation", {})
         for key, value in PRODUCTION_EVALUATION_DEFAULTS.items():
-            if key not in evaluation:
+            if key == "production_sizing_modes":
+                current_modes = list(evaluation.get(key, []))
+                if current_modes != value:
+                    evaluation[key] = json.loads(json.dumps(value))
+                    changed = True
+            elif key == "maximum_initial_risk_pct":
+                current_risk = float(evaluation.get(key, value))
+                hardened_risk = min(current_risk, float(value))
+                if evaluation.get(key) != hardened_risk:
+                    evaluation[key] = hardened_risk
+                    changed = True
+            elif key not in evaluation:
                 evaluation[key] = json.loads(json.dumps(value))
                 changed = True
         mutation_space = upgraded.setdefault("mutation_space", [])
-        next_mutation_space = [item for item in mutation_space if item.get("lever") != "quality_gate_placeholder"]
+        next_mutation_space = [
+            item
+            for item in mutation_space
+            if item.get("lever") != "quality_gate_placeholder" and item.get("lever") not in OPERATOR_HIDDEN_LEVERS
+        ]
         if len(next_mutation_space) != len(mutation_space):
             upgraded["mutation_space"] = next_mutation_space
             mutation_space = next_mutation_space
             changed = True
         existing_by_lever = {item.get("lever"): item for item in mutation_space}
-        for mutation in [*PHASE_3_MUTATION_SPACE, *PHASE_4_MUTATION_SPACE, *PORTFOLIO_MUTATION_SPACE]:
+        mutation_defaults = [*PORTFOLIO_MUTATION_SPACE]
+        if not baseline_only:
+            mutation_defaults = [*PHASE_3_MUTATION_SPACE, *PHASE_4_MUTATION_SPACE, *PHASE_4_2_MUTATION_SPACE, *mutation_defaults]
+        for mutation in mutation_defaults:
             existing = existing_by_lever.get(mutation["lever"])
             if existing is None:
                 mutation_space.append(json.loads(json.dumps(mutation)))
@@ -1392,6 +1466,7 @@ class MutationLabService:
         parameter_overrides: dict[str, Any] | None = None,
         passes: int = 2,
         optimization_mode: str = "production",
+        progress_callback: Any | None = None,
     ) -> dict[str, Any]:
         optimization_mode = self._normalize_optimization_mode(optimization_mode)
         version = self._get_upgraded_version(version_id)
@@ -1402,9 +1477,22 @@ class MutationLabService:
         steps: list[dict[str, Any]] = []
         for pass_index in range(1, passes + 1):
             improved = False
-            for edge in self.list_tuning_edges(version_id):
-                if not edge.get("optimizable", True):
-                    continue
+            optimizable_edges = [edge for edge in self.list_tuning_edges(version_id) if edge.get("optimizable", True)]
+            total_edges = len(optimizable_edges)
+            for edge_index, edge in enumerate(optimizable_edges, start=1):
+                next_edge = optimizable_edges[edge_index] if edge_index < total_edges else None
+                if progress_callback:
+                    progress_callback(
+                        {
+                            "pass": pass_index,
+                            "passes": passes,
+                            "edge_index": edge_index,
+                            "total_edges": total_edges,
+                            "lever": edge["lever"],
+                            "next_lever": next_edge["lever"] if next_edge else None,
+                            "mode": optimization_mode,
+                        }
+                    )
                 before = dict(overrides)
                 result = self.optimize_lever(version_id, dataset_id, edge["lever"], overrides, optimization_mode=optimization_mode)
                 best_overrides = result["best"]["parameter_overrides"]
@@ -1455,10 +1543,12 @@ class MutationLabService:
         parameters = spec.get("parameters", {})
         rules = spec.get("evaluation", {})
         output = dict(overrides)
-        allowed_modes = rules.get("production_sizing_modes", ["fixed_notional_pct", "fixed_risk_pct"])
-        selected_mode = output.get("sizing_mode", parameters.get("sizing_mode", "fixed_quantity"))
+        if output.get("execution_model", parameters.get("execution_model", "mt5_bar_proxy")) == "next_bar_open":
+            output["execution_model"] = "mt5_bar_proxy"
+        allowed_modes = rules.get("production_sizing_modes", ["mt5_fixed_risk_lot"])
+        selected_mode = output.get("sizing_mode", parameters.get("sizing_mode", "mt5_fixed_risk_lot"))
         if selected_mode not in allowed_modes:
-            output["sizing_mode"] = "fixed_risk_pct"
+            output["sizing_mode"] = "mt5_fixed_risk_lot"
         selected_risk = float(output.get("risk_pct", parameters.get("risk_pct", 0.005)))
         max_risk = float(rules.get("maximum_initial_risk_pct", 1.0)) / 100
         if selected_risk <= 0 or selected_risk > max_risk:
@@ -2640,8 +2730,8 @@ class MutationLabService:
         rules = spec.get("evaluation", {})
         parameters = spec.get("parameters", {})
         failures: list[str] = []
-        allowed_modes = set(rules.get("production_sizing_modes", ["fixed_notional_pct", "fixed_risk_pct"]))
-        if parameters.get("sizing_mode", "fixed_quantity") not in allowed_modes:
+        allowed_modes = set(rules.get("production_sizing_modes", ["mt5_fixed_risk_lot"]))
+        if parameters.get("sizing_mode", "mt5_fixed_risk_lot") not in allowed_modes:
             failures.append("diagnostic_capital_model")
         policy = rules.get("benchmark_policy", "outperform_return_or_calmar")
         if policy == "outperform_return_or_calmar":
@@ -2666,24 +2756,12 @@ class MutationLabService:
     def _capital_model_warnings(spec: dict[str, Any], metrics: dict[str, Any]) -> list[str]:
         parameters = spec.get("parameters", {})
         warnings: list[str] = []
-        mode = parameters.get("sizing_mode", "fixed_quantity")
-        if mode == "fixed_notional_pct":
-            notional_pct = float(parameters.get("notional_pct", 1.0))
-            warnings.append(
-                f"fixed_notional_pct compounds position size from current equity; `{notional_pct}` means "
-                f"`{round(notional_pct * 100, 4)}%` of current equity is deployed as notional on every new trade."
-            )
-            if notional_pct >= 1.0:
-                warnings.append(
-                    "This is an all-in 1x compounding assumption. It can produce mechanically huge returns in a long "
-                    "multi-year backtest, but it should be treated as an aggressive upper-bound scenario rather than a "
-                    "production default."
-                )
-        if mode == "fixed_risk_pct":
+        mode = parameters.get("sizing_mode", "mt5_fixed_risk_lot")
+        if mode == "mt5_fixed_risk_lot":
             risk_pct = float(parameters.get("risk_pct", 0.0))
             warnings.append(
-                f"fixed_risk_pct sizes each trade by stop distance; `{risk_pct}` means "
-                f"`{round(risk_pct * 100, 4)}%` of current equity is the intended loss budget before leverage caps."
+                f"mt5_fixed_risk_lot sizes each trade from the stop-distance risk budget, then rounds to broker lot constraints; "
+                f"`{risk_pct}` means `{round(risk_pct * 100, 4)}%` of current equity is the intended pre-rounding loss budget."
             )
         max_risk = float(metrics.get("max_initial_risk_pct", 0.0))
         if max_risk > 10.0:
@@ -2740,7 +2818,7 @@ class MutationLabService:
             f"- Win Rate %: `{metrics['percent_profitable']}`",
             f"- Avg Win / Avg Loss Ratio: `{metrics['ratio_avg_win_loss']}`",
             f"- Approx Breakeven Win Rate: `{breakeven_win_rate}`",
-            f"- Execution Model: `{parameters.get('execution_model', 'next_bar_open')}`",
+            f"- Execution Model: `{parameters.get('execution_model', 'mt5_bar_proxy')}`",
             "- Equity Marking: `mark_to_market`",
             f"- Trade-Level Sharpe: `{metrics.get('sharpe', 0.0)}`",
             f"- Trade-Level Sortino: `{metrics.get('sortino', 0.0)}`",
@@ -2750,7 +2828,7 @@ class MutationLabService:
             f"- Worst Daily Return %: `{metrics.get('worst_daily_return_pct', 0.0)}`",
             f"- Positive Day %: `{metrics.get('positive_day_pct', 0.0)}`",
             f"- Calmar: `{metrics.get('calmar', 0.0)}`",
-            f"- Sizing Mode: `{parameters.get('sizing_mode', 'fixed_quantity')}`",
+            f"- Sizing Mode: `{parameters.get('sizing_mode', 'mt5_fixed_risk_lot')}`",
             f"- Avg Entry Exposure %: `{metrics.get('avg_entry_exposure_pct', 0.0)}`",
             f"- Max Entry Exposure %: `{metrics.get('max_entry_exposure_pct', 0.0)}`",
             f"- Avg Initial Risk %: `{metrics.get('avg_initial_risk_pct', 0.0)}`",
@@ -2776,7 +2854,7 @@ class MutationLabService:
                 f"- Portfolio / benchmark failures: `{portfolio_failures or []}`",
                 f"- Production sizing modes: `{rules.get('production_sizing_modes', [])}`",
                 f"- Benchmark policy: `{rules.get('benchmark_policy', 'outperform_return_or_calmar')}`",
-                f"- Execution model: `{parameters.get('execution_model', 'next_bar_open')}`",
+                f"- Execution model: `{parameters.get('execution_model', 'mt5_bar_proxy')}`",
                 "",
                 "The platform-level rule is deliberately generic: first prove the strategy has enough activity, positive expectancy, bounded mark-to-market drawdown, acceptable daily portfolio Sharpe/Sortino/Calmar, bounded daily loss, and bounded per-trade risk; then judge it under a portfolio sizing model against buy-and-hold. Trade-level Sharpe/Sortino are diagnostic only and may overstate deployable portfolio quality. A strategy does not need to beat buy-and-hold on raw return if it delivers better drawdown-adjusted efficiency, but if it loses on both raw return and Calmar it is not production-comparable yet.",
                 "",
@@ -2819,6 +2897,9 @@ class MutationLabService:
                 f"- Entry exposure gate blocks: `{payload['diagnostics'].get('entry_exposure_gate_blocks', 0)}`",
                 f"- Entry exposure gate long blocks: `{payload['diagnostics'].get('entry_exposure_gate_long_blocks', 0)}`",
                 f"- Entry exposure gate short blocks: `{payload['diagnostics'].get('entry_exposure_gate_short_blocks', 0)}`",
+                f"- Entry black-box veto blocks: `{payload['diagnostics'].get('entry_blackbox_veto_blocks', 0)}`",
+                f"- Entry black-box veto long blocks: `{payload['diagnostics'].get('entry_blackbox_veto_long_blocks', 0)}`",
+                f"- Entry black-box veto short blocks: `{payload['diagnostics'].get('entry_blackbox_veto_short_blocks', 0)}`",
                 f"- Breakeven stop moves: `{payload['diagnostics'].get('breakeven_stop_moves', 0)}`",
                 f"- MT5 stop modify rejects: `{payload['diagnostics'].get('mt5_stop_modify_rejects', 0)}`",
                 f"- Time risk filter blocks: `{payload['diagnostics'].get('time_risk_filter_blocks', 0)}`",

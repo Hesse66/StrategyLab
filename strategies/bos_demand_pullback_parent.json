@@ -30,7 +30,7 @@
       "Confirmed pivots must be known only after pivot_len right bars close.",
       "The exact Pine baseline uses wick BOS, not body-close BOS.",
       "The close-BOS and no-EMA variants are diagnostic controls, not phase-3 mutations.",
-      "Production-comparable runs use next_bar_open execution instead of same-close fills."
+      "Production-comparable runs use mt5_bar_proxy execution instead of same-close fills."
     ]
   },
   "parameters": {
@@ -48,7 +48,7 @@
     "ema_filter_enabled": true,
     "ema_len": 100,
     "same_bar_exit_policy": "stop_first",
-    "sizing_mode": "fixed_risk_pct",
+    "sizing_mode": "mt5_fixed_risk_lot",
     "risk_pct": 0.005,
     "notional_pct": 0.25,
     "max_leverage": 1.0,
@@ -57,7 +57,7 @@
     "commission_pct": 0.04,
     "slippage_ticks": 2,
     "tick_size": 0.01,
-    "execution_model": "next_bar_open"
+    "execution_model": "mt5_bar_proxy"
   },
   "evaluation": {
     "minimum_trades": 30,
@@ -74,8 +74,7 @@
     "maximum_avg_exposure_pct": 100.0,
     "maximum_worst_daily_loss_pct": 5.0,
     "production_sizing_modes": [
-      "fixed_notional_pct",
-      "fixed_risk_pct"
+      "mt5_fixed_risk_lot"
     ],
     "benchmark_policy": "outperform_return_or_calmar"
   },
@@ -243,22 +242,9 @@
     },
     {
       "kind": "portfolio",
-      "lever": "sizing_mode",
-      "path": "parameters.sizing_mode",
-      "priority": 130,
-      "values": [
-        "fixed_quantity",
-        "fixed_notional_pct",
-        "fixed_risk_pct"
-      ],
-      "search_mode": "values_only",
-      "rationale": "Fixed risk is the production-style baseline; fixed quantity remains diagnostic only."
-    },
-    {
-      "kind": "portfolio",
       "lever": "risk_pct",
       "path": "parameters.risk_pct",
-      "priority": 128,
+      "priority": 130,
       "values": [
         0.0025,
         0.005,

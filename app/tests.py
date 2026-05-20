@@ -426,6 +426,161 @@ class MutationLabTests(unittest.TestCase):
         self.assertIsNotNone(version)
         self.assertEqual(version["spec_json"]["engine_id"], "custom_engine_v1")
 
+    def test_intraday_parent_exposes_surviving_phase_three_and_phase_four_controls(self) -> None:
+        spec = json.loads(Path("strategies/intraday_trend_atr_parent.json").read_text(encoding="utf-8"))
+        (settings.strategy_specs_dir / "intraday_trend_atr_parent.json").write_text(json.dumps(spec), encoding="utf-8")
+        self.lab.ensure_seeded()
+        family = self.repo.get_family("intraday_trend_atr")
+        self.assertIsNotNone(family)
+        self.assertEqual(family["current_version_id"], "ver_intraday_trend_atr_parent")
+        version = self.repo.get_version("ver_intraday_trend_atr_parent")
+        self.assertEqual(version["spec_json"]["parameters"]["execution_model"], "mt5_bar_proxy")
+        self.assertTrue(version["spec_json"]["parameters"]["time_decay_exit_enabled"])
+        self.assertEqual(version["spec_json"]["parameters"]["time_decay_bars"], 30)
+        self.assertEqual(version["spec_json"]["parameters"]["time_decay_min_mfe_r"], 0.25)
+        self.assertTrue(version["spec_json"]["parameters"]["short_time_risk_filter_enabled"])
+        self.assertEqual(version["spec_json"]["parameters"]["short_time_risk_block_utc_hours"], [6, 9, 16, 20])
+        self.assertEqual(version["spec_json"]["parameters"]["short_time_risk_block_weekdays"], [4])
+        self.assertTrue(version["spec_json"]["parameters"]["reverse_confirmation_enabled"])
+        self.assertEqual(version["spec_json"]["parameters"]["reverse_confirm_max_bars"], 2)
+        self.assertEqual(version["spec_json"]["parameters"]["reverse_confirm_min_mfe_r"], 0.2)
+        self.assertEqual(version["spec_json"]["parameters"]["reverse_confirm_allow_if_unrealized_r_lte"], -0.35)
+        self.assertTrue(version["spec_json"]["parameters"]["entry_blackbox_veto_enabled"])
+        self.assertEqual(version["spec_json"]["parameters"]["entry_blackbox_veto_utc_hours"], [15])
+        self.assertEqual(version["spec_json"]["parameters"]["entry_blackbox_veto_side_months"], ["long:8"])
+        edges = self.lab.list_tuning_edges("ver_intraday_trend_atr_parent")
+        edge_levers = {edge["lever"] for edge in edges}
+        self.assertIn("fast_len", edge_levers)
+        self.assertIn("time_decay_exit_enabled", edge_levers)
+        self.assertIn("time_decay_bars", edge_levers)
+        self.assertIn("time_decay_min_mfe_r", edge_levers)
+        self.assertIn("short_time_risk_filter_enabled", edge_levers)
+        self.assertIn("short_time_risk_block_utc_hours", edge_levers)
+        self.assertIn("short_time_risk_block_weekdays", edge_levers)
+        self.assertIn("reverse_confirmation_enabled", edge_levers)
+        self.assertIn("reverse_confirm_max_bars", edge_levers)
+        self.assertIn("reverse_confirm_min_mfe_r", edge_levers)
+        self.assertIn("reverse_confirm_allow_if_unrealized_r_lte", edge_levers)
+        self.assertIn("entry_blackbox_veto_enabled", edge_levers)
+        self.assertIn("entry_blackbox_veto_utc_hours", edge_levers)
+        self.assertIn("entry_blackbox_veto_side_months", edge_levers)
+        self.assertNotIn("execution_model", edge_levers)
+        self.assertNotIn("sizing_mode", edge_levers)
+        self.assertNotIn("notional_pct", edge_levers)
+        self.assertNotIn("hybrid_time_decay_triage_enabled", edge_levers)
+
+    def test_child_versions_inherit_new_parent_schema_without_overwriting_tuned_values(self) -> None:
+        spec = json.loads(Path("strategies/intraday_trend_atr_parent.json").read_text(encoding="utf-8"))
+        legacy_child = json.loads(json.dumps(spec))
+        legacy_child["parameters"].pop("time_decay_exit_enabled", None)
+        legacy_child["parameters"].pop("time_decay_bars", None)
+        legacy_child["parameters"].pop("time_decay_min_mfe_r", None)
+        legacy_child["parameters"].pop("short_time_risk_filter_enabled", None)
+        legacy_child["parameters"].pop("short_time_risk_block_utc_hours", None)
+        legacy_child["parameters"].pop("short_time_risk_block_weekdays", None)
+        legacy_child["parameters"].pop("reverse_confirmation_enabled", None)
+        legacy_child["parameters"].pop("reverse_confirm_max_bars", None)
+        legacy_child["parameters"].pop("reverse_confirm_min_mfe_r", None)
+        legacy_child["parameters"].pop("reverse_confirm_allow_if_unrealized_r_lte", None)
+        legacy_child["parameters"].pop("reverse_confirm_require_no_breakeven_move", None)
+        legacy_child["parameters"].pop("entry_blackbox_veto_enabled", None)
+        legacy_child["parameters"].pop("entry_blackbox_veto_utc_hours", None)
+        legacy_child["parameters"].pop("entry_blackbox_veto_side_months", None)
+        legacy_child["parameters"]["fast_len"] = 123
+        inherited_levers = {
+            "time_decay_exit_enabled",
+            "time_decay_bars",
+            "time_decay_min_mfe_r",
+            "short_time_risk_filter_enabled",
+            "short_time_risk_block_utc_hours",
+            "short_time_risk_block_weekdays",
+            "reverse_confirmation_enabled",
+            "reverse_confirm_max_bars",
+            "reverse_confirm_min_mfe_r",
+            "reverse_confirm_allow_if_unrealized_r_lte",
+            "reverse_confirm_require_no_breakeven_move",
+            "entry_blackbox_veto_enabled",
+            "entry_blackbox_veto_utc_hours",
+            "entry_blackbox_veto_side_months",
+        }
+        legacy_child["mutation_space"] = [
+            edge
+            for edge in legacy_child["mutation_space"]
+            if edge.get("lever") not in inherited_levers
+        ]
+        (settings.strategy_specs_dir / "intraday_trend_atr_parent.json").write_text(json.dumps(spec), encoding="utf-8")
+        self.repo.put_family(
+            {
+                "family_id": "intraday_trend_atr",
+                "title": "Intraday Trend ATR Baseline",
+                "asset": "BTCUSDT",
+                "venue": "Binance Spot",
+                "timeframe": "15m",
+                "current_version_id": "ver_intraday_trend_atr_parent",
+                "created_at": datetime.now(UTC).isoformat(),
+            }
+        )
+        self.repo.put_version(
+            {
+                "version_id": "ver_intraday_trend_atr_parent",
+                "family_id": "intraday_trend_atr",
+                "parent_version_id": None,
+                "name": "Intraday Trend ATR Baseline",
+                "stage": "white_box",
+                "source_code": "{}",
+                "spec_json": spec,
+                "causal_story": "",
+                "mutation_json": {},
+                "notes": "",
+                "created_at": datetime.now(UTC).isoformat(),
+            }
+        )
+        self.repo.put_version(
+            {
+                "version_id": "ver_intraday_child",
+                "family_id": "intraday_trend_atr",
+                "parent_version_id": "ver_intraday_trend_atr_parent",
+                "name": "Tuned child",
+                "stage": "white_box",
+                "source_code": "{}",
+                "spec_json": legacy_child,
+                "causal_story": "",
+                "mutation_json": {},
+                "notes": "",
+                "created_at": datetime.now(UTC).isoformat(),
+            }
+        )
+        self.lab.ensure_seeded()
+        child = self.repo.get_version("ver_intraday_child")
+        self.assertEqual(child["spec_json"]["parameters"]["fast_len"], 123)
+        self.assertTrue(child["spec_json"]["parameters"]["time_decay_exit_enabled"])
+        self.assertEqual(child["spec_json"]["parameters"]["time_decay_bars"], 30)
+        self.assertEqual(child["spec_json"]["parameters"]["time_decay_min_mfe_r"], 0.25)
+        self.assertTrue(child["spec_json"]["parameters"]["short_time_risk_filter_enabled"])
+        self.assertEqual(child["spec_json"]["parameters"]["short_time_risk_block_utc_hours"], [6, 9, 16, 20])
+        self.assertEqual(child["spec_json"]["parameters"]["short_time_risk_block_weekdays"], [4])
+        self.assertTrue(child["spec_json"]["parameters"]["reverse_confirmation_enabled"])
+        self.assertEqual(child["spec_json"]["parameters"]["reverse_confirm_max_bars"], 2)
+        self.assertEqual(child["spec_json"]["parameters"]["reverse_confirm_min_mfe_r"], 0.2)
+        self.assertEqual(child["spec_json"]["parameters"]["reverse_confirm_allow_if_unrealized_r_lte"], -0.35)
+        self.assertTrue(child["spec_json"]["parameters"]["entry_blackbox_veto_enabled"])
+        self.assertEqual(child["spec_json"]["parameters"]["entry_blackbox_veto_utc_hours"], [15])
+        self.assertEqual(child["spec_json"]["parameters"]["entry_blackbox_veto_side_months"], ["long:8"])
+        child_edges = {edge["lever"] for edge in child["spec_json"]["mutation_space"]}
+        self.assertIn("time_decay_exit_enabled", child_edges)
+        self.assertIn("time_decay_bars", child_edges)
+        self.assertIn("time_decay_min_mfe_r", child_edges)
+        self.assertIn("short_time_risk_filter_enabled", child_edges)
+        self.assertIn("short_time_risk_block_utc_hours", child_edges)
+        self.assertIn("short_time_risk_block_weekdays", child_edges)
+        self.assertIn("reverse_confirmation_enabled", child_edges)
+        self.assertIn("reverse_confirm_max_bars", child_edges)
+        self.assertIn("reverse_confirm_min_mfe_r", child_edges)
+        self.assertIn("reverse_confirm_allow_if_unrealized_r_lte", child_edges)
+        self.assertIn("entry_blackbox_veto_enabled", child_edges)
+        self.assertIn("entry_blackbox_veto_utc_hours", child_edges)
+        self.assertIn("entry_blackbox_veto_side_months", child_edges)
+
     def test_asm_engine_id_is_accepted_and_unknown_engine_still_fails(self) -> None:
         result = self.lab.engine.run(build_asm_spec(), build_asm_bars())
         self.assertIn("metrics", result)
@@ -788,11 +943,11 @@ class MutationLabTests(unittest.TestCase):
         stored_runs = self.repo.list_runs(family_id="btc_intraday")
         self.assertEqual(len(stored_runs), 1)
 
-    def test_production_execution_fills_after_signal_and_marks_open_equity(self) -> None:
+    def test_mt5_production_execution_fills_after_signal_and_marks_open_equity(self) -> None:
         bars = build_fixture_bars()
         version = self.repo.get_version("ver_btc_intraday_parent")
         result = self.lab.engine.run(version["spec_json"], bars)
-        self.assertEqual(result["diagnostics"]["execution_model"], "next_bar_open")
+        self.assertEqual(result["diagnostics"]["execution_model"], "mt5_bar_proxy")
         self.assertGreater(result["diagnostics"]["pending_entry_orders"], 0)
         self.assertGreater(result["diagnostics"]["pending_order_fills"], 0)
         self.assertGreater(result["metrics"]["total_trades"], 0)
@@ -1129,6 +1284,44 @@ class MutationLabTests(unittest.TestCase):
         self.assertTrue(allowed)
         self.assertEqual(diagnostics["entry_exposure_gate_blocks"], 0)
 
+    def test_entry_blackbox_veto_blocks_hour_and_side_month(self) -> None:
+        diagnostics = {
+            "entry_blackbox_veto_blocks": 0,
+            "entry_blackbox_veto_long_blocks": 0,
+            "entry_blackbox_veto_short_blocks": 0,
+        }
+        parameters = {
+            "entry_blackbox_veto_enabled": True,
+            "entry_blackbox_veto_utc_hours": [15],
+            "entry_blackbox_veto_side_months": ["long:8"],
+        }
+
+        hour_allowed = BacktestEngine._entry_blackbox_veto_allows_entry(
+            parameters=parameters,
+            direction=-1,
+            entry_ts=datetime(2024, 1, 1, 15, 0, tzinfo=UTC),
+            diagnostics=diagnostics,
+        )
+        side_month_allowed = BacktestEngine._entry_blackbox_veto_allows_entry(
+            parameters=parameters,
+            direction=1,
+            entry_ts=datetime(2024, 8, 1, 12, 0, tzinfo=UTC),
+            diagnostics=diagnostics,
+        )
+        clean_allowed = BacktestEngine._entry_blackbox_veto_allows_entry(
+            parameters=parameters,
+            direction=1,
+            entry_ts=datetime(2024, 9, 1, 12, 0, tzinfo=UTC),
+            diagnostics=diagnostics,
+        )
+
+        self.assertFalse(hour_allowed)
+        self.assertFalse(side_month_allowed)
+        self.assertTrue(clean_allowed)
+        self.assertEqual(diagnostics["entry_blackbox_veto_blocks"], 2)
+        self.assertEqual(diagnostics["entry_blackbox_veto_long_blocks"], 1)
+        self.assertEqual(diagnostics["entry_blackbox_veto_short_blocks"], 1)
+
     def test_time_decay_exit_is_disabled_by_default_and_opt_in(self) -> None:
         bars = build_fixture_bars()
         version = self.repo.get_version("ver_btc_intraday_parent")
@@ -1250,9 +1443,10 @@ class MutationLabTests(unittest.TestCase):
         self.assertEqual(stop_edge["current_value"], 4.0)
         self.assertTrue(any(edge["lever"] == "time_risk_block_utc_hours" for edge in child_edges))
         self.assertTrue(any(edge["value_type"] == "list" for edge in child_edges))
-        self.assertTrue(any(edge["lever"] == "sizing_mode" for edge in child_edges))
-        execution_edge = next(edge for edge in child_edges if edge["lever"] == "execution_model")
-        self.assertFalse(execution_edge["optimizable"])
+        hidden_levers = {edge["lever"] for edge in child_edges}
+        self.assertNotIn("execution_model", hidden_levers)
+        self.assertNotIn("sizing_mode", hidden_levers)
+        self.assertNotIn("notional_pct", hidden_levers)
 
     def test_existing_child_versions_are_upgraded_with_phase_three_edges(self) -> None:
         version = self.repo.get_version("ver_btc_intraday_parent")
@@ -1270,6 +1464,9 @@ class MutationLabTests(unittest.TestCase):
             "max_leverage",
         ):
             legacy_spec["parameters"].pop(key, None)
+        legacy_spec["parameters"]["execution_model"] = "next_bar_open"
+        legacy_spec["evaluation"]["production_sizing_modes"] = ["fixed_notional_pct", "fixed_risk_pct"]
+        legacy_spec["evaluation"]["maximum_initial_risk_pct"] = 5
         legacy_spec["mutation_space"] = [
             item
             for item in legacy_spec["mutation_space"]
@@ -1291,6 +1488,10 @@ class MutationLabTests(unittest.TestCase):
         self.assertIn("hybrid_reverse_exit_triage_enabled", upgraded["spec_json"]["parameters"])
         self.assertIn("hybrid_time_decay_triage_enabled", upgraded["spec_json"]["parameters"])
         self.assertIn("sizing_mode", upgraded["spec_json"]["parameters"])
+        self.assertEqual(upgraded["spec_json"]["parameters"]["execution_model"], "mt5_bar_proxy")
+        self.assertEqual(upgraded["spec_json"]["parameters"]["sizing_mode"], "mt5_fixed_risk_lot")
+        self.assertEqual(upgraded["spec_json"]["evaluation"]["production_sizing_modes"], ["mt5_fixed_risk_lot"])
+        self.assertEqual(upgraded["spec_json"]["evaluation"]["maximum_initial_risk_pct"], 1.0)
         self.assertTrue(any(edge["lever"] == "breakeven_trigger_mfe_r" for edge in edges))
         self.assertTrue(any(edge["lever"] == "hybrid_reverse_exit_min_mfe_r" for edge in edges))
         self.assertTrue(any(edge["lever"] == "max_leverage" for edge in edges))
@@ -1332,17 +1533,18 @@ class MutationLabTests(unittest.TestCase):
         self.assertGreaterEqual(len(self.lab._candidate_values(edges["reverse_confirm_allow_if_unrealized_r_lte"])), 40)
         self.assertGreaterEqual(len(self.lab._candidate_values(edges["time_decay_confirm_max_unrealized_r"])), 60)
         self.assertGreaterEqual(len(self.lab._candidate_values(edges["time_decay_confirm_max_mfe_r"])), 40)
-        self.assertGreaterEqual(len(self.lab._candidate_values(edges["notional_pct"])), 15)
         self.assertGreaterEqual(len(self.lab._candidate_values(edges["risk_pct"])), 10)
         self.assertGreaterEqual(len(self.lab._candidate_values(edges["max_leverage"])), 4)
 
-    def test_execution_model_is_manual_and_not_optimizer_driven(self) -> None:
+    def test_execution_and_sizing_modes_are_hidden_from_operator_levers(self) -> None:
         edges = {edge["lever"]: edge for edge in self.lab.list_tuning_edges("ver_btc_intraday_parent")}
-        self.assertFalse(edges["execution_model"]["optimizable"])
+        self.assertNotIn("execution_model", edges)
+        self.assertNotIn("sizing_mode", edges)
+        self.assertNotIn("notional_pct", edges)
         with self.assertRaises(HTTPException) as ctx:
             self.lab.optimize_lever("ver_btc_intraday_parent", "missing_dataset", "execution_model", {})
-        self.assertEqual(ctx.exception.status_code, 400)
-        self.assertIn("not optimizable", str(ctx.exception.detail))
+        self.assertEqual(ctx.exception.status_code, 404)
+        self.assertIn("not found", str(ctx.exception.detail))
 
     def test_portfolio_sizing_modes_change_exposure(self) -> None:
         bars = build_fixture_bars()
@@ -1378,13 +1580,13 @@ class MutationLabTests(unittest.TestCase):
         self.assertLessEqual(max(trade["entry_exposure_pct"] for trade in risk_result["trades"]), 100.01)
         self.assertNotEqual(fixed_result["metrics"]["net_pnl"], notional_result["metrics"]["net_pnl"])
 
-    def test_capital_model_warnings_explain_all_in_notional_sizing(self) -> None:
+    def test_capital_model_warnings_explain_mt5_lot_sizing(self) -> None:
         version = self.repo.get_version("ver_btc_intraday_parent")
         spec = json.loads(json.dumps(version["spec_json"]))
         spec["parameters"].update(
             {
-                "sizing_mode": "fixed_notional_pct",
-                "notional_pct": 1.0,
+                "sizing_mode": "mt5_fixed_risk_lot",
+                "risk_pct": 0.005,
                 "allow_short": True,
             }
         )
@@ -1395,8 +1597,8 @@ class MutationLabTests(unittest.TestCase):
             },
         )
         joined = " ".join(warnings)
-        self.assertIn("100.0%", joined)
-        self.assertIn("all-in 1x compounding", joined)
+        self.assertIn("mt5_fixed_risk_lot", joined)
+        self.assertIn("broker lot constraints", joined)
         self.assertIn("tail-risk flag", joined)
 
     def test_production_gate_requires_portfolio_model_or_benchmark_efficiency(self) -> None:
@@ -1421,7 +1623,7 @@ class MutationLabTests(unittest.TestCase):
         self.assertEqual(self.lab._verdict(spec, metrics, None), "research_survivor")
 
         production_spec = json.loads(json.dumps(spec))
-        production_spec["parameters"]["sizing_mode"] = "fixed_risk_pct"
+        production_spec["parameters"]["sizing_mode"] = "mt5_fixed_risk_lot"
         self.assertEqual(self.lab._verdict(production_spec, metrics, None), "research_survivor")
 
         metrics["calmar_delta"] = 0.2
@@ -1651,9 +1853,42 @@ class MutationLabTests(unittest.TestCase):
         self.assertIn("preview", result)
         self.assertIn("parameter_overrides", result)
         self.assertNotIn("execution_model", {step["lever"] for step in result["steps"]})
-        self.assertEqual(result["preview"]["spec"]["parameters"]["sizing_mode"], "fixed_risk_pct")
+        self.assertEqual(result["preview"]["spec"]["parameters"]["sizing_mode"], "mt5_fixed_risk_lot")
         self.assertLessEqual(result["preview"]["spec"]["parameters"]["risk_pct"], 0.01)
         self.assertLessEqual(result["preview"]["spec"]["parameters"]["max_leverage"], 1.0)
+
+    def test_optimize_all_emits_parameter_progress(self) -> None:
+        progress_events: list[dict[str, Any]] = []
+        fake_edges = [
+            {"lever": "fast_len", "current_value": 25, "optimizable": True},
+            {"lever": "slow_len", "current_value": 96, "optimizable": True},
+        ]
+
+        def fake_optimize_lever(version_id: str, dataset_id: str, lever: str, overrides: dict, optimization_mode: str = "production") -> dict:
+            next_overrides = {**overrides, lever: 26 if lever == "fast_len" else 104}
+            return {"best": {"parameter_overrides": next_overrides, "score": 1.0, "metrics": {}}}
+
+        with (
+            patch.object(self.lab, "list_tuning_edges", return_value=fake_edges),
+            patch.object(self.lab, "optimize_lever", side_effect=fake_optimize_lever),
+            patch.object(self.lab, "preview_tuned_version", return_value={"mode": "preview"}),
+        ):
+            self.lab.optimize_all(
+                "ver_btc_intraday_parent",
+                "fake_dataset",
+                {},
+                passes=1,
+                optimization_mode="research",
+                progress_callback=progress_events.append,
+            )
+        self.assertGreaterEqual(len(progress_events), 1)
+        first = progress_events[0]
+        self.assertEqual(first["pass"], 1)
+        self.assertEqual(first["passes"], 1)
+        self.assertEqual(first["edge_index"], 1)
+        self.assertGreaterEqual(first["total_edges"], 1)
+        self.assertIn("lever", first)
+        self.assertIn("next_lever", first)
 
     def test_robustness_check_returns_walk_forward_and_cost_stress(self) -> None:
         dataset = self.data_service.import_fixture_dataset(

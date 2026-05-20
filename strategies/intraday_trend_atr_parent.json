@@ -1,0 +1,490 @@
+{
+  "engine_id": "ma_cross_atr_stop_v1",
+  "asset": "BTCUSDT",
+  "venue": "Binance Spot",
+  "timeframe": "15m",
+  "metadata": {
+    "family_id": "intraday_trend_atr",
+    "title": "Intraday Trend ATR Baseline",
+    "phase": "phase_2_baseline",
+    "causal_story": "Intraday trend-following baseline using a fast/slow SMA crossover for direction, a fast-SMA cross-count noise gate to avoid chop, and a static ATR stop for risk control. This parent preserves the phase-1 Pine logic from Agora Trend Intraday as a clean runnable baseline before any full-whitebox or hybrid mutations are introduced.",
+    "source_path": "pre-strategies/BTC-intraday.txt",
+    "translation_target": "Phase-2 baseline parent preserving the selected open-source Pine behavior under the MT5-style execution proxy."
+  },
+  "parameters": {
+    "ma_kind": "sma",
+    "fast_len": 25,
+    "slow_len": 96,
+    "noise_lookback": 25,
+    "max_no_cross": 5,
+    "entry_mode": "crossover_only",
+    "allow_long": true,
+    "allow_short": true,
+    "atr_len": 23,
+    "atr_timeframe": "15m",
+    "stop_mult": 4.6,
+    "quantity": 1.0,
+    "initial_capital": 100000.0,
+    "commission_pct": 0.04,
+    "slippage_ticks": 2,
+    "tick_size": 0.01,
+    "sizing_mode": "mt5_fixed_risk_lot",
+    "notional_pct": 0.25,
+    "risk_pct": 0.005,
+    "max_leverage": 1.0,
+    "contract_size": 100.0,
+    "min_lot": 0.01,
+    "lot_step": 0.01,
+    "max_lot": 100.0,
+    "skip_below_min_lot": true,
+    "execution_model": "mt5_bar_proxy",
+    "time_decay_exit_enabled": true,
+    "time_decay_bars": 30,
+    "time_decay_min_mfe_r": 0.25,
+    "short_time_risk_filter_enabled": true,
+    "short_time_risk_block_utc_hours": [
+      6,
+      9,
+      16,
+      20
+    ],
+    "short_time_risk_block_weekdays": [
+      4
+    ],
+    "reverse_confirmation_enabled": true,
+    "reverse_confirm_max_bars": 2,
+    "reverse_confirm_min_mfe_r": 0.2,
+    "reverse_confirm_allow_if_unrealized_r_lte": -0.35,
+    "reverse_confirm_require_no_breakeven_move": false,
+    "entry_blackbox_veto_enabled": true,
+    "entry_blackbox_veto_utc_hours": [
+      15
+    ],
+    "entry_blackbox_veto_side_months": [
+      "long:8"
+    ]
+  },
+  "evaluation": {
+    "minimum_trades": 50,
+    "minimum_profit_factor": 1.2,
+    "maximum_drawdown_pct": 12.0,
+    "minimum_net_pnl": 0.0,
+    "minimum_sharpe": 0.5,
+    "minimum_sortino": 0.75,
+    "minimum_daily_sharpe": 0.75,
+    "minimum_daily_sortino": 1.0,
+    "minimum_calmar": 0.5,
+    "maximum_initial_risk_pct": 1.0,
+    "maximum_entry_exposure_pct": 100.0,
+    "maximum_avg_exposure_pct": 100.0,
+    "maximum_worst_daily_loss_pct": 5.0,
+    "production_sizing_modes": [
+      "mt5_fixed_risk_lot"
+    ],
+    "benchmark_policy": "outperform_return_or_calmar"
+  },
+  "mutation_space": [
+    {
+      "kind": "white_box",
+      "lever": "fast_len",
+      "path": "parameters.fast_len",
+      "priority": 95,
+      "values": [
+        21,
+        34
+      ],
+      "search_mode": "range",
+      "search_min": 1,
+      "search_max": 300,
+      "search_step": 1,
+      "rationale": "Tune the fast SMA reaction speed while holding the family identity as a moving-average trend model."
+    },
+    {
+      "kind": "white_box",
+      "lever": "slow_len",
+      "path": "parameters.slow_len",
+      "priority": 90,
+      "values": [
+        72,
+        120
+      ],
+      "search_mode": "range",
+      "search_min": 2,
+      "search_max": 300,
+      "search_step": 1,
+      "rationale": "Tune the slow SMA trend anchor without adding a new rule."
+    },
+    {
+      "kind": "white_box",
+      "lever": "noise_lookback",
+      "path": "parameters.noise_lookback",
+      "priority": 84,
+      "values": [
+        10,
+        25,
+        50
+      ],
+      "search_mode": "range",
+      "search_min": 5,
+      "search_max": 300,
+      "search_step": 1,
+      "rationale": "Tune the window that counts noisy close/fast-SMA crossings."
+    },
+    {
+      "kind": "white_box",
+      "lever": "max_no_cross",
+      "path": "parameters.max_no_cross",
+      "priority": 80,
+      "values": [
+        1,
+        5,
+        10
+      ],
+      "search_mode": "range",
+      "search_min": 1,
+      "search_max": 30,
+      "search_step": 1,
+      "rationale": "Tune how strict the anti-chop cross-count gate is."
+    },
+    {
+      "kind": "white_box",
+      "lever": "atr_len",
+      "path": "parameters.atr_len",
+      "priority": 70,
+      "values": [
+        14,
+        23,
+        70
+      ],
+      "search_mode": "range",
+      "search_min": 1,
+      "search_max": 300,
+      "search_step": 1,
+      "rationale": "Tune ATR memory for the static stop."
+    },
+    {
+      "kind": "white_box",
+      "lever": "stop_mult",
+      "path": "parameters.stop_mult",
+      "priority": 100,
+      "values": [
+        2.0,
+        4.6,
+        8.0
+      ],
+      "search_mode": "range",
+      "search_min": 0.5,
+      "search_max": 12.0,
+      "search_step": 0.1,
+      "rationale": "Tune ATR stop distance without changing the exit family."
+    },
+    {
+      "kind": "white_box",
+      "lever": "ma_kind",
+      "path": "parameters.ma_kind",
+      "priority": 55,
+      "values": [
+        "sma",
+        "ema"
+      ],
+      "search_mode": "values_only",
+      "rationale": "Compare SMA preservation against EMA smoothing as a baseline-level translation sensitivity check."
+    },
+    {
+      "kind": "white_box",
+      "lever": "allow_short",
+      "path": "parameters.allow_short",
+      "priority": 35,
+      "values": [
+        true,
+        false
+      ],
+      "search_mode": "values_only",
+      "rationale": "Test whether the baseline should keep short-side participation before full-whitebox mutation begins."
+    },
+    {
+      "kind": "white_box",
+      "lever": "allow_long",
+      "path": "parameters.allow_long",
+      "priority": 30,
+      "values": [
+        true,
+        false
+      ],
+      "search_mode": "values_only",
+      "rationale": "Test whether long-side participation is necessary under the MT5 proxy."
+    },
+    {
+      "kind": "white_box",
+      "lever": "time_decay_exit_enabled",
+      "path": "parameters.time_decay_exit_enabled",
+      "priority": 88,
+      "values": [
+        true,
+        false
+      ],
+      "search_mode": "values_only",
+      "rationale": "Enable or disable the phase-3 failed-entry time-decay exit that survived the first unsaved preview against run_356115cfeb0d."
+    },
+    {
+      "kind": "white_box",
+      "lever": "time_decay_bars",
+      "path": "parameters.time_decay_bars",
+      "priority": 87,
+      "values": [
+        30,
+        40,
+        60
+      ],
+      "search_mode": "range",
+      "search_min": 1,
+      "search_max": 300,
+      "search_step": 1,
+      "rationale": "Tune how long a trade may fail to prove favorable excursion before the time-decay exit can close it."
+    },
+    {
+      "kind": "white_box",
+      "lever": "time_decay_min_mfe_r",
+      "path": "parameters.time_decay_min_mfe_r",
+      "priority": 86,
+      "values": [
+        0.25,
+        0.35,
+        0.5
+      ],
+      "search_mode": "range",
+      "search_min": 0.05,
+      "search_max": 2.0,
+      "search_step": 0.05,
+      "rationale": "Tune the minimum favorable excursion required before the time-decay window expires; trades below this threshold are treated as failed paths."
+    },
+    {
+      "kind": "white_box",
+      "lever": "short_time_risk_filter_enabled",
+      "path": "parameters.short_time_risk_filter_enabled",
+      "priority": 84,
+      "values": [
+        true,
+        false
+      ],
+      "search_mode": "values_only",
+      "rationale": "Enable or disable the phase-3 short-only timing gate that survived the second diagnostics pass."
+    },
+    {
+      "kind": "white_box",
+      "lever": "short_time_risk_block_utc_hours",
+      "path": "parameters.short_time_risk_block_utc_hours",
+      "priority": 83,
+      "values": [
+        [],
+        [
+          20
+        ],
+        [
+          9,
+          20
+        ],
+        [
+          6,
+          9,
+          16
+        ],
+        [
+          9,
+          16,
+          20
+        ],
+        [
+          6,
+          9,
+          16,
+          20
+        ]
+      ],
+      "search_mode": "values_only",
+      "rationale": "Tune the UTC short-entry timing pockets identified by the second phase-3 diagnostics."
+    },
+    {
+      "kind": "white_box",
+      "lever": "short_time_risk_block_weekdays",
+      "path": "parameters.short_time_risk_block_weekdays",
+      "priority": 82,
+      "values": [
+        [],
+        [
+          4
+        ]
+      ],
+      "search_mode": "values_only",
+      "rationale": "Tune short-only weekday exclusion; Python weekday 4 is Friday, the weakest short-side day in the second phase-3 split."
+    },
+    {
+      "kind": "hybrid",
+      "lever": "reverse_confirmation_enabled",
+      "path": "parameters.reverse_confirmation_enabled",
+      "priority": 94,
+      "values": [
+        true,
+        false
+      ],
+      "search_mode": "values_only",
+      "rationale": "Enable or disable the phase-4 reverse-continuation triage that suppresses young weak reverse exits before they cut right-tail trades."
+    },
+    {
+      "kind": "hybrid",
+      "lever": "reverse_confirm_max_bars",
+      "path": "parameters.reverse_confirm_max_bars",
+      "priority": 93,
+      "values": [
+        1,
+        2,
+        3,
+        4,
+        6
+      ],
+      "search_mode": "range",
+      "search_min": 1,
+      "search_max": 12,
+      "search_step": 1,
+      "rationale": "Tune how long after entry a weak opposite signal remains eligible for reverse-continuation triage."
+    },
+    {
+      "kind": "hybrid",
+      "lever": "reverse_confirm_min_mfe_r",
+      "path": "parameters.reverse_confirm_min_mfe_r",
+      "priority": 92,
+      "values": [
+        0.0,
+        0.1,
+        0.2,
+        0.35,
+        0.5
+      ],
+      "search_mode": "range",
+      "search_min": 0.0,
+      "search_max": 2.0,
+      "search_step": 0.05,
+      "rationale": "Tune the favorable excursion needed before a reverse signal is trusted as a real exit instead of a weak continuation candidate."
+    },
+    {
+      "kind": "hybrid",
+      "lever": "reverse_confirm_allow_if_unrealized_r_lte",
+      "path": "parameters.reverse_confirm_allow_if_unrealized_r_lte",
+      "priority": 91,
+      "values": [
+        -1.0,
+        -0.5,
+        -0.35,
+        -0.2,
+        0.0
+      ],
+      "search_mode": "range",
+      "search_min": -2.0,
+      "search_max": 0.0,
+      "search_step": 0.05,
+      "rationale": "Tune the adverse unrealized R level where the reverse exit is allowed even if the continuation triage would otherwise suppress it."
+    },
+    {
+      "kind": "hybrid",
+      "lever": "reverse_confirm_require_no_breakeven_move",
+      "path": "parameters.reverse_confirm_require_no_breakeven_move",
+      "priority": 90,
+      "values": [
+        true,
+        false
+      ],
+      "search_mode": "values_only",
+      "rationale": "Choose whether reverse-continuation triage only applies when breakeven stop management has not already protected the trade."
+    },
+    {
+      "kind": "black_box",
+      "lever": "entry_blackbox_veto_enabled",
+      "path": "parameters.entry_blackbox_veto_enabled",
+      "priority": 82,
+      "values": [
+        true,
+        false
+      ],
+      "search_mode": "values_only",
+      "rationale": "Enable or disable the phase-4.2 decision-time entry veto after a viability pocket reproduces in the live engine."
+    },
+    {
+      "kind": "black_box",
+      "lever": "entry_blackbox_veto_utc_hours",
+      "path": "parameters.entry_blackbox_veto_utc_hours",
+      "priority": 81,
+      "values": [
+        [],
+        [
+          15
+        ],
+        [
+          11
+        ],
+        [
+          15,
+          11
+        ],
+        [
+          14,
+          15,
+          16
+        ]
+      ],
+      "search_mode": "values_only",
+      "rationale": "Choose UTC entry-hour buckets vetoed by the phase-4.2 decision-time pocket."
+    },
+    {
+      "kind": "black_box",
+      "lever": "entry_blackbox_veto_side_months",
+      "path": "parameters.entry_blackbox_veto_side_months",
+      "priority": 80,
+      "values": [
+        [],
+        [
+          "long:8"
+        ],
+        [
+          "short:12"
+        ],
+        [
+          "long:8",
+          "short:12"
+        ]
+      ],
+      "search_mode": "values_only",
+      "rationale": "Choose side-month entry veto buckets encoded as side:month, for example long:8 for long entries during August."
+    },
+    {
+      "kind": "portfolio",
+      "lever": "risk_pct",
+      "path": "parameters.risk_pct",
+      "priority": 130,
+      "values": [
+        0.0025,
+        0.005,
+        0.01
+      ],
+      "search_mode": "range",
+      "search_min": 0.001,
+      "search_max": 0.01,
+      "search_step": 0.001,
+      "rationale": "Tune the current-equity loss budget that mt5_fixed_risk_lot converts into broker-rounded lots at the initial stop."
+    },
+    {
+      "kind": "portfolio",
+      "lever": "max_leverage",
+      "path": "parameters.max_leverage",
+      "priority": 127,
+      "values": [
+        0.5,
+        1.0
+      ],
+      "search_mode": "range",
+      "search_min": 0.25,
+      "search_max": 1.0,
+      "search_step": 0.25,
+      "rationale": "Keep production-comparable exposure unlevered or below unless explicitly stress testing."
+    }
+  ]
+}

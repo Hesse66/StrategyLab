@@ -169,7 +169,7 @@
     "time_risk_filter_enabled": false,
     "time_risk_block_weekdays": [],
     "time_risk_block_utc_hours": [],
-    "sizing_mode": "fixed_risk_pct",
+    "sizing_mode": "mt5_fixed_risk_lot",
     "risk_pct": 0.005,
     "notional_pct": 0.25,
     "max_leverage": 1.0,
@@ -178,7 +178,7 @@
     "commission_pct": 0.04,
     "slippage_ticks": 2,
     "tick_size": 0.01,
-    "execution_model": "next_bar_open"
+    "execution_model": "mt5_bar_proxy"
   },
   "evaluation": {
     "minimum_trades": 30,
@@ -196,8 +196,7 @@
     "maximum_avg_exposure_pct": 100.0,
     "maximum_worst_daily_loss_pct": 5.0,
     "production_sizing_modes": [
-      "fixed_notional_pct",
-      "fixed_risk_pct"
+      "mt5_fixed_risk_lot"
     ],
     "benchmark_policy": "outperform_return_or_calmar"
   },
@@ -780,22 +779,9 @@
     },
     {
       "kind": "portfolio",
-      "lever": "sizing_mode",
-      "path": "parameters.sizing_mode",
-      "priority": 130,
-      "values": [
-        "fixed_quantity",
-        "fixed_notional_pct",
-        "fixed_risk_pct"
-      ],
-      "search_mode": "values_only",
-      "rationale": "Choose the capital model. Fixed risk is the intended research default because the source is defined around percent account risk."
-    },
-    {
-      "kind": "portfolio",
       "lever": "risk_pct",
       "path": "parameters.risk_pct",
-      "priority": 128,
+      "priority": 130,
       "values": [
         0.0025,
         0.005,

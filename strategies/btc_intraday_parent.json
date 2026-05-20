@@ -54,7 +54,7 @@
     "hybrid_time_decay_triage_max_mfe_r": 0.25,
     "hybrid_reverse_exit_triage_enabled": true,
     "hybrid_reverse_exit_min_mfe_r": 0.1,
-    "sizing_mode": "fixed_risk_pct",
+    "sizing_mode": "mt5_fixed_risk_lot",
     "notional_pct": 0.25,
     "risk_pct": 0.005,
     "max_leverage": 1.0,
@@ -63,7 +63,7 @@
     "lot_step": 0.01,
     "max_lot": 100.0,
     "skip_below_min_lot": true,
-    "execution_model": "next_bar_open"
+    "execution_model": "mt5_bar_proxy"
   },
   "evaluation": {
     "minimum_trades": 50,
@@ -80,26 +80,11 @@
     "maximum_avg_exposure_pct": 100.0,
     "maximum_worst_daily_loss_pct": 5.0,
     "production_sizing_modes": [
-      "fixed_notional_pct",
-      "fixed_risk_pct",
       "mt5_fixed_risk_lot"
     ],
     "benchmark_policy": "outperform_return_or_calmar"
   },
   "mutation_space": [
-    {
-      "kind": "execution",
-      "lever": "execution_model",
-      "path": "parameters.execution_model",
-      "priority": 131,
-      "values": [
-        "next_bar_open",
-        "mt5_bar_proxy"
-      ],
-      "search_mode": "values_only",
-      "optimizable": false,
-      "rationale": "Choose the production-comparable bar execution proxy. next_bar_open fills closed-bar signals at the next open; mt5_bar_proxy additionally models MT5-style same-entry-bar stop eligibility and stop-modification rejection."
-    },
     {
       "kind": "white_box",
       "lever": "fast_len",
@@ -610,40 +595,9 @@
     },
     {
       "kind": "portfolio",
-      "lever": "sizing_mode",
-      "path": "parameters.sizing_mode",
-      "priority": 130,
-      "values": [
-        "fixed_quantity",
-        "fixed_notional_pct",
-        "fixed_risk_pct",
-        "mt5_fixed_risk_lot"
-      ],
-      "search_mode": "values_only",
-      "rationale": "Choose the capital model. fixed_quantity is an alpha-engine diagnostic, fixed_notional_pct compounds a notional share of current equity, fixed_risk_pct sizes by loss budget to the stop, and mt5_fixed_risk_lot rounds that risk budget to broker lot constraints."
-    },
-    {
-      "kind": "portfolio",
-      "lever": "notional_pct",
-      "path": "parameters.notional_pct",
-      "priority": 129,
-      "values": [
-        0.1,
-        0.25,
-        0.5,
-        1.0
-      ],
-      "search_mode": "range",
-      "search_min": 0.05,
-      "search_max": 1.0,
-      "search_step": 0.05,
-      "rationale": "When sizing_mode is fixed_notional_pct, tune the current-equity fraction used as trade notional. 1.0 means every new trade uses 100% of current equity and compounds after each closed trade."
-    },
-    {
-      "kind": "portfolio",
       "lever": "risk_pct",
       "path": "parameters.risk_pct",
-      "priority": 128,
+      "priority": 130,
       "values": [
         0.0025,
         0.005,
@@ -653,7 +607,7 @@
       "search_min": 0.001,
       "search_max": 0.01,
       "search_step": 0.001,
-      "rationale": "When sizing_mode is fixed_risk_pct, tune the current-equity fraction risked to the stop. 0.01 means a 1% account-loss budget before max-leverage caps."
+      "rationale": "Tune the current-equity loss budget that mt5_fixed_risk_lot converts into broker-rounded lots at the initial stop."
     },
     {
       "kind": "portfolio",

@@ -11,6 +11,7 @@ const state = {
 const outputBox = document.getElementById("outputBox");
 const summaryGrid = document.getElementById("summaryGrid");
 const metricsGrid = document.getElementById("metricsGrid");
+const gateBadge = document.getElementById("gateBadge");
 const familySelect = document.getElementById("familySelect");
 const versionSelect = document.getElementById("versionSelect");
 const datasetSelect = document.getElementById("datasetSelect");
@@ -32,6 +33,22 @@ const OUTPUT_ARRAY_LIMIT = 20;
 const OUTPUT_MAX_CHARS = 60000;
 const OPTIMIZATION_POLL_MS = 2500;
 let optimizationInFlight = false;
+
+function updateClock() {
+  const node = document.getElementById("clock");
+  if (!node) {
+    return;
+  }
+  node.textContent = new Date().toLocaleTimeString("en-US", {
+    hour12: false,
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+
+updateClock();
+window.setInterval(updateClock, 1000);
 
 function setStatus(elementId, message, tone = "") {
   const node = document.getElementById(elementId);
@@ -277,71 +294,90 @@ function productionGateSummary(spec, metrics) {
 function renderMetrics() {
   const metrics = activeMetrics();
   if (!metrics) {
+    if (gateBadge) {
+      gateBadge.textContent = "Awaiting Evidence";
+      gateBadge.className = "gate-badge";
+    }
     metricsGrid.innerHTML = `<div class="empty-state">Run the selected version or change a tuning value to populate the performance panel.</div>`;
     return;
   }
   const spec = activeSpec();
   const comparison = state.previewResult?.comparison || null;
   const warnings = capitalModelWarnings(spec, metrics);
-  const items = [
-    ["Source", activeMetricSource()],
-    ["Sizing Mode", spec?.parameters?.sizing_mode || "fixed_quantity"],
-    ["Production Gate", productionGateSummary(spec, metrics)],
-    ["Net PnL", formatNumber(metrics.net_pnl)],
-    ["Return %", `${formatNumber(metrics.return_pct)}%`],
-    ["Profit Factor", formatNumber(metrics.profit_factor, 4)],
-    ["Expected Payoff", formatNumber(metrics.expected_payoff)],
-    ["Trades", formatNumber(metrics.total_trades, 0)],
-    ["Win Rate", `${formatNumber(metrics.percent_profitable)}%`],
-    ["Max Drawdown %", `${formatNumber(metrics.max_equity_drawdown_pct)}%`],
-    ["Trade Sharpe", formatNumber(metrics.sharpe, 4)],
-    ["Trade Sortino", formatNumber(metrics.sortino, 4)],
+  const gateSummary = productionGateSummary(spec, metrics);
+  if (gateBadge) {
+    gateBadge.textContent = gateSummary;
+    gateBadge.className = `gate-badge ${gateSummary === "Production candidate" ? "pass" : ""}`.trim();
+  }
+  const warningText = warnings.length
+    ? warnings.map((warning) => escapeHtml(warning)).join(" ")
+    : "Capital model is compatible with the selected evaluation contract.";
+  const majorLines = [
+    ["Net PnL", formatNumber(metrics.net_pnl), "major"],
+    ["Return %", `${formatNumber(metrics.return_pct)}%`, "major"],
+    ["Profit Factor", formatNumber(metrics.profit_factor, 4), "major"],
+    ["Trades", formatNumber(metrics.total_trades, 0), ""],
+    ["Win Rate", `${formatNumber(metrics.percent_profitable)}%`, ""],
+    ["Max Drawdown", `${formatNumber(metrics.max_equity_drawdown_pct)}%`, "risk"],
+  ];
+  const detailLines = [
     ["Daily Sharpe", formatNumber(metrics.daily_sharpe, 4)],
     ["Daily Sortino", formatNumber(metrics.daily_sortino, 4)],
+    ["Trade Sharpe", formatNumber(metrics.sharpe, 4)],
+    ["Trade Sortino", formatNumber(metrics.sortino, 4)],
     ["Daily Vol %", `${formatNumber(metrics.daily_volatility_pct)}%`],
     ["Worst Day %", `${formatNumber(metrics.worst_daily_return_pct)}%`],
-    ["Positive Day %", `${formatNumber(metrics.positive_day_pct)}%`],
     ["Calmar", formatNumber(metrics.calmar, 4)],
-    ["B&H Max DD %", `${formatNumber(metrics.buy_hold_max_drawdown_pct)}%`],
     ["B&H Calmar", formatNumber(metrics.buy_hold_calmar, 4)],
     ["Calmar Delta", formatNumber(metrics.calmar_delta, 4)],
     ["Avg Exposure %", `${formatNumber(metrics.avg_entry_exposure_pct)}%`],
     ["Max Exposure %", `${formatNumber(metrics.max_entry_exposure_pct)}%`],
-    ["Avg Risk %", `${formatNumber(metrics.avg_initial_risk_pct, 4)}%`],
     ["Max Risk %", `${formatNumber(metrics.max_initial_risk_pct, 4)}%`],
+    ["B&H Asset %", `${formatNumber(metrics.buy_hold_return_pct)}%`],
+    ["Alpha vs B&H %", `${formatNumber(metrics.outperformance_pct)}%`],
     ["Base PF Delta", comparison ? formatNumber(comparison.profit_factor_delta, 4) : "n/a"],
     ["Base DD Delta", comparison ? `${formatNumber(comparison.drawdown_pct_delta)}%` : "n/a"],
-    ["Buy & Hold PnL", formatNumber(metrics.buy_hold_return)],
-    ["Buy & Hold Asset %", `${formatNumber(metrics.buy_hold_return_pct)}%`],
-    ["Alpha vs B&H", formatNumber(metrics.outperformance)],
-    ["Alpha vs B&H %", `${formatNumber(metrics.outperformance_pct)}%`],
-    ["Gross Profit", formatNumber(metrics.gross_profit)],
-    ["Gross Loss", formatNumber(metrics.gross_loss)],
-    ["Avg Trade", formatNumber(metrics.avg_pnl)],
-    ["Avg Win/Loss", formatNumber(metrics.ratio_avg_win_loss, 4)],
   ];
-  const warningCards = warnings
-    .map(
-      (warning) => `
-        <article class="metric-card metric-warning">
-          <span>Capital Model</span>
-          <strong>${escapeHtml(warning)}</strong>
-        </article>
-      `,
-    )
-    .join("");
-  metricsGrid.innerHTML =
-    warningCards +
-    items
-    .map(
-      ([label, value]) => `
-        <article class="metric-card">
-          <span>${label}</span>
-          <strong class="numeric">${value}</strong>
-        </article>
-      `,
-    )
-    .join("");
+  metricsGrid.innerHTML = `
+    <section class="metrics-warning">
+      <span class="metric-label">Capital Model</span>
+      <strong>${warningText}</strong>
+    </section>
+    <section class="metrics-pair-grid">
+      <div>
+        <span class="metric-label">Source</span>
+        <strong class="metric-value">${activeMetricSource()}</strong>
+      </div>
+      <div>
+        <span class="metric-label">Sizing Mode</span>
+        <strong class="metric-value accent">${spec?.parameters?.sizing_mode || "fixed_quantity"}</strong>
+      </div>
+    </section>
+    <section>
+      ${majorLines
+        .map(
+          ([label, value, tone]) => `
+            <div class="metric-line ${tone}">
+              <span class="metric-label">${label}</span>
+              <strong class="metric-value numeric">${value}</strong>
+            </div>
+          `,
+        )
+        .join("")}
+    </section>
+    <section class="metric-detail-grid">
+      ${detailLines
+        .map(
+          ([label, value]) => `
+            <div class="metric-detail">
+              <span>${label}</span>
+              <span class="numeric">${value}</span>
+            </div>
+          `,
+        )
+        .join("")}
+    </section>
+  `;
 }
 
 function syncWorkingParameters() {
@@ -1001,8 +1037,8 @@ async function optimizeLever(lever) {
   }
 }
 
-function applyOptimizeAllResult(result, recovered = false) {
-  const baseParameters = currentVersion().spec_json.parameters;
+function applyOptimizeAllResult(result, recovered = false, startingParameters = null) {
+  const baseParameters = startingParameters || currentVersion().spec_json.parameters;
   state.workingParameters = { ...baseParameters, ...result.parameter_overrides };
   state.previewResult = result.preview;
   renderSummary();
@@ -1031,6 +1067,15 @@ function applyOptimizeAllResult(result, recovered = false) {
   clearOptimizationStatus(9000);
 }
 
+function optimizationProgressMessage(job) {
+  const startedAt = job.created_at ? new Date(job.created_at).toLocaleTimeString() : "unknown time";
+  const progress = job.progress || {};
+  const progressText = progress.lever
+    ? ` Pass ${progress.pass}/${progress.passes}, parameter ${progress.edge_index}/${progress.total_edges}: optimizing ${progress.lever}${progress.next_lever ? `; next ${progress.next_lever}` : "; final parameter in pass"}.`
+    : " Waiting for first parameter...";
+  return `Optimization job ${job.job_id} is ${job.status}. Started ${startedAt}.${progressText}`;
+}
+
 async function optimizeAll(optimizationMode = "production") {
   const version = currentVersion();
   const datasetId = selectedDatasetId();
@@ -1042,6 +1087,7 @@ async function optimizeAll(optimizationMode = "production") {
     return;
   }
   setOptimizationBusy(true);
+  const startingParameters = { ...currentVersion().spec_json.parameters, ...collectOverrides() };
   const modeLabel = optimizationMode === "research" ? "baseline research" : "production";
   setOptimizationStatus(`Starting background two-pass ${modeLabel} optimization...`);
   try {
@@ -1055,9 +1101,9 @@ async function optimizeAll(optimizationMode = "production") {
         optimization_mode: optimizationMode,
       }),
     });
-    setOptimizationStatus(`${modeLabel} optimization job ${job.job_id} started. You can keep the page open while it works.`);
+    setOptimizationStatus(optimizationProgressMessage(job));
     const result = await waitForOptimizationJob(job.job_id);
-    applyOptimizeAllResult(result);
+    applyOptimizeAllResult(result, false, startingParameters);
   } catch (error) {
     setStatus("familyStatus", error.message, "error");
     showOutput({ error: error.message });
@@ -1089,8 +1135,7 @@ async function waitForOptimizationJob(jobId) {
     if (job.status === "failed") {
       throw new Error(job.error || "Optimization job failed.");
     }
-    const startedAt = job.created_at ? new Date(job.created_at).toLocaleTimeString() : "unknown time";
-    setOptimizationStatus(`Optimization job ${jobId} is ${job.status}. Started ${startedAt}. Waiting for result...`);
+    setOptimizationStatus(optimizationProgressMessage(job));
   }
 }
 
@@ -1154,13 +1199,14 @@ function applyProductionDefaults() {
   state.workingParameters = {
     ...state.workingParameters,
     sizing_mode: "fixed_risk_pct",
+    execution_model: "mt5_bar_proxy",
     risk_pct: 0.005,
     max_leverage: 1,
     notional_pct: 0.25,
   };
   renderTuningEdges();
   schedulePreview(true);
-  setStatus("familyStatus", "Production defaults applied: fixed risk 0.5%, max exposure 1x.", "success");
+  setStatus("familyStatus", "Production defaults applied: MT5 proxy execution, fixed risk 0.5%, max exposure 1x.", "success");
 }
 
 async function saveTune() {

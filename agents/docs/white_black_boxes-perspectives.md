@@ -10,6 +10,14 @@ PROMPT
 
 This file extracts the two modeling perspectives from the original StrategyLab query and turns them into a reusable canon for strategy design, evaluation, and future LLM review.
 
+## Mutation Lab 2026 Correction
+
+Mutation Lab now treats the white-box, hybrid, and black-box perspectives as a staged evidence process rather than as interchangeable strategy styles. The current production-comparable research route is: preserve or discover an inspectable baseline, optimize it under the MT5-style execution proxy, add explainable phase-3 rule mutations only when diagnostics localize a weakness, add phase-4 hybrid controls only when the parent is already alive, and use phase 4.2 black-box viability scans only to discover stable decision-time pockets that can later be converted into explicit live-engine parameters.
+
+The correction is affirmative: a strategy earns more complexity only after the previous layer produces evidence. Black-box work is not a rescue device for a weak parent. It is a late-stage discovery tool for stable pockets that are visible at the decision point and survive chronological validation. A black-box scan that improves only the full sample, deletes most trades, uses future information, or cannot become legal order-time behavior is research noise.
+
+The current app remains primarily a white-box and hybrid lab. It can perform black-box viability scans from trade rows, but a true black-box platform would also require feature stores, purged chronological training, model artifacts, inference contracts, drift monitoring, and paper/live reconciliation. Until those exist, black-box outputs should be treated as candidate generators for explicit engine controls, not as deployable opaque models.
+
 ## White-Box Perspective
 
 ### Identity
@@ -116,13 +124,13 @@ A practical middle ground: explicit structure plus statistical filters.
 
 ### StrategyLab implication
 
-This is the strongest next step for the app. It preserves interpretability while allowing LLM- or model-assisted iteration.
+This remains the strongest core path for the app. It preserves interpretability while allowing LLM- or model-assisted iteration. Hybrid work should be narrow and decision-time safe: score, filter, rank, size, or triage one bounded parent decision, then prove that the live-engine implementation reproduces the offline edge.
 
 ## What This Means for Strategy Creation
 
 ### Current reality
 
-Today, a new executable strategy still requires code because each family is backed by engine logic in Python. A manifest alone can vary parameters and metadata, but it cannot define a wholly new executable engine.
+Today, a new executable strategy still requires code because each family is backed by engine logic in Python. A manifest alone can vary parameters and metadata, but it cannot define a wholly new executable engine. Every candidate must also declare and preserve its execution model. Production-comparable Mutation Lab research currently means `mt5_bar_proxy` or a stricter model, mark-to-market equity, explicit costs, production sizing, and robustness checks before paper-trading claims.
 
 ### What JSON can do today
 
@@ -163,9 +171,11 @@ If you want true black-box strategy creation, add a second track later:
 - feature pipeline
 - training jobs
 - train / validation / test separation
+- purging and embargo for time-series leakage control
 - model artifacts
 - inference contracts
 - drift and leakage checks
+- exchange-feasibility and paper-runner parity
 
 That is a different product tier from the current monolithic rule-engine app.
 

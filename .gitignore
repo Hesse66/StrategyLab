@@ -18,6 +18,7 @@ agents/histdata/
 #agents/codex-writing.txt
 agents/mutation-lab-01.txt
 #agents/new-frontend.txt 
+artifacts/diagnostics/
 
 
 *.sqlite3
@@ -27,10 +28,13 @@ agents/mutation-lab-01.txt
 .DS_Store
 Thumbs.db
 
-issues.txt
+
 
 #Bridge
 
 AGENTS.md
 bridgecode/
 context4.txt
+mergefull1.txt
+issues.txt
+design/

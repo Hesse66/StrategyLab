@@ -424,9 +424,9 @@ class BacktestEngine:
 
     def _run_bos_demand_pullback(self, spec: dict[str, Any], bars: list[Bar]) -> dict[str, Any]:
         parameters = spec["parameters"]
-        execution_model = str(parameters.get("execution_model", "next_bar_open"))
-        if execution_model not in {"next_bar_open", "research_same_close"}:
-            raise HTTPException(status_code=400, detail="execution_model must be `next_bar_open` or `research_same_close`.")
+        execution_model = str(parameters.get("execution_model", "mt5_bar_proxy"))
+        if execution_model not in {"next_bar_open", "research_same_close", "mt5_bar_proxy"}:
+            raise HTTPException(status_code=400, detail="execution_model must be `next_bar_open`, `research_same_close`, or `mt5_bar_proxy`.")
         if len(bars) < 20:
             raise HTTPException(status_code=400, detail="BOS demand pullback engine requires at least 20 bars.")
         if bars[0].timeframe != spec.get("timeframe", bars[0].timeframe):
@@ -563,13 +563,13 @@ class BacktestEngine:
                 entry_equity=equity,
                 entry_notional=fill * quantity,
                 initial_risk_per_unit=abs(fill - stop),
-                stop_initialized_on_index=entry_index if execution_model == "research_same_close" else entry_index - 1,
+                stop_initialized_on_index=entry_index if execution_model in {"research_same_close", "mt5_bar_proxy"} else entry_index - 1,
                 entry_features=entry_features,
             )
 
         for index, bar in enumerate(bars):
             current_atr = atr_values[index]
-            if pending_order and execution_model == "next_bar_open" and position is None:
+            if pending_order and execution_model in {"next_bar_open", "mt5_bar_proxy"} and position is None:
                 position = open_position(bar, index, pending_order)
                 diagnostics["entries"] += 1
                 diagnostics["pending_order_fills"] += 1
@@ -578,8 +578,9 @@ class BacktestEngine:
             if position:
                 self._update_excursion(position, bar)
                 target = float(position.entry_features["target_price"])
-                stop_hit = index > position.stop_initialized_on_index and bar.low <= position.stop_price
-                target_hit = index > position.stop_initialized_on_index and bar.high >= target
+                stop_can_trigger = index >= position.stop_initialized_on_index if execution_model == "mt5_bar_proxy" else index > position.stop_initialized_on_index
+                stop_hit = stop_can_trigger and bar.low <= position.stop_price
+                target_hit = stop_can_trigger and bar.high >= target
                 if stop_hit and target_hit:
                     if same_bar_exit_policy == "target_first":
                         trade = self._close_trade(position, bar, index, max(target - slippage, 0.0), "target", commission_pct, equity)
@@ -672,7 +673,7 @@ class BacktestEngine:
                     "ema_value": ema_values[index],
                 }
                 diagnostics["signals_long"] += 1
-                if execution_model == "next_bar_open":
+                if execution_model in {"next_bar_open", "mt5_bar_proxy"}:
                     pending_order = signal
                     diagnostics["pending_entry_orders"] += 1
                 else:
@@ -713,9 +714,9 @@ class BacktestEngine:
 
     def _run_asm_fib_liquidity_fvg(self, spec: dict[str, Any], bars: list[Bar]) -> dict[str, Any]:
         parameters, profile_override_applied = self._resolve_asm_parameters(spec["parameters"])
-        execution_model = str(parameters.get("execution_model", "next_bar_open"))
-        if execution_model not in {"next_bar_open", "research_same_close"}:
-            raise HTTPException(status_code=400, detail="execution_model must be `next_bar_open` or `research_same_close`.")
+        execution_model = str(parameters.get("execution_model", "mt5_bar_proxy"))
+        if execution_model not in {"next_bar_open", "research_same_close", "mt5_bar_proxy"}:
+            raise HTTPException(status_code=400, detail="execution_model must be `next_bar_open`, `research_same_close`, or `mt5_bar_proxy`.")
         if len(bars) < 10:
             raise HTTPException(status_code=400, detail="ASM engine requires at least 10 bars.")
         dataset_timeframe = bars[0].timeframe if bars else parameters.get("execution_timeframe", spec.get("timeframe", ""))
@@ -794,6 +795,7 @@ class BacktestEngine:
             "breakeven_stop_moves": 0,
             "short_quality_gate_blocks": 0,
             "hybrid_time_decay_triage_exits": 0,
+            "mfe_giveback_exits": 0,
             "hybrid_reverse_exit_blocks": 0,
             "target_exits": 0,
             "time_stop_exits": 0,
@@ -834,7 +836,7 @@ class BacktestEngine:
                 entry_equity=equity,
                 entry_notional=fill * quantity,
                 initial_risk_per_unit=abs(fill - setup.stop_price),
-                stop_initialized_on_index=entry_index - 1 if execution_model == "next_bar_open" else entry_index,
+                stop_initialized_on_index=entry_index if execution_model in {"research_same_close", "mt5_bar_proxy"} else entry_index - 1,
                 entry_features=entry_features,
             )
 
@@ -856,7 +858,7 @@ class BacktestEngine:
                 else:
                     latest_internal_low = confirmed_internal_pivot
 
-            if not position and pending_setup and execution_model == "next_bar_open":
+            if not position and pending_setup and execution_model in {"next_bar_open", "mt5_bar_proxy"}:
                 if index - pending_setup.created_index > int(parameters.get("max_setup_age_bars", 96)):
                     diagnostics["pending_orders_expired"] += 1
                     pending_setup = None
@@ -955,7 +957,7 @@ class BacktestEngine:
                         diagnostics["signals_long"] += 1
                     else:
                         diagnostics["signals_short"] += 1
-                    if execution_model == "next_bar_open":
+                    if execution_model in {"next_bar_open", "mt5_bar_proxy"}:
                         pending_setup = active_setup
                         diagnostics["pending_entry_orders"] += 1
                         active_setup = None
@@ -1037,7 +1039,7 @@ class BacktestEngine:
 
     def _run_ma_cross_atr_stop(self, spec: dict[str, Any], bars: list[Bar]) -> dict[str, Any]:
         parameters = spec["parameters"]
-        execution_model = str(parameters.get("execution_model", "next_bar_open"))
+        execution_model = str(parameters.get("execution_model", "mt5_bar_proxy"))
         if execution_model not in {"next_bar_open", "research_same_close", "mt5_bar_proxy"}:
             raise HTTPException(status_code=400, detail="execution_model must be `next_bar_open`, `research_same_close`, or `mt5_bar_proxy`.")
         closes = [bar.close for bar in bars]
@@ -1081,7 +1083,9 @@ class BacktestEngine:
             "breakeven_stop_moves": 0,
             "short_quality_gate_blocks": 0,
             "time_risk_filter_blocks": 0,
+            "short_time_risk_filter_blocks": 0,
             "hybrid_time_decay_triage_exits": 0,
+            "mfe_giveback_exits": 0,
             "hybrid_reverse_exit_blocks": 0,
             "reverse_confirmation_candidates": 0,
             "reverse_confirmation_exits_allowed": 0,
@@ -1098,6 +1102,9 @@ class BacktestEngine:
             "entry_exposure_gate_blocks": 0,
             "entry_exposure_gate_long_blocks": 0,
             "entry_exposure_gate_short_blocks": 0,
+            "entry_blackbox_veto_blocks": 0,
+            "entry_blackbox_veto_long_blocks": 0,
+            "entry_blackbox_veto_short_blocks": 0,
             "execution_model": execution_model,
             "pending_entry_orders": 0,
             "pending_reverse_orders": 0,
@@ -1154,6 +1161,13 @@ class BacktestEngine:
             entry_features["signal_ts"] = bars[signal_index].ts.isoformat()
             entry_features["fill_ts"] = entry_bar.ts.isoformat()
             entry_notional = fill * quantity
+            if not self._entry_blackbox_veto_allows_entry(
+                parameters=parameters,
+                direction=direction,
+                entry_ts=entry_bar.ts,
+                diagnostics=diagnostics,
+            ):
+                raise ValueError("entry_blackbox_veto_blocked")
             if not self._entry_exposure_gate_allows_entry(
                 parameters=parameters,
                 direction=direction,
@@ -1354,6 +1368,33 @@ class BacktestEngine:
                     diagnostics["time_decay_exits"] += 1
                     position = None
 
+            if position and parameters.get("mfe_giveback_exit_enabled", False):
+                initial_risk = abs(position.entry_price - position.stop_price)
+                if initial_risk:
+                    if position.direction == 1:
+                        unrealized = bar.close - position.entry_price
+                    else:
+                        unrealized = position.entry_price - bar.close
+                    unrealized_r = unrealized / initial_risk
+                    mfe_r = position.max_favorable_excursion / initial_risk
+                    trigger_r = float(parameters.get("mfe_giveback_trigger_r", 1.0))
+                    floor_r = float(parameters.get("mfe_giveback_floor_r", 0.0))
+                    if mfe_r >= trigger_r and unrealized_r <= floor_r:
+                        exit_price = max(bar.close - slippage, 0.0) if position.direction == 1 else bar.close + slippage
+                        trade = self._close_trade(
+                            position=position,
+                            bar=bar,
+                            index=index,
+                            price=exit_price,
+                            reason="mfe_giveback",
+                            commission_pct=commission_pct,
+                            equity_before=equity,
+                        )
+                        trades.append(trade)
+                        equity += trade["net_pnl"]
+                        diagnostics["mfe_giveback_exits"] += 1
+                        position = None
+
             noise_lookback = int(parameters["noise_lookback"])
             cross_count = sum(1 for item in price_cross_fast[max(0, index - noise_lookback + 1) : index + 1] if item)
             cross_count_ok = cross_count <= int(parameters["max_no_cross"])
@@ -1405,6 +1446,13 @@ class BacktestEngine:
                 diagnostics["signals_short"] += 1
             else:
                 short_signal = False
+
+            if short_signal and parameters.get("short_time_risk_filter_enabled", False):
+                blocked_weekdays = {int(item) for item in parameters.get("short_time_risk_block_weekdays", [])}
+                blocked_hours = {int(item) for item in parameters.get("short_time_risk_block_utc_hours", [])}
+                if bar.ts.weekday() in blocked_weekdays or bar.ts.hour in blocked_hours:
+                    diagnostics["short_time_risk_filter_blocks"] += 1
+                    short_signal = False
 
             entry_long_signal = long_signal
             entry_short_signal = short_signal
@@ -1686,6 +1734,29 @@ class BacktestEngine:
             diagnostics["entry_exposure_gate_long_blocks"] += 1
         else:
             diagnostics["entry_exposure_gate_short_blocks"] += 1
+        return False
+
+    @staticmethod
+    def _entry_blackbox_veto_allows_entry(
+        *,
+        parameters: dict[str, Any],
+        direction: int,
+        entry_ts: datetime,
+        diagnostics: dict[str, Any],
+    ) -> bool:
+        if not parameters.get("entry_blackbox_veto_enabled", False):
+            return True
+        blocked_hours = {int(item) for item in parameters.get("entry_blackbox_veto_utc_hours", [])}
+        side = "long" if direction == 1 else "short"
+        side_months = {str(item).strip().lower() for item in parameters.get("entry_blackbox_veto_side_months", [])}
+        blocked = entry_ts.hour in blocked_hours or f"{side}:{entry_ts.month}" in side_months
+        if not blocked:
+            return True
+        diagnostics["entry_blackbox_veto_blocks"] += 1
+        if direction == 1:
+            diagnostics["entry_blackbox_veto_long_blocks"] += 1
+        else:
+            diagnostics["entry_blackbox_veto_short_blocks"] += 1
         return False
 
     @staticmethod
@@ -2298,7 +2369,7 @@ class BacktestEngine:
         parameters = spec["parameters"]
         if not bars:
             raise HTTPException(status_code=400, detail="GHL/DC engine requires bars.")
-        execution_model = str(parameters.get("execution_model", "next_bar_open"))
+        execution_model = str(parameters.get("execution_model", "mt5_bar_proxy"))
         if execution_model not in {"next_bar_open", "research_same_close", "mt5_bar_proxy"}:
             raise HTTPException(status_code=400, detail="execution_model must be `next_bar_open`, `research_same_close`, or `mt5_bar_proxy`.")
 
@@ -2501,7 +2572,13 @@ class BacktestEngine:
 
             if position is None and (long_signal or short_signal):
                 direction = 1 if long_signal else -1
-                reference = bar.close if execution_model == "research_same_close" else bar.open
+                trigger_level = pending_long_breakout if direction == 1 else pending_short_breakdown
+                if execution_model == "research_same_close":
+                    reference = bar.close
+                elif trigger_level is not None:
+                    reference = float(trigger_level)
+                else:
+                    reference = bar.open
                 fill = reference + slippage if direction == 1 else max(reference - slippage, 0.0)
                 channel_opposite = dc_lower[index] if direction == 1 else dc_upper[index]
                 stop = self._ghl_dc_initial_stop(parameters, direction, fill, bar, float(atr_values[index] or 0.0), channel_opposite)
