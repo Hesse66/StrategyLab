@@ -25,6 +25,21 @@ class DatasetDownloadRequest(BaseModel):
     name: str | None = None
 
 
+class DatasetImportRequest(BaseModel):
+    source_path: str
+    symbol: str = Field(default="XAUUSD")
+    timeframe: str = Field(default="30m")
+    name: str | None = None
+
+
+class DatasetImportContentRequest(BaseModel):
+    filename: str
+    content: str
+    symbol: str = Field(default="XAUUSD")
+    timeframe: str = Field(default="30m")
+    name: str | None = None
+
+
 class RegisterBaselineRequest(BaseModel):
     family_id: str
     title: str
@@ -120,6 +135,16 @@ def tuning_edges(version_id: str, include_hybrid: bool = True) -> list[dict]:
     return lab.list_tuning_edges(version_id, include_hybrid=include_hybrid)
 
 
+@app.get("/api/optimization-progress")
+def optimization_progress() -> dict:
+    return lab.optimization_progress()
+
+
+@app.get("/api/optimization-result")
+def optimization_result() -> dict:
+    return lab.optimization_result()
+
+
 @app.post("/api/families/register")
 def register_family(request: RegisterBaselineRequest) -> dict:
     return lab.register_baseline(
@@ -153,6 +178,27 @@ def download_dataset(request: DatasetDownloadRequest) -> dict:
         timeframe=request.timeframe,
         bars=request.bars,
         full_history=request.full_history,
+        name=request.name,
+    )
+
+
+@app.post("/api/datasets/import-mt5")
+def import_mt5_dataset(request: DatasetImportRequest) -> dict:
+    return data_service.import_mt5_csv_dataset(
+        source_path=request.source_path,
+        symbol=request.symbol,
+        timeframe=request.timeframe,
+        name=request.name,
+    )
+
+
+@app.post("/api/datasets/import-mt5-content")
+def import_mt5_dataset_content(request: DatasetImportContentRequest) -> dict:
+    return data_service.import_mt5_csv_content(
+        filename=request.filename,
+        content=request.content,
+        symbol=request.symbol,
+        timeframe=request.timeframe,
         name=request.name,
     )
 

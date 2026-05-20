@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 from fastapi import HTTPException
 
+from app.backtest import BacktestEngine, Position
 from app.config import settings
 from app.backtest import BacktestEngine, Position
 from app.data import Bar, DataService
@@ -1004,6 +1005,7 @@ class MutationLabTests(unittest.TestCase):
             bars,
         )
         self.assertGreaterEqual(result["diagnostics"]["mt5_stop_modify_rejects"], 1)
+>>>>>>> master
 
     def test_ghl_dc_engine_runs(self) -> None:
         bars = build_fixture_bars(1200)
@@ -1029,14 +1031,20 @@ class MutationLabTests(unittest.TestCase):
                 "sizing_mode": "fixed_risk_pct",
                 "risk_pct": 0.005,
                 "max_leverage": 1.0,
+<<<<<<< master
+=======
                 "execution_model": "mt5_bar_proxy",
+>>>>>>> master
             },
             "evaluation": {},
         }
         result = BacktestEngine().run(spec, bars)
         self.assertIn("metrics", result)
         self.assertIn("diagnostics", result)
+<<<<<<< master
+=======
         self.assertEqual(result["diagnostics"]["execution_model"], "mt5_bar_proxy")
+>>>>>>> master
         self.assertGreaterEqual(result["diagnostics"]["bars"], 1200)
         self.assertIn("breakeven_stop_moves", result["diagnostics"])
         self.assertTrue(result["trades"])
@@ -1102,7 +1110,10 @@ class MutationLabTests(unittest.TestCase):
                 "lot_step": 0.01,
                 "max_lot": 100.0,
                 "skip_below_min_lot": True,
+<<<<<<< master
+=======
                 "execution_model": "mt5_bar_proxy",
+>>>>>>> master
             },
             "evaluation": {},
         }
@@ -1110,6 +1121,43 @@ class MutationLabTests(unittest.TestCase):
         self.assertGreater(result["diagnostics"]["mt5_invalid_lot_skips"], 0)
         self.assertEqual(result["diagnostics"]["entries"], 0)
 
+<<<<<<< master
+    def test_ghl_dc_breakeven_stop_moves_when_enabled(self) -> None:
+        bars = build_fixture_bars(1200)
+        for bar in bars:
+            bar.symbol = "XAUUSD"
+            bar.timeframe = "30m"
+        spec = {
+            "engine_id": "ghl_dc_breakout_v1",
+            "parameters": {
+                "gann_high_period": 5,
+                "gann_low_period": 8,
+                "donchian_length": 13,
+                "max_breakout_bars": 10,
+                "allow_long": True,
+                "allow_short": True,
+                "atr_len": 8,
+                "stop_mode": "atr",
+                "stop_mult": 2.0,
+                "breakeven_stop_enabled": True,
+                "breakeven_trigger_mfe_r": 0.1,
+                "breakeven_lock_r": 0.0,
+                "initial_capital": 100000.0,
+                "commission_pct": 0.0,
+                "slippage_ticks": 1,
+                "tick_size": 0.01,
+                "sizing_mode": "fixed_risk_pct",
+                "risk_pct": 0.005,
+                "max_leverage": 1.0,
+            },
+            "evaluation": {},
+        }
+        result = BacktestEngine().run(spec, bars)
+        self.assertGreater(result["diagnostics"]["breakeven_stop_moves"], 0)
+        self.assertTrue(any(trade["reason"] == "breakeven_stop" for trade in result["trades"]))
+
+=======
+>>>>>>> master
     def test_time_decay_confirmation_suppresses_unconfirmed_exit(self) -> None:
         diagnostics = {
             "time_decay_confirmation_candidates": 0,
@@ -1421,6 +1469,10 @@ class MutationLabTests(unittest.TestCase):
         edges = self.lab.list_tuning_edges("ver_btc_intraday_parent")
         self.assertTrue(edges)
         self.assertGreaterEqual(edges[0]["priority"], edges[-1]["priority"])
+        initial_capital_edge = next(edge for edge in edges if edge["lever"] == "initial_capital")
+        self.assertFalse(initial_capital_edge["optimizable"])
+        with self.assertRaises(HTTPException):
+            self.lab.optimize_lever("ver_btc_intraday_parent", dataset["dataset_id"], "initial_capital")
         preview = self.lab.preview_tuned_version(
             "ver_btc_intraday_parent",
             dataset["dataset_id"],
@@ -1521,6 +1573,12 @@ class MutationLabTests(unittest.TestCase):
         self.assertEqual(edges["time_decay_bars"]["search_mode"], "range")
         self.assertEqual(len(self.lab._candidate_values(edges["time_decay_bars"])), 300)
         self.assertGreaterEqual(len(self.lab._candidate_values(edges["time_decay_min_mfe_r"])), 40)
+        self.assertIn("time_decay_triage_confirmation_enabled", edges)
+        self.assertEqual(edges["time_decay_confirm_max_mfe_r"]["search_mode"], "range")
+        self.assertIn("reverse_confirmation_enabled", edges)
+        self.assertEqual(edges["reverse_confirm_min_mfe_r"]["search_mode"], "range")
+        self.assertIn("entry_exposure_gate_enabled", edges)
+        self.assertEqual(edges["entry_exposure_gate_max_pct"]["search_mode"], "range")
         self.assertGreaterEqual(len(self.lab._candidate_values(edges["short_quality_gate_len_bars"])), 70)
         self.assertGreaterEqual(len(self.lab._candidate_values(edges["breakeven_trigger_mfe_r"])), 55)
         self.assertGreaterEqual(len(self.lab._candidate_values(edges["breakeven_lock_r"])), 21)
@@ -1642,11 +1700,16 @@ class MutationLabTests(unittest.TestCase):
         self.assertTrue(result["candidates"])
         self.assertEqual(result["search"]["min"], 1)
         self.assertGreaterEqual(result["search"]["candidate_count"], 300)
-        self.assertIn(result["selection_mode"], {"eligible_only", "no_production_eligible_keep_current"})
+        self.assertIn(
+            result["selection_mode"],
+            {"eligible_only", "research_score_fallback", "no_production_eligible_keep_current"},
+        )
         if result["selection_mode"] == "eligible_only":
             self.assertIn("atr_len", result["best"]["parameter_overrides"])
-        else:
+        elif result["selection_mode"] == "no_production_eligible_keep_current":
             self.assertEqual(result["best"]["parameter_overrides"], {})
+        else:
+            self.assertIn("atr_len", result["best"]["parameter_overrides"])
         self.assertIn("buy_hold_return_pct", result["best"]["metrics"])
         self.assertIn("eligible_count", result)
         self.assertIn("selection_mode", result)
@@ -1840,6 +1903,76 @@ class MutationLabTests(unittest.TestCase):
             self.lab._optimization_score(spec, enough_trade_credible),
         )
 
+    def test_live_execution_gate_rejects_managed_stop_artifact(self) -> None:
+        spec = {
+            "engine_id": "ma_cross_atr_stop_v1",
+            "parameters": {
+                "breakeven_stop_enabled": True,
+                "time_decay_exit_enabled": True,
+                "sizing_mode": "mt5_fixed_risk_lot",
+            },
+            "evaluation": {
+                "production_sizing_modes": ["mt5_fixed_risk_lot"],
+                "benchmark_policy": "outperform_return_or_calmar",
+            },
+        }
+        metrics = {
+            "total_trades": 43747,
+            "profit_factor": 2.9883,
+            "max_equity_drawdown_pct": 2.55,
+            "net_pnl": 1243550863.27,
+            "sharpe": 42.0,
+            "sortino": 98.0,
+            "daily_sharpe": 12.0,
+            "daily_sortino": 33.0,
+            "calmar": 1000.0,
+            "max_initial_risk_pct": 1.0,
+            "max_entry_exposure_pct": 100.0,
+            "avg_entry_exposure_pct": 31.0,
+            "worst_daily_return_pct": -1.58,
+            "outperformance_pct": 100.0,
+            "calmar_delta": 100.0,
+            "stop_exit_net_pnl": 1814299859.62,
+            "stop_exit_profit_factor": 67.0953,
+            "stop_exit_win_rate_pct": 98.1,
+            "stop_exit_pnl_share_pct": 145.89,
+            "reverse_exit_net_pnl": -570743749.76,
+        }
+        self.assertEqual(
+            self.lab._live_execution_gate_failures(spec, metrics),
+            [
+                "requires_mt5_execution_model",
+                "requires_mt5_parity_validation",
+                "managed_stop_execution_dependency",
+            ],
+        )
+        self.assertFalse(self.lab._optimization_eligible(spec, metrics))
+        self.assertEqual(self.lab._verdict(spec, metrics, None), "research_survivor")
+
+    def test_live_execution_gate_allows_managed_stops_after_mt5_parity_validation(self) -> None:
+        spec = {
+            "engine_id": "ma_cross_atr_stop_v1",
+            "parameters": {
+                "breakeven_stop_enabled": True,
+                "time_decay_exit_enabled": False,
+                "sizing_mode": "mt5_fixed_risk_lot",
+                "execution_model": "mt5_bar_proxy",
+            },
+            "evaluation": {
+                "mt5_parity_validated": True,
+                "production_sizing_modes": ["mt5_fixed_risk_lot"],
+            },
+        }
+        metrics = {
+            "net_pnl": 10000.0,
+            "stop_exit_net_pnl": 2500.0,
+            "stop_exit_profit_factor": 2.0,
+            "stop_exit_win_rate_pct": 55.0,
+            "stop_exit_pnl_share_pct": 25.0,
+            "reverse_exit_net_pnl": 7500.0,
+        }
+        self.assertEqual(self.lab._live_execution_gate_failures(spec, metrics), [])
+
     def test_optimize_all_runs_sequential_passes(self) -> None:
         dataset = self.data_service.import_fixture_dataset(
             build_fixture_bars(),
@@ -1852,6 +1985,11 @@ class MutationLabTests(unittest.TestCase):
         self.assertTrue(result["steps"])
         self.assertIn("preview", result)
         self.assertIn("parameter_overrides", result)
+<<<<<<< master
+        self.assertIn("research_fallback_steps", result)
+        self.assertIn("eligible_steps", result)
+        self.assertIn("selection_mode", result["steps"][0])
+=======
         self.assertNotIn("execution_model", {step["lever"] for step in result["steps"]})
         self.assertEqual(result["preview"]["spec"]["parameters"]["sizing_mode"], "mt5_fixed_risk_lot")
         self.assertLessEqual(result["preview"]["spec"]["parameters"]["risk_pct"], 0.01)

@@ -6,6 +6,8 @@ const state = {
   workingParameters: {},
   previewResult: null,
   previewRequestToken: 0,
+  optimizationProgressJobId: null,
+  optimizationProgressHighWater: 0,
 };
 
 const outputBox = document.getElementById("outputBox");
@@ -31,7 +33,10 @@ const MIN_DATASET_BARS = 40000;
 const FULL_HISTORY_SENTINEL_BARS = 1000000;
 const OUTPUT_ARRAY_LIMIT = 20;
 const OUTPUT_MAX_CHARS = 60000;
+<<<<<<< master
+=======
 const OPTIMIZATION_POLL_MS = 2500;
+>>>>>>> master
 let optimizationInFlight = false;
 
 function updateClock() {
@@ -88,16 +93,39 @@ function summarizeForOutput(value, depth = 0, key = "") {
 }
 
 function showOutput(payload) {
+<<<<<<< master
+  const text =
+    typeof payload === "string" ? payload : JSON.stringify(summarizeForOutput(payload), null, 2);
+=======
   const text = typeof payload === "string" ? payload : JSON.stringify(summarizeForOutput(payload), null, 2);
+>>>>>>> master
   outputBox.textContent =
     text.length > OUTPUT_MAX_CHARS
       ? `${text.slice(0, OUTPUT_MAX_CHARS)}\n\n[output truncated to keep the browser responsive]`
       : text;
 }
 
-function setOptimizationStatus(message, tone = "working") {
+function setOptimizationStatus(message, tone = "working", progress = null) {
   optimizationStatus.className = `optimization-status visible ${tone}`.trim();
-  optimizationStatus.innerHTML = `<span class="optimization-spinner" aria-hidden="true"></span><span>${message}</span>`;
+  const progressHtml = progress
+    ? `
+      <div class="optimization-progress">
+        <div class="optimization-progress-line">
+          <span>${progress.label}</span>
+          <span>${progress.percent}%</span>
+        </div>
+        <div class="optimization-progress-track" aria-hidden="true">
+          <span style="width: ${progress.percent}%"></span>
+        </div>
+        ${progress.detail ? `<div class="optimization-progress-detail">${progress.detail}</div>` : ""}
+      </div>
+    `
+    : "";
+  optimizationStatus.innerHTML = `
+    <span class="optimization-spinner" aria-hidden="true"></span>
+    <span class="optimization-message">${message}</span>
+    ${progressHtml}
+  `;
 }
 
 function clearOptimizationStatus(delayMs = 0) {
@@ -109,9 +137,155 @@ function clearOptimizationStatus(delayMs = 0) {
   window.setTimeout(() => clearOptimizationStatus(), delayMs);
 }
 
+function progressPercent(done, total) {
+  if (!total || total <= 0) {
+    return 0;
+  }
+  return Math.max(0, Math.min(100, Math.round((Number(done || 0) / Number(total)) * 100)));
+}
+
+function progressNumber(value, fallback = 0) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : fallback;
+}
+
+function renderOptimizationProgress(progress) {
+  if (!progress || !progress.active) {
+    return;
+  }
+  const isOptimizeAll = progress.mode === "optimize_all";
+  const total = isOptimizeAll
+    ? progressNumber(progress.total_overall)
+    : progressNumber(progress.total_candidates);
+  const done = isOptimizeAll
+    ? progressNumber(progress.overall_index)
+    : progressNumber(progress.candidate_index);
+  const percent = progressPercent(done, total);
+  if (progress.job_id !== state.optimizationProgressJobId) {
+    state.optimizationProgressJobId = progress.job_id || null;
+    state.optimizationProgressHighWater = 0;
+  }
+  if (percent < state.optimizationProgressHighWater) {
+    return;
+  }
+  state.optimizationProgressHighWater = percent;
+  const currentLever = progress.current_lever || progress.lever || "lever";
+  const label = isOptimizeAll
+    ? `Overall ${done}/${total || "?"}`
+    : `${currentLever} ${progress.candidate_index || 0}/${progress.total_candidates || "?"}`;
+  const detailParts = [];
+  if (isOptimizeAll) {
+    detailParts.push(`pass ${progress.current_pass || 1}/${progress.passes || 1}`);
+    detailParts.push(`lever ${progress.current_lever_index || 0}/${progress.total_levers || 0}: ${currentLever}`);
+    detailParts.push(`candidate ${progress.candidate_index || 0}/${progress.total_candidates || "?"}`);
+  }
+  setOptimizationStatus(progress.message || "Optimization running...", "working", {
+    label,
+    percent,
+    detail: detailParts.join(" | "),
+  });
+}
+
+function stopOptimizationProgressPolling() {
+  if (optimizationProgressTimer) {
+    window.clearInterval(optimizationProgressTimer);
+    optimizationProgressTimer = null;
+  }
+}
+
+function startOptimizationProgressPolling() {
+  stopOptimizationProgressPolling();
+  const poll = async () => {
+    try {
+      const progress = await fetchJson("/api/optimization-progress");
+      if (!progress.active) {
+        if (progress.error) {
+          setStatus("familyStatus", progress.error, "error");
+          setOptimizationStatus(`Optimization failed: ${progress.error}`, "error");
+          setOptimizationBusy(false);
+          return;
+        }
+        if (progress.result_available && optimizationInFlight) {
+          const recovered = await recoverOptimizationResult();
+          setOptimizationBusy(false);
+          if (recovered) {
+            return;
+          }
+        }
+        if (optimizationInFlight) {
+          return;
+        }
+        if (progress.message) {
+          setOptimizationStatus(progress.message, "success");
+        }
+        return;
+      }
+      renderOptimizationProgress(progress);
+      if (!progress.active && !optimizationInFlight) {
+        stopOptimizationProgressPolling();
+      }
+    } catch {
+      // Progress polling is informational; the main optimization request owns success/failure.
+    }
+  };
+  poll();
+  optimizationProgressTimer = window.setInterval(poll, 1000);
+}
+
+function applyOptimizeAllResult(result, recovered = false) {
+  const baseParameters = currentVersion().spec_json.parameters;
+  state.workingParameters = { ...baseParameters, ...result.parameter_overrides };
+  state.previewResult = result.preview;
+  renderSummary();
+  renderTuningEdges();
+  renderRuns();
+  showOutput(result);
+  const tunedCount = Object.entries(result.parameter_overrides).filter(
+    ([key, value]) => JSON.stringify(value) !== JSON.stringify(baseParameters[key]),
+  ).length;
+  const selectedCount = Object.keys(result.parameter_overrides).length;
+  const fallbackCount = Number(result.research_fallback_steps || 0);
+  const eligibleCount = Number(result.eligible_steps || 0);
+  const modeNote = fallbackCount
+    ? `${fallbackCount} research fallback steps, ${eligibleCount} production-eligible steps`
+    : `${eligibleCount} production-eligible steps`;
+  const selectedNote = selectedCount === tunedCount ? "" : `; ${selectedCount} selected values matched or filled the base`;
+  const recoveredNote = recovered ? " Recovered completed preview from backend." : "";
+  const rejectedNote = result.final_candidate_rejected
+    ? " Optimized candidate failed production gates, so the starting values were kept."
+    : "";
+  const message = `Optimization complete. Applied ${tunedCount} changed values (${modeNote}${selectedNote}).${rejectedNote}${recoveredNote}`;
+  setStatus("familyStatus", message, "success");
+  setOptimizationStatus(message, "success");
+  clearOptimizationStatus(9000);
+}
+
+async function recoverOptimizationResult() {
+  try {
+    const result = await fetchJson("/api/optimization-result");
+    const version = currentVersion();
+    const datasetId = selectedDatasetId();
+    if (!version || result.base_version_id !== version.version_id || result.dataset_id !== datasetId) {
+      return false;
+    }
+    applyOptimizeAllResult(result, true);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function setOptimizationBusy(isBusy, activeLever = "") {
   optimizationInFlight = isBusy;
+<<<<<<< master
+  if (isBusy) {
+    startOptimizationProgressPolling();
+  } else {
+    stopOptimizationProgressPolling();
+  }
+=======
   optimizeResearchButton.disabled = isBusy;
+>>>>>>> master
   optimizeAllButton.disabled = isBusy;
   proposalsTable.querySelectorAll('[data-action="optimize-lever"]').forEach((button) => {
     button.disabled = isBusy && button.dataset.key !== activeLever;
@@ -154,8 +328,24 @@ async function fetchJson(url, options = {}) {
   return payload;
 }
 
+<<<<<<< master
+async function attachActiveOptimizationIfAny() {
+  try {
+    const progress = await fetchJson("/api/optimization-progress");
+    if (!progress.active) {
+      return false;
+    }
+    setOptimizationBusy(true);
+    renderOptimizationProgress(progress);
+    setStatus("familyStatus", "An optimization is already running. Reattached to progress updates.", "");
+    return true;
+  } catch {
+    return false;
+  }
+=======
 function wait(ms) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
+>>>>>>> master
 }
 
 function selectedFamilyId() {
@@ -560,6 +750,9 @@ function renderTuningEdges() {
         const stepAttr = edge.search_step !== null && edge.search_step !== undefined ? edge.search_step : step;
         control = `<input data-working-key="${edge.lever}" type="number" step="${stepAttr}"${minAttr}${maxAttr} value="${working}" />`;
       }
+      const optimizeControl = edge.optimizable === false
+        ? `<span class="manual-only">Manual</span>`
+        : `<button class="ghost" data-action="optimize-lever" data-key="${edge.lever}">Optimize</button>`;
       return `
         <tr>
           <td>
@@ -572,7 +765,7 @@ function renderTuningEdges() {
           </td>
           <td>
             <div class="table-actions">
-              <button class="ghost" data-action="optimize-lever" data-key="${edge.lever}">Optimize</button>
+              ${optimizeControl}
               <button class="ghost" data-action="reset-edge" data-key="${edge.lever}" data-value="${valueToken(current)}">Reset</button>
             </div>
           </td>
@@ -698,10 +891,14 @@ function renderRuns() {
 }
 
 function escapeHtml(value) {
-  return value
+  return String(value)
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;");
+}
+
+function escapeAttribute(value) {
+  return escapeHtml(value).replaceAll('"', "&quot;");
 }
 
 function renderPrompts() {
@@ -710,14 +907,18 @@ function renderPrompts() {
   );
   promptsList.innerHTML = prompts
     .map(
-      (prompt) => `
+      (prompt, index) => `
         <details>
-          <summary>${prompt.name}</summary>
+          <summary>
+            <span>${escapeHtml(prompt.name)}</span>
+            <button class="icon-button prompt-copy-button" data-action="copy-prompt" data-prompt-index="${index}" title="Copy prompt to clipboard" aria-label="Copy ${escapeAttribute(prompt.name)} to clipboard">Copy</button>
+          </summary>
           <pre>${escapeHtml(prompt.content)}</pre>
         </details>
       `,
     )
     .join("");
+  promptsList._visiblePrompts = prompts;
 }
 
 function promptSortKey(name) {
@@ -883,6 +1084,65 @@ async function downloadDataset() {
           : " Full history download completed."
         : "";
     setStatus("downloadStatus", `Dataset ready: ${result.name} (${result.rows_count} rows).${suffix}`, "success");
+    await refreshAll();
+    datasetSelect.value = result.dataset_id;
+    state.previewResult = null;
+    renderSummary();
+    renderRuns();
+    schedulePreview(true);
+  } catch (error) {
+    setStatus("downloadStatus", error.message, "error");
+    showOutput({ error: error.message });
+  }
+}
+
+async function copyTextToClipboard(text) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.left = "-9999px";
+  document.body.appendChild(textarea);
+  textarea.select();
+  document.execCommand("copy");
+  textarea.remove();
+}
+
+async function importMt5Dataset() {
+  setStatus("downloadStatus", "Importing MT5 CSV...", "");
+  const fileInput = document.getElementById("mt5CsvFileInput");
+  const selectedFile = fileInput.files?.[0] || null;
+  const common = {
+    symbol: document.getElementById("mt5SymbolInput").value.trim().toUpperCase(),
+    timeframe: document.getElementById("mt5TimeframeSelect").value,
+    name: document.getElementById("mt5DatasetNameInput").value.trim() || null,
+  };
+  try {
+    let endpoint = "/api/datasets/import-mt5";
+    let payload = {
+      ...common,
+      source_path: document.getElementById("mt5CsvPathInput").value.trim(),
+    };
+    if (selectedFile) {
+      endpoint = "/api/datasets/import-mt5-content";
+      setStatus("downloadStatus", `Reading ${selectedFile.name}...`, "");
+      payload = {
+        ...common,
+        filename: selectedFile.name,
+        content: await selectedFile.text(),
+      };
+    }
+    const result = await fetchJson(endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    showOutput(result);
+    setStatus("downloadStatus", `Dataset ready: ${result.name} (${result.rows_count} rows).`, "success");
     await refreshAll();
     datasetSelect.value = result.dataset_id;
     state.previewResult = null;
@@ -1090,6 +1350,7 @@ async function optimizeAll(optimizationMode = "production") {
   const startingParameters = { ...currentVersion().spec_json.parameters, ...collectOverrides() };
   const modeLabel = optimizationMode === "research" ? "baseline research" : "production";
   setOptimizationStatus(`Starting background two-pass ${modeLabel} optimization...`);
+>>>>>>> master
   try {
     const job = await fetchJson(`/api/versions/${version.version_id}/optimize-all/jobs`, {
       method: "POST",
@@ -1105,11 +1366,20 @@ async function optimizeAll(optimizationMode = "production") {
     const result = await waitForOptimizationJob(job.job_id);
     applyOptimizeAllResult(result, false, startingParameters);
   } catch (error) {
+    if (error.status === 409) {
+      setStatus("familyStatus", "An optimization is already running. Reattached to progress updates.", "");
+      setOptimizationStatus(error.message, "working");
+      await attachActiveOptimizationIfAny();
+      reattachedExistingJob = true;
+      return;
+    }
     setStatus("familyStatus", error.message, "error");
     showOutput({ error: error.message });
     setOptimizationStatus(`Optimization failed: ${error.message}`, "error");
   } finally {
-    setOptimizationBusy(false);
+    if (!reattachedExistingJob) {
+      setOptimizationBusy(false);
+    }
   }
 }
 
@@ -1366,6 +1636,31 @@ async function handleTableClick(event) {
   }
 }
 
+async function handlePromptClick(event) {
+  const button = event.target.closest("[data-action='copy-prompt']");
+  if (!button) {
+    return;
+  }
+  event.preventDefault();
+  event.stopPropagation();
+  const prompt = promptsList._visiblePrompts?.[Number(button.dataset.promptIndex)];
+  if (!prompt) {
+    setStatus("familyStatus", "Prompt not found.", "error");
+    return;
+  }
+  const originalLabel = button.textContent;
+  try {
+    await copyTextToClipboard(prompt.content);
+    button.textContent = "Copied";
+    setStatus("familyStatus", `${prompt.name} copied to clipboard.`, "success");
+    window.setTimeout(() => {
+      button.textContent = originalLabel;
+    }, 1400);
+  } catch (error) {
+    setStatus("familyStatus", `Clipboard copy failed: ${error.message}`, "error");
+  }
+}
+
 function handleWorkingInput(event) {
   const control = event.target.closest("[data-working-key]");
   if (!control) {
@@ -1387,6 +1682,7 @@ function handleWorkingInput(event) {
 
 document.getElementById("refreshButton").addEventListener("click", refreshAll);
 document.getElementById("downloadButton").addEventListener("click", downloadDataset);
+document.getElementById("importMt5Button").addEventListener("click", importMt5Dataset);
 document.getElementById("runParentButton").addEventListener("click", runParent);
 document.getElementById("productionDefaultsButton").addEventListener("click", applyProductionDefaults);
 document.getElementById("robustnessButton").addEventListener("click", runRobustnessGate);
@@ -1405,6 +1701,7 @@ proposalsTable.addEventListener("input", handleWorkingInput);
 proposalsTable.addEventListener("change", handleWorkingInput);
 runsTable.addEventListener("click", handleTableClick);
 versionsTable.addEventListener("click", handleTableClick);
+promptsList.addEventListener("click", handlePromptClick);
 
 syncFullHistoryBars();
 
@@ -1412,3 +1709,4 @@ refreshAll().catch((error) => {
   showOutput({ error: error.message });
   setStatus("familyStatus", error.message, "error");
 });
+attachActiveOptimizationIfAny();
