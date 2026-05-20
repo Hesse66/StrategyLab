@@ -1005,7 +1005,6 @@ class MutationLabTests(unittest.TestCase):
             bars,
         )
         self.assertGreaterEqual(result["diagnostics"]["mt5_stop_modify_rejects"], 1)
->>>>>>> master
 
     def test_ghl_dc_engine_runs(self) -> None:
         bars = build_fixture_bars(1200)
@@ -1031,20 +1030,14 @@ class MutationLabTests(unittest.TestCase):
                 "sizing_mode": "fixed_risk_pct",
                 "risk_pct": 0.005,
                 "max_leverage": 1.0,
-<<<<<<< master
-=======
                 "execution_model": "mt5_bar_proxy",
->>>>>>> master
             },
             "evaluation": {},
         }
         result = BacktestEngine().run(spec, bars)
         self.assertIn("metrics", result)
         self.assertIn("diagnostics", result)
-<<<<<<< master
-=======
         self.assertEqual(result["diagnostics"]["execution_model"], "mt5_bar_proxy")
->>>>>>> master
         self.assertGreaterEqual(result["diagnostics"]["bars"], 1200)
         self.assertIn("breakeven_stop_moves", result["diagnostics"])
         self.assertTrue(result["trades"])
@@ -1110,10 +1103,7 @@ class MutationLabTests(unittest.TestCase):
                 "lot_step": 0.01,
                 "max_lot": 100.0,
                 "skip_below_min_lot": True,
-<<<<<<< master
-=======
                 "execution_model": "mt5_bar_proxy",
->>>>>>> master
             },
             "evaluation": {},
         }
@@ -1121,43 +1111,6 @@ class MutationLabTests(unittest.TestCase):
         self.assertGreater(result["diagnostics"]["mt5_invalid_lot_skips"], 0)
         self.assertEqual(result["diagnostics"]["entries"], 0)
 
-<<<<<<< master
-    def test_ghl_dc_breakeven_stop_moves_when_enabled(self) -> None:
-        bars = build_fixture_bars(1200)
-        for bar in bars:
-            bar.symbol = "XAUUSD"
-            bar.timeframe = "30m"
-        spec = {
-            "engine_id": "ghl_dc_breakout_v1",
-            "parameters": {
-                "gann_high_period": 5,
-                "gann_low_period": 8,
-                "donchian_length": 13,
-                "max_breakout_bars": 10,
-                "allow_long": True,
-                "allow_short": True,
-                "atr_len": 8,
-                "stop_mode": "atr",
-                "stop_mult": 2.0,
-                "breakeven_stop_enabled": True,
-                "breakeven_trigger_mfe_r": 0.1,
-                "breakeven_lock_r": 0.0,
-                "initial_capital": 100000.0,
-                "commission_pct": 0.0,
-                "slippage_ticks": 1,
-                "tick_size": 0.01,
-                "sizing_mode": "fixed_risk_pct",
-                "risk_pct": 0.005,
-                "max_leverage": 1.0,
-            },
-            "evaluation": {},
-        }
-        result = BacktestEngine().run(spec, bars)
-        self.assertGreater(result["diagnostics"]["breakeven_stop_moves"], 0)
-        self.assertTrue(any(trade["reason"] == "breakeven_stop" for trade in result["trades"]))
-
-=======
->>>>>>> master
     def test_time_decay_confirmation_suppresses_unconfirmed_exit(self) -> None:
         diagnostics = {
             "time_decay_confirmation_candidates": 0,
@@ -1469,8 +1422,11 @@ class MutationLabTests(unittest.TestCase):
         edges = self.lab.list_tuning_edges("ver_btc_intraday_parent")
         self.assertTrue(edges)
         self.assertGreaterEqual(edges[0]["priority"], edges[-1]["priority"])
-        initial_capital_edge = next(edge for edge in edges if edge["lever"] == "initial_capital")
-        self.assertFalse(initial_capital_edge["optimizable"])
+        edge_levers = {edge["lever"] for edge in edges}
+        self.assertIn("stop_mult", edge_levers)
+        self.assertNotIn("execution_model", edge_levers)
+        self.assertNotIn("sizing_mode", edge_levers)
+        self.assertNotIn("notional_pct", edge_levers)
         with self.assertRaises(HTTPException):
             self.lab.optimize_lever("ver_btc_intraday_parent", dataset["dataset_id"], "initial_capital")
         preview = self.lab.preview_tuned_version(
@@ -1985,11 +1941,6 @@ class MutationLabTests(unittest.TestCase):
         self.assertTrue(result["steps"])
         self.assertIn("preview", result)
         self.assertIn("parameter_overrides", result)
-<<<<<<< master
-        self.assertIn("research_fallback_steps", result)
-        self.assertIn("eligible_steps", result)
-        self.assertIn("selection_mode", result["steps"][0])
-=======
         self.assertNotIn("execution_model", {step["lever"] for step in result["steps"]})
         self.assertEqual(result["preview"]["spec"]["parameters"]["sizing_mode"], "mt5_fixed_risk_lot")
         self.assertLessEqual(result["preview"]["spec"]["parameters"]["risk_pct"], 0.01)

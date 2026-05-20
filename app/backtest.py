@@ -32,8 +32,6 @@ class Position:
     stop_moved_to_breakeven: bool = False
     time_decay_confirmation_suppressed: int = 0
     reverse_confirmation_suppressed: int = 0
-<<<<<<< master
-=======
 
 
 @dataclass(slots=True)
@@ -78,7 +76,6 @@ class AsmSetup:
     context_bias_index: int | None = None
     context_bias_ts: datetime | None = None
     context_bias_age: int | None = None
->>>>>>> master
 
 
 def sma(values: list[float], length: int) -> list[float | None]:
@@ -386,26 +383,13 @@ def mark_to_market_equity(realized_equity: float, position: Position | None, clo
 def benchmark_warmup_index(parameters: dict[str, Any], bar_count: int) -> int:
     if bar_count <= 1:
         return 0
-<<<<<<< master
-    if "fast_len" in parameters:
-        warmup = max(
-            int(parameters["fast_len"]),
-            int(parameters["slow_len"]),
-            int(parameters["atr_len"]),
-            int(parameters["noise_lookback"]) + 1,
-        )
-    else:
-=======
     if "gann_high_period" in parameters or "donchian_length" in parameters:
->>>>>>> master
         warmup = max(
             int(parameters.get("gann_high_period", 13)),
             int(parameters.get("gann_low_period", 21)),
             int(parameters.get("donchian_length", 55)),
             int(parameters.get("atr_len", 14)),
         )
-<<<<<<< master
-=======
         return min(warmup, bar_count - 1)
     if "pivot_len" in parameters:
         warmup = max(
@@ -422,7 +406,6 @@ def benchmark_warmup_index(parameters: dict[str, Any], bar_count: int) -> int:
         int(parameters["atr_len"]),
         int(parameters["noise_lookback"]) + 1,
     )
->>>>>>> master
     return min(warmup, bar_count - 1)
 
 
@@ -433,9 +416,6 @@ class BacktestEngine:
             return self._run_ma_cross_atr_stop(spec, bars)
         if engine_id == "ghl_dc_breakout_v1":
             return self._run_ghl_dc_breakout(spec, bars)
-<<<<<<< master
-        raise HTTPException(status_code=400, detail=f"Unsupported engine: {engine_id}")
-=======
         if engine_id == "bos_demand_pullback_v1":
             return self._run_bos_demand_pullback(spec, bars)
         if engine_id == "asm_fib_liquidity_fvg_v1":
@@ -1056,7 +1036,6 @@ class BacktestEngine:
             "diagnostics": diagnostics,
             "resolved_parameters": parameters,
         }
->>>>>>> master
 
     def _run_ma_cross_atr_stop(self, spec: dict[str, Any], bars: list[Bar]) -> dict[str, Any]:
         parameters = spec["parameters"]
@@ -1093,12 +1072,7 @@ class BacktestEngine:
         tick_size = float(parameters.get("tick_size", 0.01))
         slippage = int(parameters.get("slippage_ticks", 0)) * tick_size
         commission_pct = float(parameters.get("commission_pct", 0.0)) / 100
-<<<<<<< master
-        mt5_bar_proxy = parameters.get("execution_model", "research_bar_close") == "mt5_bar_proxy"
-        pending_entry: dict[str, Any] | None = None
-=======
         mt5_bar_proxy = execution_model == "mt5_bar_proxy"
->>>>>>> master
         diagnostics = {
             "bars": len(bars),
             "signals_long": 0,
@@ -1123,10 +1097,6 @@ class BacktestEngine:
             "time_decay_confirmation_exits": 0,
             "time_decay_confirmation_suppressed": 0,
             "time_decay_confirmation_suppressed_net_pnl": 0.0,
-<<<<<<< master
-            "mt5_stop_modify_rejects": 0,
-=======
->>>>>>> master
             "time_exits": 0,
             "mt5_stop_modify_rejects": 0,
             "entry_exposure_gate_blocks": 0,
@@ -1226,14 +1196,8 @@ class BacktestEngine:
                 append_equity_point(bar)
                 continue
 
-<<<<<<< master
-            if mt5_bar_proxy and pending_entry:
-                direction = int(pending_entry["direction"])
-                if position and position.direction != direction:
-=======
             if pending_order and execution_model in {"next_bar_open", "mt5_bar_proxy"}:
                 if pending_order.get("close_existing") and position:
->>>>>>> master
                     exit_price = max(bar.open - slippage, 0.0) if position.direction == 1 else bar.open + slippage
                     trade = self._close_trade(
                         position=position,
@@ -1248,52 +1212,6 @@ class BacktestEngine:
                     equity += trade["net_pnl"]
                     diagnostics["reverse_exits"] += 1
                     position = None
-<<<<<<< master
-                if position is None:
-                    fill = bar.open + slippage if direction == 1 else max(bar.open - slippage, 0.0)
-                    stop = (
-                        fill - (float(pending_entry["atr_value"]) * float(parameters["stop_mult"]))
-                        if direction == 1
-                        else fill + (float(pending_entry["atr_value"]) * float(parameters["stop_mult"]))
-                    )
-                    quantity = self._position_quantity(parameters, equity, fill, stop)
-                    entry_notional = fill * quantity
-                    if self._entry_exposure_gate_allows_entry(
-                        parameters=parameters,
-                        direction=direction,
-                        equity=equity,
-                        entry_notional=entry_notional,
-                        diagnostics=diagnostics,
-                    ):
-                        signal_index = int(pending_entry["signal_index"])
-                        entry_features = self._entry_features(
-                            bars=bars,
-                            index=signal_index,
-                            direction=direction,
-                            fast=fast,
-                            slow=slow,
-                            atr_values=atr_values,
-                            cross_count=int(pending_entry["cross_count"]),
-                            stop_price=stop,
-                            entry_price=fill,
-                        )
-                        position = Position(
-                            direction=direction,
-                            entry_index=index,
-                            entry_ts=bar.ts,
-                            entry_price=fill,
-                            stop_price=stop,
-                            quantity=quantity,
-                            entry_commission=fill * quantity * commission_pct,
-                            entry_equity=equity,
-                            entry_notional=entry_notional,
-                            initial_risk_per_unit=abs(fill - stop),
-                            stop_initialized_on_index=index,
-                            entry_features=entry_features,
-                        )
-                        diagnostics["entries"] += 1
-                pending_entry = None
-=======
                 if position is None and pending_order.get("direction"):
                     try:
                         position = open_position(
@@ -1309,7 +1227,6 @@ class BacktestEngine:
                     except ValueError:
                         pass
                 pending_order = None
->>>>>>> master
 
             if position:
                 self._update_excursion(position, bar)
@@ -1399,10 +1316,7 @@ class BacktestEngine:
                             mfe_r=mfe_r,
                             diagnostics=diagnostics,
                         ):
-<<<<<<< master
-=======
                             append_equity_point(bar)
->>>>>>> master
                             continue
                         exit_price = max(bar.close - slippage, 0.0) if position.direction == 1 else bar.close + slippage
                         trade = self._close_trade(
@@ -1437,10 +1351,7 @@ class BacktestEngine:
                         mfe_r=mfe_r,
                         diagnostics=diagnostics,
                     ):
-<<<<<<< master
-=======
                         append_equity_point(bar)
->>>>>>> master
                         continue
                     exit_price = max(bar.close - slippage, 0.0) if position.direction == 1 else bar.close + slippage
                     trade = self._close_trade(
@@ -1582,9 +1493,6 @@ class BacktestEngine:
                     entry_long_signal = False
                     entry_short_signal = False
 
-<<<<<<< master
-            if not mt5_bar_proxy and position and position.direction == 1 and short_signal and not reverse_exit_blocked:
-=======
             if execution_model in {"next_bar_open", "mt5_bar_proxy"} and position and not reverse_exit_blocked:
                 if position.direction == 1 and short_signal:
                     pending_order = {
@@ -1610,7 +1518,6 @@ class BacktestEngine:
                     entry_short_signal = False
 
             if execution_model == "research_same_close" and position and position.direction == 1 and short_signal and not reverse_exit_blocked:
->>>>>>> master
                 trade = self._close_trade(
                     position=position,
                     bar=bar,
@@ -1624,11 +1531,7 @@ class BacktestEngine:
                 equity += trade["net_pnl"]
                 diagnostics["reverse_exits"] += 1
                 position = None
-<<<<<<< master
-            elif not mt5_bar_proxy and position and position.direction == -1 and long_signal and not reverse_exit_blocked:
-=======
             elif execution_model == "research_same_close" and position and position.direction == -1 and long_signal and not reverse_exit_blocked:
->>>>>>> master
                 trade = self._close_trade(
                     position=position,
                     bar=bar,
@@ -1645,106 +1548,25 @@ class BacktestEngine:
 
             if mt5_bar_proxy:
                 if entry_long_signal:
-                    pending_entry = {
+                    pending_order = {
                         "direction": 1,
+                        "close_existing": False,
                         "atr_value": float(atr_values[index]),
                         "signal_index": index,
                         "cross_count": cross_count,
                     }
+                    diagnostics["pending_entry_orders"] += 1
                 elif entry_short_signal:
-                    pending_entry = {
+                    pending_order = {
                         "direction": -1,
+                        "close_existing": False,
                         "atr_value": float(atr_values[index]),
                         "signal_index": index,
                         "cross_count": cross_count,
                     }
+                    diagnostics["pending_entry_orders"] += 1
             elif position is None:
                 if entry_long_signal:
-<<<<<<< master
-                    fill = entry_at_close + slippage
-                    stop = fill - (float(atr_values[index]) * float(parameters["stop_mult"]))
-                    quantity = self._position_quantity(parameters, equity, fill, stop)
-                    entry_notional = fill * quantity
-                    if not self._entry_exposure_gate_allows_entry(
-                        parameters=parameters,
-                        direction=1,
-                        equity=equity,
-                        entry_notional=entry_notional,
-                        diagnostics=diagnostics,
-                    ):
-                        equity_curve.append({"ts": bar.ts.isoformat(), "equity": round(equity, 2)})
-                        continue
-                    commission = fill * quantity * commission_pct
-                    initial_risk_per_unit = abs(fill - stop)
-                    entry_features = self._entry_features(
-                        bars=bars,
-                        index=index,
-                        direction=1,
-                        fast=fast,
-                        slow=slow,
-                        atr_values=atr_values,
-                        cross_count=cross_count,
-                        stop_price=stop,
-                        entry_price=fill,
-                    )
-                    position = Position(
-                        direction=1,
-                        entry_index=index,
-                        entry_ts=bar.ts,
-                        entry_price=fill,
-                        stop_price=stop,
-                        quantity=quantity,
-                        entry_commission=commission,
-                        entry_equity=equity,
-                        entry_notional=entry_notional,
-                        initial_risk_per_unit=initial_risk_per_unit,
-                        stop_initialized_on_index=index,
-                        entry_features=entry_features,
-                    )
-                    diagnostics["entries"] += 1
-                elif entry_short_signal:
-                    fill = max(entry_at_close - slippage, 0.0)
-                    stop = fill + (float(atr_values[index]) * float(parameters["stop_mult"]))
-                    quantity = self._position_quantity(parameters, equity, fill, stop)
-                    entry_notional = fill * quantity
-                    if not self._entry_exposure_gate_allows_entry(
-                        parameters=parameters,
-                        direction=-1,
-                        equity=equity,
-                        entry_notional=entry_notional,
-                        diagnostics=diagnostics,
-                    ):
-                        equity_curve.append({"ts": bar.ts.isoformat(), "equity": round(equity, 2)})
-                        continue
-                    commission = fill * quantity * commission_pct
-                    initial_risk_per_unit = abs(fill - stop)
-                    entry_features = self._entry_features(
-                        bars=bars,
-                        index=index,
-                        direction=-1,
-                        fast=fast,
-                        slow=slow,
-                        atr_values=atr_values,
-                        cross_count=cross_count,
-                        stop_price=stop,
-                        entry_price=fill,
-                    )
-                    position = Position(
-                        direction=-1,
-                        entry_index=index,
-                        entry_ts=bar.ts,
-                        entry_price=fill,
-                        stop_price=stop,
-                        quantity=quantity,
-                        entry_commission=commission,
-                        entry_equity=equity,
-                        entry_notional=entry_notional,
-                        initial_risk_per_unit=initial_risk_per_unit,
-                        stop_initialized_on_index=index,
-                        entry_features=entry_features,
-                    )
-                    diagnostics["entries"] += 1
-=======
                     if execution_model in {"next_bar_open", "mt5_bar_proxy"}:
                         pending_order = {
                             "direction": 1,
@@ -1776,7 +1598,6 @@ class BacktestEngine:
                             diagnostics["entries"] += 1
                         except ValueError:
                             pass
->>>>>>> master
 
             append_equity_point(bar)
 
@@ -1904,14 +1725,7 @@ class BacktestEngine:
             return True
         bars_held = index - position.entry_index
         mfe_r = position.max_favorable_excursion / initial_risk
-<<<<<<< master
-        if position.direction == 1:
-            unrealized = current_close - position.entry_price
-        else:
-            unrealized = position.entry_price - current_close
-=======
         unrealized = current_close - position.entry_price if position.direction == 1 else position.entry_price - current_close
->>>>>>> master
         unrealized_r = unrealized / initial_risk
 
         max_bars = int(parameters.get("reverse_confirm_max_bars", 2))
@@ -2594,7 +2408,6 @@ class BacktestEngine:
         if execution_model not in {"next_bar_open", "research_same_close", "mt5_bar_proxy"}:
             raise HTTPException(status_code=400, detail="execution_model must be `next_bar_open`, `research_same_close`, or `mt5_bar_proxy`.")
 
->>>>>>> master
         highs = [bar.high for bar in bars]
         lows = [bar.low for bar in bars]
         closes = [bar.close for bar in bars]
@@ -2607,24 +2420,6 @@ class BacktestEngine:
         sma_low = sma(lows, gann_low_period)
         dc_upper = rolling_high(highs, donchian_length)
         dc_lower = rolling_low(lows, donchian_length)
-<<<<<<< master
-
-        hilo_values: list[float | None] = []
-        state_values: list[int] = []
-        state = 0
-        for index, bar in enumerate(bars):
-            if index > 0 and sma_high[index - 1] is not None and bar.close > float(sma_high[index - 1]):
-                state = 1
-            elif index > 0 and sma_low[index - 1] is not None and bar.close < float(sma_low[index - 1]):
-                state = -1
-            state_values.append(state)
-            if state == -1:
-                hilo_values.append(sma_high[index])
-            elif state == 1:
-                hilo_values.append(sma_low[index])
-            else:
-                hilo_values.append(None)
-=======
         mt5_bar_proxy = execution_model == "mt5_bar_proxy"
 
         hilo_values: list[float | None] = []
@@ -2637,7 +2432,6 @@ class BacktestEngine:
                 gann_state = -1
             state_values.append(gann_state)
             hilo_values.append(sma_low[index] if gann_state == 1 else sma_high[index] if gann_state == -1 else None)
->>>>>>> master
 
         position: Position | None = None
         trades: list[dict[str, Any]] = []
@@ -2646,11 +2440,6 @@ class BacktestEngine:
         tick_size = float(parameters.get("tick_size", 0.01))
         slippage = int(parameters.get("slippage_ticks", 0)) * tick_size
         commission_pct = float(parameters.get("commission_pct", 0.0)) / 100
-<<<<<<< master
-        mt5_bar_proxy = parameters.get("execution_model", "research_bar_close") == "mt5_bar_proxy"
-        pending_entry: dict[str, Any] | None = None
-=======
->>>>>>> master
         diagnostics = {
             "bars": len(bars),
             "gann_cross_up": 0,
@@ -2667,16 +2456,6 @@ class BacktestEngine:
             "time_risk_filter_long_blocks": 0,
             "time_risk_filter_short_blocks": 0,
             "mt5_invalid_lot_skips": 0,
-<<<<<<< master
-            "expired_setups": 0,
-            "time_exits": 0,
-        }
-        pending_long = False
-        pending_long_bar = 0
-        pending_long_breakout: float | None = None
-        pending_short = False
-        pending_short_bar = 0
-=======
             "mt5_stop_modify_rejects": 0,
             "expired_setups": 0,
             "time_exits": 0,
@@ -2687,16 +2466,10 @@ class BacktestEngine:
         pending_long_bar = 0
         pending_short_bar = 0
         pending_long_breakout: float | None = None
->>>>>>> master
         pending_short_breakdown: float | None = None
         last_gann_flip_index: int | None = None
         warmup = benchmark_warmup_index(parameters, len(bars))
 
-<<<<<<< master
-        for index, bar in enumerate(bars):
-            if index < warmup or hilo_values[index] is None or atr_values[index] is None:
-                equity_curve.append({"ts": bar.ts.isoformat(), "equity": round(equity, 2)})
-=======
         def append_equity_point(current_bar: Bar) -> None:
             mtm = mark_to_market_equity(equity, position, current_bar.close, commission_pct)
             equity_curve.append(
@@ -2711,45 +2484,26 @@ class BacktestEngine:
         for index, bar in enumerate(bars):
             if index < warmup or hilo_values[index] is None or atr_values[index] is None:
                 append_equity_point(bar)
->>>>>>> master
                 continue
 
             if position:
                 self._update_excursion(position, bar)
 
-<<<<<<< master
-            if position and index > position.stop_initialized_on_index:
-=======
             stop_can_trigger = position is not None and (index >= position.stop_initialized_on_index if mt5_bar_proxy else index > position.stop_initialized_on_index)
             if position and stop_can_trigger:
->>>>>>> master
                 if position.direction == 1 and bar.low <= position.stop_price:
                     reason = "breakeven_stop" if position.stop_moved_to_breakeven else "stop"
                     trade = self._close_trade(position, bar, index, max(position.stop_price - slippage, 0.0), reason, commission_pct, equity)
                     trades.append(trade)
                     equity += trade["net_pnl"]
-<<<<<<< master
-                    if reason == "breakeven_stop":
-                        diagnostics["breakeven_stop_exits"] += 1
-                    else:
-                        diagnostics["stop_exits"] += 1
-=======
                     diagnostics["breakeven_stop_exits" if reason == "breakeven_stop" else "stop_exits"] += 1
->>>>>>> master
                     position = None
                 elif position.direction == -1 and bar.high >= position.stop_price:
                     reason = "breakeven_stop" if position.stop_moved_to_breakeven else "stop"
                     trade = self._close_trade(position, bar, index, position.stop_price + slippage, reason, commission_pct, equity)
                     trades.append(trade)
                     equity += trade["net_pnl"]
-<<<<<<< master
-                    if reason == "breakeven_stop":
-                        diagnostics["breakeven_stop_exits"] += 1
-                    else:
-                        diagnostics["stop_exits"] += 1
-=======
                     diagnostics["breakeven_stop_exits" if reason == "breakeven_stop" else "stop_exits"] += 1
->>>>>>> master
                     position = None
 
             if position and parameters.get("breakeven_stop_enabled", False):
@@ -2757,39 +2511,6 @@ class BacktestEngine:
                 if initial_risk > 0:
                     trigger_r = float(parameters.get("breakeven_trigger_mfe_r", 1.0))
                     lock_r = float(parameters.get("breakeven_lock_r", 0.0))
-<<<<<<< master
-                    if position.direction == 1:
-                        favorable_r = (bar.high - position.entry_price) / initial_risk
-                        if favorable_r >= trigger_r:
-                            new_stop = position.entry_price + (initial_risk * lock_r)
-                            if new_stop > position.stop_price:
-                                position.stop_price = new_stop
-                                position.stop_moved_to_breakeven = True
-                                diagnostics["breakeven_stop_moves"] += 1
-                    else:
-                        favorable_r = (position.entry_price - bar.low) / initial_risk
-                        if favorable_r >= trigger_r:
-                            new_stop = position.entry_price - (initial_risk * lock_r)
-                            if new_stop < position.stop_price:
-                                position.stop_price = new_stop
-                                position.stop_moved_to_breakeven = True
-                                diagnostics["breakeven_stop_moves"] += 1
-
-            previous_hilo = hilo_values[index - 1]
-            current_hilo = hilo_values[index]
-            gann_cross_up = (
-                previous_hilo is not None
-                and current_hilo is not None
-                and closes[index - 1] <= float(previous_hilo)
-                and bar.close > float(current_hilo)
-            )
-            gann_cross_down = (
-                previous_hilo is not None
-                and current_hilo is not None
-                and closes[index - 1] >= float(previous_hilo)
-                and bar.close < float(current_hilo)
-            )
-=======
                     if position.direction == 1 and ((bar.high - position.entry_price) / initial_risk) >= trigger_r:
                         new_stop = position.entry_price + (initial_risk * lock_r)
                         if mt5_bar_proxy and new_stop >= bar.close:
@@ -2811,7 +2532,6 @@ class BacktestEngine:
             current_hilo = hilo_values[index]
             gann_cross_up = previous_hilo is not None and current_hilo is not None and closes[index - 1] <= float(previous_hilo) and bar.close > float(current_hilo)
             gann_cross_down = previous_hilo is not None and current_hilo is not None and closes[index - 1] >= float(previous_hilo) and bar.close < float(current_hilo)
->>>>>>> master
             if gann_cross_up:
                 diagnostics["gann_cross_up"] += 1
                 last_gann_flip_index = index
@@ -2831,26 +2551,8 @@ class BacktestEngine:
 
             long_age = index - pending_long_bar if pending_long else 0
             short_age = index - pending_short_bar if pending_short else 0
-<<<<<<< master
-            long_signal = (
-                pending_long
-                and long_age <= max_breakout_bars
-                and pending_long_breakout is not None
-                and bar.high > pending_long_breakout
-                and highs[index - 1] <= pending_long_breakout
-            )
-            short_signal = (
-                pending_short
-                and short_age <= max_breakout_bars
-                and pending_short_breakdown is not None
-                and bar.low < pending_short_breakdown
-                and lows[index - 1] >= pending_short_breakdown
-            )
-
-=======
             long_signal = bool(pending_long and long_age <= max_breakout_bars and pending_long_breakout is not None and bar.high > pending_long_breakout and highs[index - 1] <= pending_long_breakout)
             short_signal = bool(pending_short and short_age <= max_breakout_bars and pending_short_breakdown is not None and bar.low < pending_short_breakdown and lows[index - 1] >= pending_short_breakdown)
->>>>>>> master
             if pending_long and long_age > max_breakout_bars:
                 pending_long = False
                 pending_long_breakout = None
@@ -2860,15 +2562,8 @@ class BacktestEngine:
                 pending_short_breakdown = None
                 diagnostics["expired_setups"] += 1
 
-<<<<<<< master
-            close_long = position is not None and position.direction == 1 and bar.close < float(current_hilo) and state_values[index] == -1
-            close_short = position is not None and position.direction == -1 and bar.close > float(current_hilo) and state_values[index] == 1
-            if close_long or close_short:
-                exit_price = max(bar.close - slippage, 0.0) if position and position.direction == 1 else bar.close + slippage
-=======
             if position and ((position.direction == 1 and bar.close < float(current_hilo) and state_values[index] == -1) or (position.direction == -1 and bar.close > float(current_hilo) and state_values[index] == 1)):
                 exit_price = max(bar.close - slippage, 0.0) if position.direction == 1 else bar.close + slippage
->>>>>>> master
                 trade = self._close_trade(position, bar, index, exit_price, "gann_state_exit", commission_pct, equity)
                 trades.append(trade)
                 equity += trade["net_pnl"]
@@ -2887,17 +2582,6 @@ class BacktestEngine:
             if parameters.get("time_risk_filter_enabled", False):
                 blocked_hours = {int(hour) for hour in parameters.get("time_risk_block_utc_hours", [])}
                 blocked_weekdays = {int(day) for day in parameters.get("time_risk_block_weekdays", [])}
-<<<<<<< master
-                is_blocked_time = bar.ts.hour in blocked_hours or bar.ts.weekday() in blocked_weekdays
-                if is_blocked_time and long_signal:
-                    diagnostics["time_risk_filter_blocks"] += 1
-                    diagnostics["time_risk_filter_long_blocks"] += 1
-                    long_signal = False
-                if is_blocked_time and short_signal:
-                    diagnostics["time_risk_filter_blocks"] += 1
-                    diagnostics["time_risk_filter_short_blocks"] += 1
-                    short_signal = False
-=======
                 if bar.ts.hour in blocked_hours or bar.ts.weekday() in blocked_weekdays:
                     if long_signal:
                         diagnostics["time_risk_filter_blocks"] += 1
@@ -2907,7 +2591,6 @@ class BacktestEngine:
                         diagnostics["time_risk_filter_blocks"] += 1
                         diagnostics["time_risk_filter_short_blocks"] += 1
                         short_signal = False
->>>>>>> master
 
             if position and position.direction == 1 and short_signal:
                 trade = self._close_trade(position, bar, index, max(bar.close - slippage, 0.0), "reverse", commission_pct, equity)
@@ -2922,74 +2605,6 @@ class BacktestEngine:
                 diagnostics["reverse_exits"] += 1
                 position = None
 
-<<<<<<< master
-            if position is None and long_signal:
-                fill = bar.close + slippage
-                stop = self._ghl_dc_initial_stop(parameters, 1, fill, bar, float(atr_values[index] or 0.0), dc_lower[index])
-                quantity = self._position_quantity(parameters, equity, fill, stop)
-                if quantity <= 0:
-                    diagnostics["mt5_invalid_lot_skips"] += 1
-                    pending_long = False
-                    pending_long_breakout = None
-                    equity_curve.append({"ts": bar.ts.isoformat(), "equity": round(equity, 2)})
-                    continue
-                features = self._ghl_dc_entry_features(
-                    bars=bars,
-                    index=index,
-                    direction=1,
-                    parameters=parameters,
-                    atr_values=atr_values,
-                    sma_high=sma_high,
-                    sma_low=sma_low,
-                    hilo_values=hilo_values,
-                    state_values=state_values,
-                    dc_upper=dc_upper,
-                    dc_lower=dc_lower,
-                    breakout_level=pending_long_breakout,
-                    signal_age=long_age,
-                    last_gann_flip_index=last_gann_flip_index,
-                    stop_price=stop,
-                    entry_price=fill,
-                )
-                position = self._open_position(1, index, bar, fill, stop, quantity, commission_pct, equity, features)
-                diagnostics["entries"] += 1
-                pending_long = False
-                pending_long_breakout = None
-            elif position is None and short_signal:
-                fill = max(bar.close - slippage, 0.0)
-                stop = self._ghl_dc_initial_stop(parameters, -1, fill, bar, float(atr_values[index] or 0.0), dc_upper[index])
-                quantity = self._position_quantity(parameters, equity, fill, stop)
-                if quantity <= 0:
-                    diagnostics["mt5_invalid_lot_skips"] += 1
-                    pending_short = False
-                    pending_short_breakdown = None
-                    equity_curve.append({"ts": bar.ts.isoformat(), "equity": round(equity, 2)})
-                    continue
-                features = self._ghl_dc_entry_features(
-                    bars=bars,
-                    index=index,
-                    direction=-1,
-                    parameters=parameters,
-                    atr_values=atr_values,
-                    sma_high=sma_high,
-                    sma_low=sma_low,
-                    hilo_values=hilo_values,
-                    state_values=state_values,
-                    dc_upper=dc_upper,
-                    dc_lower=dc_lower,
-                    breakout_level=pending_short_breakdown,
-                    signal_age=short_age,
-                    last_gann_flip_index=last_gann_flip_index,
-                    stop_price=stop,
-                    entry_price=fill,
-                )
-                position = self._open_position(-1, index, bar, fill, stop, quantity, commission_pct, equity, features)
-                diagnostics["entries"] += 1
-                pending_short = False
-                pending_short_breakdown = None
-
-            equity_curve.append({"ts": bar.ts.isoformat(), "equity": round(equity, 2)})
-=======
             if position is None and (long_signal or short_signal):
                 direction = 1 if long_signal else -1
                 trigger_level = pending_long_breakout if direction == 1 else pending_short_breakdown
@@ -3021,7 +2636,6 @@ class BacktestEngine:
                 pending_long_breakout = pending_short_breakdown = None
 
             append_equity_point(bar)
->>>>>>> master
 
         if position:
             last_bar = bars[-1]
@@ -3030,11 +2644,7 @@ class BacktestEngine:
             trades.append(trade)
             equity += trade["net_pnl"]
             diagnostics["time_exits"] += 1
-<<<<<<< master
-            equity_curve[-1] = {"ts": last_bar.ts.isoformat(), "equity": round(equity, 2)}
-=======
             equity_curve[-1] = {"ts": last_bar.ts.isoformat(), "equity": round(equity, 2), "mark_to_market_equity": round(equity, 2), "realized_equity": round(equity, 2)}
->>>>>>> master
 
         initial_capital = float(parameters.get("initial_capital", 100_000.0))
         buy_hold_start_price = bars[warmup].close if len(bars) > warmup else bars[0].close
@@ -3065,29 +2675,10 @@ class BacktestEngine:
 
     @staticmethod
     def _ghl_dc_entry_features(
-<<<<<<< master
-        bars: list[Bar],
-        index: int,
-        direction: int,
-        parameters: dict[str, Any],
-        atr_values: list[float | None],
-        sma_high: list[float | None],
-        sma_low: list[float | None],
-        hilo_values: list[float | None],
-        state_values: list[int],
-        dc_upper: list[float | None],
-        dc_lower: list[float | None],
-        breakout_level: float | None,
-        signal_age: int,
-        last_gann_flip_index: int | None,
-        stop_price: float,
-        entry_price: float,
-=======
         bars: list[Bar], index: int, direction: int, parameters: dict[str, Any], atr_values: list[float | None],
         sma_high: list[float | None], sma_low: list[float | None], hilo_values: list[float | None], state_values: list[int],
         dc_upper: list[float | None], dc_lower: list[float | None], breakout_level: float | None, signal_age: int,
         last_gann_flip_index: int | None, stop_price: float, entry_price: float,
->>>>>>> master
     ) -> dict[str, Any]:
         bar = bars[index]
         lookback = min(index, 20)
@@ -3095,15 +2686,7 @@ class BacktestEngine:
         prior_close = bars[index - lookback].close if lookback else bar.close
         prior_high = max(item.high for item in prior)
         prior_low = min(item.low for item in prior)
-<<<<<<< master
-        prior_returns = [
-            (bars[item].close - bars[item - 1].close) / bars[item - 1].close
-            for item in range(max(1, index - lookback + 1), index + 1)
-            if bars[item - 1].close
-        ]
-=======
         prior_returns = [(bars[item].close - bars[item - 1].close) / bars[item - 1].close for item in range(max(1, index - lookback + 1), index + 1) if bars[item - 1].close]
->>>>>>> master
         current_atr = float(atr_values[index] or 0.0)
         current_high_sma = float(sma_high[index] or 0.0)
         current_low_sma = float(sma_low[index] or 0.0)
@@ -3113,10 +2696,6 @@ class BacktestEngine:
         breakout = float(breakout_level or entry_price)
         opposite_channel = float((dc_lower[index] if direction == 1 else dc_upper[index]) or stop_price)
         stop_distance = abs(entry_price - stop_price)
-<<<<<<< master
-        gann_state = state_values[index]
-=======
->>>>>>> master
         bars_since_flip = index - last_gann_flip_index if last_gann_flip_index is not None else 0
         normalized_gann_distance = ((bar.close - current_hilo) / bar.close) if bar.close and current_hilo else 0.0
         breakout_distance = (bar.close - breakout) if direction == 1 else (breakout - bar.close)
@@ -3125,27 +2704,14 @@ class BacktestEngine:
         for item in range(max(1, index - lookback + 1), index + 1):
             previous = hilo_values[item - 1]
             current = hilo_values[item]
-<<<<<<< master
-            if previous is None or current is None:
-                continue
-            crossed_up = bars[item - 1].close <= float(previous) and bars[item].close > float(current)
-            crossed_down = bars[item - 1].close >= float(previous) and bars[item].close < float(current)
-            if crossed_up or crossed_down:
-                recent_cross_count += 1
-=======
             if previous is not None and current is not None:
                 recent_cross_count += int((bars[item - 1].close <= float(previous) and bars[item].close > float(current)) or (bars[item - 1].close >= float(previous) and bars[item].close < float(current)))
->>>>>>> master
         return {
             "side": "long" if direction == 1 else "short",
             "weekday": bar.ts.weekday(),
             "utc_hour": bar.ts.hour,
             "month": bar.ts.month,
-<<<<<<< master
-            "gann_state": gann_state,
-=======
             "gann_state": state_values[index],
->>>>>>> master
             "gann_high_sma": round(current_high_sma, 6),
             "gann_low_sma": round(current_low_sma, 6),
             "gann_high_slope": round(current_high_sma - previous_high_sma, 6),
@@ -3166,43 +2732,17 @@ class BacktestEngine:
             "atr_pct": round(current_atr / bar.close, 8) if bar.close else 0.0,
             "recent_return_20": round((bar.close - prior_close) / prior_close, 8) if prior_close else 0.0,
             "recent_range_20": round((prior_high - prior_low) / bar.close, 8) if bar.close else 0.0,
-<<<<<<< master
-            "recent_volatility_20": round(math.sqrt(sum(item * item for item in prior_returns) / len(prior_returns)), 8)
-            if prior_returns
-            else 0.0,
-=======
             "recent_volatility_20": round(math.sqrt(sum(item * item for item in prior_returns) / len(prior_returns)), 8) if prior_returns else 0.0,
->>>>>>> master
             "recent_cross_count": recent_cross_count,
             "stop_distance": round(stop_distance, 6),
             "stop_distance_atr": round(stop_distance / current_atr, 6) if current_atr else 0.0,
             "stop_distance_pct": round(stop_distance / entry_price, 8) if entry_price else 0.0,
             "time_risk_filter_enabled": bool(parameters.get("time_risk_filter_enabled", False)),
             "blocked_utc_hour_count": len(parameters.get("time_risk_block_utc_hours", [])),
-<<<<<<< master
-            "is_adjacent_to_blocked_hour": any(
-                ((bar.ts.hour - int(hour)) % 24 in (1, 23)) for hour in parameters.get("time_risk_block_utc_hours", [])
-            ),
-        }
-
-    @staticmethod
-    def _open_position(
-        direction: int,
-        index: int,
-        bar: Bar,
-        fill: float,
-        stop: float,
-        quantity: float,
-        commission_pct: float,
-        equity: float,
-        features: dict[str, Any],
-    ) -> Position:
-=======
         }
 
     @staticmethod
     def _open_position(direction: int, index: int, bar: Bar, fill: float, stop: float, quantity: float, commission_pct: float, equity: float, features: dict[str, Any]) -> Position:
->>>>>>> master
         return Position(
             direction=direction,
             entry_index=index,
@@ -3246,12 +2786,7 @@ class BacktestEngine:
             if risk_per_unit <= 0 or contract_size <= 0 or lot_step <= 0 or max_lot <= 0:
                 return 0.0
             risk_pct = max(0.0, float(parameters.get("risk_pct", 0.005)))
-<<<<<<< master
-            risk_per_lot = risk_per_unit * contract_size
-            risk_lots = (equity * risk_pct) / risk_per_lot
-=======
             risk_lots = (equity * risk_pct) / (risk_per_unit * contract_size)
->>>>>>> master
             leverage_lots = max_notional / (entry_price * contract_size)
             raw_lots = min(risk_lots, leverage_lots, max_lot)
             stepped_lots = math.floor(raw_lots / lot_step) * lot_step
@@ -3259,12 +2794,7 @@ class BacktestEngine:
                 if parameters.get("skip_below_min_lot", True):
                     return 0.0
                 stepped_lots = min_lot
-<<<<<<< master
-            final_lots = min(max_lot, round(stepped_lots, 8))
-            return final_lots * contract_size
-=======
             return min(max_lot, round(stepped_lots, 8)) * contract_size
->>>>>>> master
         return max(0.0, float(parameters.get("quantity", 1.0)))
 
     @staticmethod

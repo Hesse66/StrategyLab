@@ -25,7 +25,6 @@ FLOAT_OPTIMIZATION_MAX_CANDIDATES = 200
 ERROR_TRACEBACK_MAX_CHARS = 4000
 
 PHASE_3_PARAMETERS = {
-    "execution_model": "research_bar_close",
     "time_decay_exit_enabled": False,
     "time_decay_bars": 96,
     "time_decay_min_mfe_r": 0.5,
@@ -54,16 +53,6 @@ PHASE_3_PARAMETERS = {
 PHASE_3_MUTATION_SPACE = [
     {
         "kind": "white_box",
-        "lever": "execution_model",
-        "path": "parameters.execution_model",
-        "priority": 130,
-        "values": ["mt5_bar_proxy", "research_bar_close"],
-        "search_mode": "values_only",
-        "optimizable": False,
-        "rationale": "Switch between the fast research bar-close model and a conservative MT5 bar proxy where signals execute on the next bar with stops active immediately.",
-    },
-    {
-        "kind": "white_box",
         "lever": "entry_exposure_gate_enabled",
         "path": "parameters.entry_exposure_gate_enabled",
         "priority": 91,
@@ -80,7 +69,7 @@ PHASE_3_MUTATION_SPACE = [
         "search_mode": "range",
         "search_min": 50.0,
         "search_max": 100.0,
-        "search_step": 5.0,
+        "search_step": 2.5,
         "rationale": "Tune the maximum intended entry exposure allowed before a candidate trade is skipped.",
     },
     {
@@ -109,7 +98,7 @@ PHASE_3_MUTATION_SPACE = [
         "values": [1, 2, 3],
         "search_mode": "range",
         "search_min": 1,
-        "search_max": 4,
+        "search_max": 12,
         "search_step": 1,
         "rationale": "Tune how young a position must be before reverse confirmation can suppress an opposite signal.",
     },
@@ -689,8 +678,6 @@ PORTFOLIO_PARAMETERS = {
     "lot_step": 0.01,
     "max_lot": 100.0,
     "skip_below_min_lot": True,
-<<<<<<< master
-=======
 }
 
 EXECUTION_PARAMETERS = {
@@ -732,7 +719,6 @@ PORTFOLIO_MUTATION_SPACE = [
         "values": [1.0, 10.0, 100.0],
         "search_mode": "values_only",
         "rationale": "Contract size used by mt5_fixed_risk_lot sizing.",
->>>>>>> master
     },
     {
         "kind": "portfolio",
@@ -740,7 +726,6 @@ PORTFOLIO_MUTATION_SPACE = [
         "path": "parameters.min_lot",
         "priority": 127,
         "values": [0.01, 0.1, 1.0],
->>>>>>> master
         "search_mode": "values_only",
         "rationale": "Broker minimum lot used by mt5_fixed_risk_lot sizing.",
     },
@@ -750,7 +735,6 @@ PORTFOLIO_MUTATION_SPACE = [
         "path": "parameters.lot_step",
         "priority": 126,
         "values": [0.01, 0.1, 1.0],
->>>>>>> master
         "search_mode": "values_only",
         "rationale": "Broker lot step used by mt5_fixed_risk_lot sizing.",
     },
@@ -760,7 +744,6 @@ PORTFOLIO_MUTATION_SPACE = [
         "path": "parameters.max_lot",
         "priority": 125,
         "values": [1.0, 10.0, 100.0],
->>>>>>> master
         "search_mode": "values_only",
         "rationale": "Broker maximum lot cap used by mt5_fixed_risk_lot sizing.",
     },
@@ -1213,11 +1196,7 @@ class MutationLabService:
                 changed = True
                 continue
             for key in ("priority", "values", "search_mode", "search_min", "search_max", "search_step", "optimizable", "rationale", "path", "kind"):
-<<<<<<< master
-                next_value = mutation.get(key)
-=======
                 next_value = mutation.get(key, True) if key == "optimizable" else mutation.get(key)
->>>>>>> master
                 if existing.get(key) != next_value:
                     existing[key] = json.loads(json.dumps(next_value))
                     changed = True
@@ -1286,6 +1265,8 @@ class MutationLabService:
         spec = version["spec_json"]
         edges: list[dict[str, Any]] = []
         for mutation in spec.get("mutation_space", []):
+            if mutation.get("lever") in OPERATOR_HIDDEN_LEVERS:
+                continue
             if mutation["kind"] == "hybrid" and not include_hybrid:
                 continue
             current_value = self._read_path(spec, mutation["path"])
@@ -1373,6 +1354,8 @@ class MutationLabService:
         }
         proposals: list[dict[str, Any]] = []
         for mutation in mutation_space:
+            if mutation.get("lever") in OPERATOR_HIDDEN_LEVERS:
+                continue
             if mutation["kind"] != "white_box" and not include_hybrid:
                 continue
             for value in mutation["values"]:
@@ -1717,12 +1700,7 @@ class MutationLabService:
         dataset_id: str,
         lever: str,
         parameter_overrides: dict[str, Any] | None = None,
-<<<<<<< master
-        _progress_context: dict[str, Any] | None = None,
-        _bars: list[Any] | None = None,
-=======
         optimization_mode: str = "production",
->>>>>>> master
     ) -> dict[str, Any]:
         optimization_mode = self._normalize_optimization_mode(optimization_mode)
         version = self._get_upgraded_version(version_id)
@@ -1735,121 +1713,10 @@ class MutationLabService:
             raise HTTPException(status_code=404, detail="Tuning lever not found.")
         if not edge.get("optimizable", True):
             raise HTTPException(status_code=400, detail=f"{lever} is manually editable but not optimizable.")
-<<<<<<< master
-        if _progress_context is None:
-            self._ensure_no_active_optimization()
-        bars = _bars if _bars is not None else self.data_service.load_bars(dataset_id)
-=======
         bars = self.data_service.load_bars(dataset_id)
->>>>>>> master
         candidates: list[dict[str, Any]] = []
         skipped_candidates: list[dict[str, Any]] = []
         values = self._candidate_values(edge)
-<<<<<<< master
-        own_progress = _progress_context is None
-        if own_progress:
-            self._start_optimization_progress(
-                mode="optimize_lever",
-                version_id=version_id,
-                dataset_id=dataset_id,
-                lever=lever,
-                total_candidates=len(values),
-            )
-        try:
-            for index, value in enumerate(values, start=1):
-                if _progress_context is None:
-                    overall_index = index
-                    total_overall = len(values)
-                    current_pass = 1
-                    passes = 1
-                    current_lever_index = 1
-                    total_levers = 1
-                else:
-                    overall_index = int(_progress_context.get("overall_done", 0)) + index
-                    total_overall = int(_progress_context.get("total_overall", len(values)))
-                    current_pass = int(_progress_context.get("pass_index", 1))
-                    passes = int(_progress_context.get("passes", 1))
-                    current_lever_index = int(_progress_context.get("lever_index", 1))
-                    total_levers = int(_progress_context.get("total_levers", 1))
-                self._set_optimization_progress(
-                    current_lever=lever,
-                    current_pass=current_pass,
-                    passes=passes,
-                    current_lever_index=current_lever_index,
-                    total_levers=total_levers,
-                    candidate_index=index,
-                    total_candidates=len(values),
-                    overall_index=overall_index,
-                    total_overall=total_overall,
-                    message=f"Pass {current_pass}/{passes}: optimizing {lever} candidate {index}/{len(values)}.",
-                )
-                overrides = {**base_overrides, lever: value}
-                tuned_spec = self._apply_parameter_overrides(version["spec_json"], overrides)
-                result = self.engine.run(tuned_spec, bars)
-                comparison = self._comparison(version_id, dataset_id, result["metrics"])
-                verdict = self._verdict(tuned_spec, result["metrics"], comparison)
-                candidates.append(
-                    {
-                        "lever": lever,
-                        "value": value,
-                        "score": self._optimization_score(tuned_spec, result["metrics"]),
-                        "score_components": self._optimization_score_components(tuned_spec, result["metrics"]),
-                        "eligible": self._optimization_eligible(tuned_spec, result["metrics"]),
-                        "verdict": verdict,
-                        "metrics": result["metrics"],
-                        "comparison": comparison,
-                        "parameter_overrides": overrides,
-                    }
-                )
-                del result
-                if index % 25 == 0:
-                    gc.collect()
-            if not candidates:
-                raise HTTPException(status_code=400, detail="No candidates generated for this lever.")
-            eligible_candidates = [candidate for candidate in candidates if candidate["eligible"]]
-            if eligible_candidates:
-                best = max(eligible_candidates, key=lambda item: item["score"])
-                selection_mode = "eligible_only"
-            else:
-                current_value = base_overrides.get(lever, version["spec_json"].get("parameters", {}).get(lever))
-                current_candidates = [candidate for candidate in candidates if candidate["value"] == current_value]
-                current_best = current_candidates[0] if current_candidates else max(candidates, key=lambda item: item["score"])
-                research_best = max(candidates, key=lambda item: item["score"])
-                if research_best["score"] > current_best["score"] and research_best["metrics"].get("net_pnl", 0.0) > 0:
-                    best = research_best
-                    selection_mode = "research_score_fallback"
-                else:
-                    best = {**current_best, "parameter_overrides": base_overrides}
-                    selection_mode = "no_production_eligible_keep_current"
-            best_spec = self._apply_parameter_overrides(version["spec_json"], best["parameter_overrides"])
-            if own_progress:
-                self._finish_optimization_progress(
-                    f"{lever} optimization complete. Tested {len(candidates)} candidates."
-                )
-            return {
-                "mode": "optimize_lever",
-                "family_id": version["family_id"],
-                "base_version_id": version_id,
-                "dataset_id": dataset_id,
-                "lever": lever,
-                "objective": (
-                    "first require enough trade evidence, positive net PnL, profit factor, drawdown, Sharpe/Sortino/Calmar, "
-                    "bounded trade risk, production sizing, and benchmark comparability when any candidate satisfies them; "
-                    "then maximize a balanced risk-adjusted score using capped profit factor, trade evidence, net return, "
-                    "buy-and-hold outperformance, Calmar efficiency, win rate, payoff, and drawdown"
-                ),
-                "search": self._search_summary(edge, values),
-                "eligible_count": len(eligible_candidates),
-                "selection_mode": selection_mode,
-                "best": best,
-                "best_spec": best_spec,
-                "candidates": sorted(candidates, key=lambda item: (item["eligible"], item["score"]), reverse=True),
-            }
-        except Exception as error:
-            if own_progress:
-                self._finish_optimization_progress(f"{lever} optimization failed.", error=self._format_exception(error))
-            raise
-=======
         for value in values:
             overrides = {**base_overrides, lever: value}
             tuned_spec = self._apply_parameter_overrides(version["spec_json"], overrides)
@@ -1924,7 +1791,6 @@ class MutationLabService:
             "best_spec": best_spec,
             "candidates": sorted(candidates, key=lambda item: (item["eligible"], item["score"]), reverse=True),
         }
->>>>>>> master
 
     def optimize_all(
         self,
@@ -1942,19 +1808,6 @@ class MutationLabService:
         self._ensure_no_active_optimization()
         passes = max(1, min(int(passes), 5))
         overrides = self._production_baseline_overrides(version["spec_json"], dict(parameter_overrides or {}))
-<<<<<<< master
-        starting_overrides = dict(overrides)
-        edges = [edge for edge in self.list_tuning_edges(version_id) if edge.get("optimizable", True)]
-        candidate_counts = {edge["lever"]: len(self._candidate_values(edge)) for edge in edges}
-        total_overall = sum(candidate_counts.values()) * passes
-        progress_context = {
-            "overall_done": 0,
-            "total_overall": total_overall,
-            "passes": passes,
-            "total_levers": len(edges),
-            "pass_index": 1,
-            "lever_index": 1,
-=======
         steps: list[dict[str, Any]] = []
         for pass_index in range(1, passes + 1):
             improved = False
@@ -2003,7 +1856,6 @@ class MutationLabService:
             "parameter_overrides": overrides,
             "steps": steps,
             "preview": preview,
->>>>>>> master
         }
         self._start_optimization_progress(
             mode="optimize_all",
@@ -3542,16 +3394,9 @@ class MutationLabService:
                 f"- Reverse confirmation suppressed Net PnL: `{payload['diagnostics'].get('reverse_confirmation_suppressed_net_pnl', 0.0)}`",
                 f"- Time-decay exits: `{payload['diagnostics'].get('time_decay_exits', 0)}`",
                 f"- Time-decay confirmation candidates: `{payload['diagnostics'].get('time_decay_confirmation_candidates', 0)}`",
-<<<<<<< master
-                f"- Time-decay confirmation exits: `{payload['diagnostics'].get('time_decay_confirmation_exits', 0)}`",
-                f"- Time-decay confirmation suppressed: `{payload['diagnostics'].get('time_decay_confirmation_suppressed', 0)}`",
-                f"- Time-decay confirmation suppressed Net PnL: `{payload['diagnostics'].get('time_decay_confirmation_suppressed_net_pnl', 0.0)}`",
-                f"- MT5 stop modify rejects: `{payload['diagnostics'].get('mt5_stop_modify_rejects', 0)}`",
-=======
                 f"- Time-decay confirmation exits allowed: `{payload['diagnostics'].get('time_decay_confirmation_exits_allowed', 0)}`",
                 f"- Time-decay confirmation suppressed: `{payload['diagnostics'].get('time_decay_confirmation_suppressed', 0)}`",
                 f"- Time-decay confirmation suppressed Net PnL: `{payload['diagnostics'].get('time_decay_confirmation_suppressed_net_pnl', 0.0)}`",
->>>>>>> master
                 f"- Time exits: `{payload['diagnostics']['time_exits']}`",
                 f"- Pending entry orders: `{payload['diagnostics'].get('pending_entry_orders', 0)}`",
                 f"- Pending order fills: `{payload['diagnostics'].get('pending_order_fills', 0)}`",

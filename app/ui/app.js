@@ -29,14 +29,12 @@ const runsTable = document.getElementById("runsTable");
 const versionsTable = document.getElementById("versionsTable");
 const promptsList = document.getElementById("promptsList");
 let previewTimer = null;
+let optimizationProgressTimer = null;
 const MIN_DATASET_BARS = 40000;
 const FULL_HISTORY_SENTINEL_BARS = 1000000;
 const OUTPUT_ARRAY_LIMIT = 20;
 const OUTPUT_MAX_CHARS = 60000;
-<<<<<<< master
-=======
 const OPTIMIZATION_POLL_MS = 2500;
->>>>>>> master
 let optimizationInFlight = false;
 
 function updateClock() {
@@ -93,12 +91,7 @@ function summarizeForOutput(value, depth = 0, key = "") {
 }
 
 function showOutput(payload) {
-<<<<<<< master
-  const text =
-    typeof payload === "string" ? payload : JSON.stringify(summarizeForOutput(payload), null, 2);
-=======
   const text = typeof payload === "string" ? payload : JSON.stringify(summarizeForOutput(payload), null, 2);
->>>>>>> master
   outputBox.textContent =
     text.length > OUTPUT_MAX_CHARS
       ? `${text.slice(0, OUTPUT_MAX_CHARS)}\n\n[output truncated to keep the browser responsive]`
@@ -277,15 +270,7 @@ async function recoverOptimizationResult() {
 
 function setOptimizationBusy(isBusy, activeLever = "") {
   optimizationInFlight = isBusy;
-<<<<<<< master
-  if (isBusy) {
-    startOptimizationProgressPolling();
-  } else {
-    stopOptimizationProgressPolling();
-  }
-=======
   optimizeResearchButton.disabled = isBusy;
->>>>>>> master
   optimizeAllButton.disabled = isBusy;
   proposalsTable.querySelectorAll('[data-action="optimize-lever"]').forEach((button) => {
     button.disabled = isBusy && button.dataset.key !== activeLever;
@@ -328,7 +313,10 @@ async function fetchJson(url, options = {}) {
   return payload;
 }
 
-<<<<<<< master
+function wait(ms) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
 async function attachActiveOptimizationIfAny() {
   try {
     const progress = await fetchJson("/api/optimization-progress");
@@ -338,14 +326,11 @@ async function attachActiveOptimizationIfAny() {
     setOptimizationBusy(true);
     renderOptimizationProgress(progress);
     setStatus("familyStatus", "An optimization is already running. Reattached to progress updates.", "");
+    startOptimizationProgressPolling();
     return true;
   } catch {
     return false;
   }
-=======
-function wait(ms) {
-  return new Promise((resolve) => window.setTimeout(resolve, ms));
->>>>>>> master
 }
 
 function selectedFamilyId() {
@@ -1346,11 +1331,11 @@ async function optimizeAll(optimizationMode = "production") {
   if (optimizationInFlight) {
     return;
   }
+  let reattachedExistingJob = false;
   setOptimizationBusy(true);
   const startingParameters = { ...currentVersion().spec_json.parameters, ...collectOverrides() };
   const modeLabel = optimizationMode === "research" ? "baseline research" : "production";
   setOptimizationStatus(`Starting background two-pass ${modeLabel} optimization...`);
->>>>>>> master
   try {
     const job = await fetchJson(`/api/versions/${version.version_id}/optimize-all/jobs`, {
       method: "POST",
@@ -1661,6 +1646,13 @@ async function handlePromptClick(event) {
   }
 }
 
+function bindClick(id, handler) {
+  const node = document.getElementById(id);
+  if (node) {
+    node.addEventListener("click", handler);
+  }
+}
+
 function handleWorkingInput(event) {
   const control = event.target.closest("[data-working-key]");
   if (!control) {
@@ -1680,17 +1672,17 @@ function handleWorkingInput(event) {
   schedulePreview();
 }
 
-document.getElementById("refreshButton").addEventListener("click", refreshAll);
-document.getElementById("downloadButton").addEventListener("click", downloadDataset);
-document.getElementById("importMt5Button").addEventListener("click", importMt5Dataset);
-document.getElementById("runParentButton").addEventListener("click", runParent);
-document.getElementById("productionDefaultsButton").addEventListener("click", applyProductionDefaults);
-document.getElementById("robustnessButton").addEventListener("click", runRobustnessGate);
-document.getElementById("resetTuneButton").addEventListener("click", resetTune);
-document.getElementById("saveTuneButton").addEventListener("click", saveTune);
+bindClick("refreshButton", refreshAll);
+bindClick("downloadButton", downloadDataset);
+bindClick("importMt5Button", importMt5Dataset);
+bindClick("runParentButton", runParent);
+bindClick("productionDefaultsButton", applyProductionDefaults);
+bindClick("robustnessButton", runRobustnessGate);
+bindClick("resetTuneButton", resetTune);
+bindClick("saveTuneButton", saveTune);
 optimizeResearchButton.addEventListener("click", () => optimizeAll("research"));
 optimizeAllButton.addEventListener("click", () => optimizeAll("production"));
-document.getElementById("registerButton").addEventListener("click", registerBaseline);
+bindClick("registerButton", registerBaseline);
 familySelect.addEventListener("change", refreshFamilyDetail);
 versionSelect.addEventListener("change", refreshSelectedVersion);
 datasetSelect.addEventListener("change", () => schedulePreview(true));
