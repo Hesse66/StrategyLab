@@ -19,6 +19,7 @@ agents/histdata/
 agents/mutation-lab-01.txt
 #agents/new-frontend.txt 
 artifacts/diagnostics/
+artifacts/runs/run_10a82774ade2.json
 
 
 *.sqlite3
