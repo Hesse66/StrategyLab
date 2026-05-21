@@ -13,6 +13,7 @@ from fastapi import HTTPException
 
 from app.backtest import BacktestEngine, Position
 from app.config import settings
+from app.backtest import BacktestEngine, Position
 from app.data import Bar, DataService
 from app.lab import MutationLabService
 from app.main import DatasetDownloadRequest
@@ -51,6 +52,304 @@ def build_fixture_bars(count: int = 3200) -> list[Bar]:
     return bars
 
 
+def build_mt5_proxy_bars() -> list[Bar]:
+    start = datetime(2024, 1, 1, tzinfo=UTC)
+    raw = [
+        (100.0, 101.0, 99.0, 100.0),
+        (100.0, 100.5, 98.5, 99.0),
+        (99.0, 99.5, 97.5, 98.0),
+        (98.0, 105.0, 97.5, 104.0),
+        (104.0, 105.0, 90.0, 92.0),
+        (92.0, 93.0, 89.0, 90.0),
+        (90.0, 91.0, 88.0, 89.0),
+    ]
+    return [
+        Bar(
+            ts=start + timedelta(minutes=15 * index),
+            open=open_price,
+            high=high,
+            low=low,
+            close=close,
+            volume=1000.0,
+            symbol="BTCUSDT",
+            timeframe="15m",
+        )
+        for index, (open_price, high, low, close) in enumerate(raw)
+    ]
+
+
+def build_ma_proxy_spec(**overrides: object) -> dict[str, object]:
+    parameters = {
+        "ma_kind": "sma",
+        "fast_len": 2,
+        "slow_len": 3,
+        "noise_lookback": 1,
+        "max_no_cross": 2,
+        "entry_mode": "crossover_only",
+        "allow_long": True,
+        "allow_short": False,
+        "atr_len": 1,
+        "stop_mult": 1.0,
+        "sizing_mode": "fixed_quantity",
+        "quantity": 1.0,
+        "initial_capital": 100000.0,
+        "commission_pct": 0.0,
+        "slippage_ticks": 0,
+        "tick_size": 0.01,
+        "risk_pct": 0.005,
+        "notional_pct": 0.25,
+        "max_leverage": 1.0,
+        "execution_model": "next_bar_open",
+    }
+    parameters.update(overrides)
+    return {
+        "engine_id": "ma_cross_atr_stop_v1",
+        "asset": "BTCUSDT",
+        "venue": "Binance Spot",
+        "timeframe": "15m",
+        "metadata": {"family_id": "ma_proxy_fixture", "title": "MA Proxy Fixture"},
+        "parameters": parameters,
+        "evaluation": {"minimum_trades": 1, "minimum_profit_factor": 1.0, "maximum_drawdown_pct": 100.0, "minimum_net_pnl": -999999},
+        "mutation_space": [],
+    }
+
+
+def build_asm_bars(same_bar_ambiguous: bool = False) -> list[Bar]:
+    start = datetime(2024, 1, 1, tzinfo=UTC)
+    raw = [
+        (100, 102, 99, 100),
+        (100, 103, 98, 101),
+        (101, 104, 90, 95),
+        (95, 105, 96, 102),
+        (102, 106, 97, 103),
+        (103, 110, 100, 108),
+        (108, 106, 101, 104),
+        (104, 105, 102, 103),
+        (103, 112, 104, 111),
+        (111, 108, 100, 105),
+        (105, 106, 102, 104),
+        (104, 107, 103, 105),
+        (105, 106, 102, 104),
+        (104, 113, 104, 108),
+    ]
+    if same_bar_ambiguous:
+        raw[9] = (111, 113, 89, 105)
+    return [
+        Bar(
+            ts=start + timedelta(minutes=15 * index),
+            open=float(open_price),
+            high=float(high),
+            low=float(low),
+            close=float(close),
+            volume=1000.0,
+            symbol="BTCUSDT",
+            timeframe="15m",
+        )
+        for index, (open_price, high, low, close) in enumerate(raw)
+    ]
+
+
+def build_asm_bearish_bars() -> list[Bar]:
+    mirrored: list[Bar] = []
+    for bar in build_asm_bars():
+        mirrored.append(
+            Bar(
+                ts=bar.ts,
+                open=200 - bar.open,
+                high=200 - bar.low,
+                low=200 - bar.high,
+                close=200 - bar.close,
+                volume=bar.volume,
+                symbol=bar.symbol,
+                timeframe=bar.timeframe,
+            )
+        )
+    return mirrored
+
+
+def build_resample_bars(count: int = 18, timeframe: str = "15m") -> list[Bar]:
+    start = datetime(2024, 1, 1, tzinfo=UTC)
+    bars: list[Bar] = []
+    for index in range(count):
+        price = 100 + index
+        bars.append(
+            Bar(
+                ts=start + timedelta(minutes=15 * index),
+                open=float(price),
+                high=float(price + 2),
+                low=float(price - 2),
+                close=float(price + 1),
+                volume=100.0 + index,
+                symbol="BTCUSDT",
+                timeframe=timeframe,
+            )
+        )
+    return bars
+
+
+def build_bos_demand_bars() -> list[Bar]:
+    start = datetime(2024, 1, 1, tzinfo=UTC)
+    raw = [
+        (100.0, 101.0, 99.0, 100.0),
+        (100.0, 105.0, 99.0, 104.0),
+        (104.0, 110.0, 103.0, 109.0),
+        (108.0, 109.0, 104.0, 105.0),
+        (105.0, 106.0, 102.0, 103.0),
+        (103.0, 106.0, 100.0, 101.0),
+        (104.0, 112.0, 103.0, 109.0),
+        (105.0, 107.1, 104.9, 107.0),
+        (107.0, 119.0, 106.0, 109.0),
+    ]
+    while len(raw) < 24:
+        index = len(raw)
+        base = 106.0 + ((index % 3) - 1)
+        raw.append((base, base + 2.0, base - 2.0, base + 0.5))
+    return [
+        Bar(
+            ts=start + timedelta(minutes=15 * index),
+            open=open_price,
+            high=high,
+            low=low,
+            close=close,
+            volume=1000.0,
+            symbol="BTCUSDT",
+            timeframe="15m",
+        )
+        for index, (open_price, high, low, close) in enumerate(raw)
+    ]
+
+
+def build_asm_spec(**overrides: object) -> dict[str, object]:
+    parameters = {
+        "allow_long": True,
+        "allow_short": True,
+        "external_pivot_period": 2,
+        "internal_pivot_period": 1,
+        "structure_stream": "external_only",
+        "active_timeframe_profile": "intraday_15m",
+        "use_timeframe_profile_overrides": False,
+        "execution_timeframe": "15m",
+        "context_timeframe": "1h",
+        "higher_context_timeframe": "4h",
+        "resample_context_from_execution_bars": False,
+        "context_bias_required": False,
+        "context_bias_event": "bos_or_choch",
+        "context_bias_max_age_bars": 96,
+        "context_bias_must_align_with_external_bias": True,
+        "timeframe_profiles": {
+            "intraday_15m": {"execution_timeframe": "15m", "fib_entry_retracement": 0.67},
+            "swing_4h": {"execution_timeframe": "4h", "fib_entry_retracement": 0.71},
+        },
+        "internal_confirmation_required": False,
+        "internal_confirmation_event": "bos_or_choch",
+        "internal_confirmation_max_age_bars": 24,
+        "internal_must_align_with_external_bias": True,
+        "max_setup_age_bars": 20,
+        "range_min_atr": 0.0,
+        "range_max_atr": 100.0,
+        "displacement_atr_len": 3,
+        "min_displacement_atr": 0.0,
+        "fib_entry_retracement": 0.5,
+        "fib_stop_retracement": 1.0,
+        "fib_target_retracement": 0.0,
+        "stop_buffer_atr_mult": 0.0,
+        "require_discount_for_longs": True,
+        "require_premium_for_shorts": True,
+        "premium_discount_midpoint": 0.5,
+        "fvg_enabled": True,
+        "fvg_min_gap_atr": 0.0,
+        "fvg_max_age_bars": 20,
+        "fvg_overlap_required": False,
+        "fvg_overlap_tolerance_atr": 0.1,
+        "fvg_mitigation_rule": "touch_through_far_edge",
+        "liquidity_sweep_required": False,
+        "sweep_lookback_bars": 3,
+        "sweep_window_bars": 10,
+        "sweep_close_back_inside": True,
+        "same_bar_exit_policy": "stop_first",
+        "time_stop_enabled": False,
+        "time_stop_bars": 20,
+        "time_stop_min_mfe_r": 0.25,
+        "time_risk_filter_enabled": False,
+        "time_risk_block_weekdays": [],
+        "time_risk_block_utc_hours": [],
+        "sizing_mode": "fixed_quantity",
+        "quantity": 1.0,
+        "initial_capital": 100000.0,
+        "commission_pct": 0.0,
+        "slippage_ticks": 0,
+        "tick_size": 0.01,
+        "risk_pct": 0.005,
+        "notional_pct": 0.25,
+        "max_leverage": 1.0,
+        "execution_model": "research_same_close",
+    }
+    parameters.update(overrides)
+    return {
+        "engine_id": "asm_fib_liquidity_fvg_v1",
+        "asset": "BTCUSDT",
+        "venue": "Binance Spot",
+        "timeframe": "15m",
+        "metadata": {"family_id": "asm_fixture", "title": "ASM Fixture"},
+        "parameters": parameters,
+        "evaluation": {"minimum_trades": 1, "minimum_profit_factor": 1.0, "maximum_drawdown_pct": 100.0, "minimum_net_pnl": -999999},
+        "mutation_space": [
+            {
+                "kind": "white_box",
+                "lever": "fib_entry_retracement",
+                "path": "parameters.fib_entry_retracement",
+                "priority": 100,
+                "values": [0.5, 0.67],
+                "search_mode": "range",
+                "search_min": 0.4,
+                "search_max": 0.8,
+                "search_step": 0.1,
+                "rationale": "Tune fib entry.",
+            }
+        ],
+    }
+
+
+def build_bos_demand_spec(**overrides: object) -> dict[str, object]:
+    parameters = {
+        "variant": "v0_exact_pine",
+        "allow_long": True,
+        "allow_short": False,
+        "pivot_len": 2,
+        "atr_len": 3,
+        "atr_mult": 0.0,
+        "min_green": 1,
+        "max_zone_age": 8,
+        "demand_lookback_bars": 10,
+        "tp_r": 1.5,
+        "bos_break_mode": "wick",
+        "ema_filter_enabled": True,
+        "ema_len": 3,
+        "same_bar_exit_policy": "stop_first",
+        "sizing_mode": "fixed_quantity",
+        "quantity": 1.0,
+        "initial_capital": 100000.0,
+        "commission_pct": 0.0,
+        "slippage_ticks": 0,
+        "tick_size": 0.01,
+        "risk_pct": 0.005,
+        "notional_pct": 0.25,
+        "max_leverage": 1.0,
+        "execution_model": "next_bar_open",
+    }
+    parameters.update(overrides)
+    return {
+        "engine_id": "bos_demand_pullback_v1",
+        "asset": "BTCUSDT",
+        "venue": "Binance Spot",
+        "timeframe": "15m",
+        "metadata": {"family_id": "bos_fixture", "title": "BOS Demand Fixture"},
+        "parameters": parameters,
+        "evaluation": {"minimum_trades": 1, "minimum_profit_factor": 1.0, "maximum_drawdown_pct": 100.0, "minimum_net_pnl": -999999},
+        "mutation_space": [],
+    }
+
+
 class MutationLabTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -61,6 +360,7 @@ class MutationLabTests(unittest.TestCase):
             "run_dir": settings.run_dir,
             "report_dir": settings.report_dir,
             "diagnostic_dir": settings.diagnostic_dir,
+            "strategy_specs_dir": settings.strategy_specs_dir,
             "seed_spec_path": settings.seed_spec_path,
         }
         settings.db_path = self.root / "artifacts" / "mutation_lab.sqlite3"
@@ -68,6 +368,7 @@ class MutationLabTests(unittest.TestCase):
         settings.run_dir = self.root / "artifacts" / "runs"
         settings.report_dir = self.root / "artifacts" / "reports"
         settings.diagnostic_dir = self.root / "artifacts" / "diagnostics"
+        settings.strategy_specs_dir = self.root / "strategies"
         settings.seed_spec_path = self.root / "strategies" / "btc_intraday_parent.json"
         settings.ensure_dirs()
         self.repo = Repository(settings.db_path)
@@ -81,6 +382,7 @@ class MutationLabTests(unittest.TestCase):
         settings.run_dir = self.original["run_dir"]
         settings.report_dir = self.original["report_dir"]
         settings.diagnostic_dir = self.original["diagnostic_dir"]
+        settings.strategy_specs_dir = self.original["strategy_specs_dir"]
         settings.seed_spec_path = self.original["seed_spec_path"]
         self.temp_dir.cleanup()
 
@@ -91,6 +393,505 @@ class MutationLabTests(unittest.TestCase):
         version = self.repo.get_version("ver_btc_intraday_parent")
         self.assertIsNotNone(version)
         self.assertTrue(settings.seed_spec_path.exists())
+
+    def test_additional_parent_json_specs_are_registered(self) -> None:
+        spec = {
+            "engine_id": "custom_engine_v1",
+            "asset": "BTCUSDT",
+            "venue": "Binance Spot",
+            "timeframe": "15m",
+            "metadata": {
+                "family_id": "custom_family",
+                "title": "Custom Family",
+                "causal_story": "Imported custom strategy.",
+            },
+            "parameters": {"allow_long": True},
+            "evaluation": {},
+            "mutation_space": [
+                {
+                    "kind": "white_box",
+                    "lever": "allow_long",
+                    "path": "parameters.allow_long",
+                    "values": [True, False],
+                    "search_mode": "values_only",
+                    "rationale": "Toggle long side.",
+                }
+            ],
+        }
+        (settings.strategy_specs_dir / "custom_family_parent.json").write_text(json.dumps(spec), encoding="utf-8")
+        self.lab.ensure_seeded()
+        family = self.repo.get_family("custom_family")
+        self.assertIsNotNone(family)
+        self.assertEqual(family["current_version_id"], "ver_custom_family_parent")
+        version = self.repo.get_version("ver_custom_family_parent")
+        self.assertIsNotNone(version)
+        self.assertEqual(version["spec_json"]["engine_id"], "custom_engine_v1")
+
+    def test_intraday_parent_exposes_surviving_phase_three_and_phase_four_controls(self) -> None:
+        spec = json.loads(Path("strategies/intraday_trend_atr_parent.json").read_text(encoding="utf-8"))
+        (settings.strategy_specs_dir / "intraday_trend_atr_parent.json").write_text(json.dumps(spec), encoding="utf-8")
+        self.lab.ensure_seeded()
+        family = self.repo.get_family("intraday_trend_atr")
+        self.assertIsNotNone(family)
+        self.assertEqual(family["current_version_id"], "ver_intraday_trend_atr_parent")
+        version = self.repo.get_version("ver_intraday_trend_atr_parent")
+        self.assertEqual(version["spec_json"]["parameters"]["execution_model"], "mt5_bar_proxy")
+        self.assertTrue(version["spec_json"]["parameters"]["time_decay_exit_enabled"])
+        self.assertEqual(version["spec_json"]["parameters"]["time_decay_bars"], 30)
+        self.assertEqual(version["spec_json"]["parameters"]["time_decay_min_mfe_r"], 0.25)
+        self.assertTrue(version["spec_json"]["parameters"]["short_time_risk_filter_enabled"])
+        self.assertEqual(version["spec_json"]["parameters"]["short_time_risk_block_utc_hours"], [6, 9, 16, 20])
+        self.assertEqual(version["spec_json"]["parameters"]["short_time_risk_block_weekdays"], [4])
+        self.assertTrue(version["spec_json"]["parameters"]["reverse_confirmation_enabled"])
+        self.assertEqual(version["spec_json"]["parameters"]["reverse_confirm_max_bars"], 2)
+        self.assertEqual(version["spec_json"]["parameters"]["reverse_confirm_min_mfe_r"], 0.2)
+        self.assertEqual(version["spec_json"]["parameters"]["reverse_confirm_allow_if_unrealized_r_lte"], -0.35)
+        self.assertTrue(version["spec_json"]["parameters"]["entry_blackbox_veto_enabled"])
+        self.assertEqual(version["spec_json"]["parameters"]["entry_blackbox_veto_utc_hours"], [15])
+        self.assertEqual(version["spec_json"]["parameters"]["entry_blackbox_veto_side_months"], ["long:8"])
+        edges = self.lab.list_tuning_edges("ver_intraday_trend_atr_parent")
+        edge_levers = {edge["lever"] for edge in edges}
+        self.assertIn("fast_len", edge_levers)
+        self.assertIn("time_decay_exit_enabled", edge_levers)
+        self.assertIn("time_decay_bars", edge_levers)
+        self.assertIn("time_decay_min_mfe_r", edge_levers)
+        self.assertIn("short_time_risk_filter_enabled", edge_levers)
+        self.assertIn("short_time_risk_block_utc_hours", edge_levers)
+        self.assertIn("short_time_risk_block_weekdays", edge_levers)
+        self.assertIn("reverse_confirmation_enabled", edge_levers)
+        self.assertIn("reverse_confirm_max_bars", edge_levers)
+        self.assertIn("reverse_confirm_min_mfe_r", edge_levers)
+        self.assertIn("reverse_confirm_allow_if_unrealized_r_lte", edge_levers)
+        self.assertIn("entry_blackbox_veto_enabled", edge_levers)
+        self.assertIn("entry_blackbox_veto_utc_hours", edge_levers)
+        self.assertIn("entry_blackbox_veto_side_months", edge_levers)
+        self.assertNotIn("execution_model", edge_levers)
+        self.assertNotIn("sizing_mode", edge_levers)
+        self.assertNotIn("notional_pct", edge_levers)
+        self.assertNotIn("hybrid_time_decay_triage_enabled", edge_levers)
+
+    def test_child_versions_inherit_new_parent_schema_without_overwriting_tuned_values(self) -> None:
+        spec = json.loads(Path("strategies/intraday_trend_atr_parent.json").read_text(encoding="utf-8"))
+        legacy_child = json.loads(json.dumps(spec))
+        legacy_child["parameters"].pop("time_decay_exit_enabled", None)
+        legacy_child["parameters"].pop("time_decay_bars", None)
+        legacy_child["parameters"].pop("time_decay_min_mfe_r", None)
+        legacy_child["parameters"].pop("short_time_risk_filter_enabled", None)
+        legacy_child["parameters"].pop("short_time_risk_block_utc_hours", None)
+        legacy_child["parameters"].pop("short_time_risk_block_weekdays", None)
+        legacy_child["parameters"].pop("reverse_confirmation_enabled", None)
+        legacy_child["parameters"].pop("reverse_confirm_max_bars", None)
+        legacy_child["parameters"].pop("reverse_confirm_min_mfe_r", None)
+        legacy_child["parameters"].pop("reverse_confirm_allow_if_unrealized_r_lte", None)
+        legacy_child["parameters"].pop("reverse_confirm_require_no_breakeven_move", None)
+        legacy_child["parameters"].pop("entry_blackbox_veto_enabled", None)
+        legacy_child["parameters"].pop("entry_blackbox_veto_utc_hours", None)
+        legacy_child["parameters"].pop("entry_blackbox_veto_side_months", None)
+        legacy_child["parameters"]["fast_len"] = 123
+        inherited_levers = {
+            "time_decay_exit_enabled",
+            "time_decay_bars",
+            "time_decay_min_mfe_r",
+            "short_time_risk_filter_enabled",
+            "short_time_risk_block_utc_hours",
+            "short_time_risk_block_weekdays",
+            "reverse_confirmation_enabled",
+            "reverse_confirm_max_bars",
+            "reverse_confirm_min_mfe_r",
+            "reverse_confirm_allow_if_unrealized_r_lte",
+            "reverse_confirm_require_no_breakeven_move",
+            "entry_blackbox_veto_enabled",
+            "entry_blackbox_veto_utc_hours",
+            "entry_blackbox_veto_side_months",
+        }
+        legacy_child["mutation_space"] = [
+            edge
+            for edge in legacy_child["mutation_space"]
+            if edge.get("lever") not in inherited_levers
+        ]
+        (settings.strategy_specs_dir / "intraday_trend_atr_parent.json").write_text(json.dumps(spec), encoding="utf-8")
+        self.repo.put_family(
+            {
+                "family_id": "intraday_trend_atr",
+                "title": "Intraday Trend ATR Baseline",
+                "asset": "BTCUSDT",
+                "venue": "Binance Spot",
+                "timeframe": "15m",
+                "current_version_id": "ver_intraday_trend_atr_parent",
+                "created_at": datetime.now(UTC).isoformat(),
+            }
+        )
+        self.repo.put_version(
+            {
+                "version_id": "ver_intraday_trend_atr_parent",
+                "family_id": "intraday_trend_atr",
+                "parent_version_id": None,
+                "name": "Intraday Trend ATR Baseline",
+                "stage": "white_box",
+                "source_code": "{}",
+                "spec_json": spec,
+                "causal_story": "",
+                "mutation_json": {},
+                "notes": "",
+                "created_at": datetime.now(UTC).isoformat(),
+            }
+        )
+        self.repo.put_version(
+            {
+                "version_id": "ver_intraday_child",
+                "family_id": "intraday_trend_atr",
+                "parent_version_id": "ver_intraday_trend_atr_parent",
+                "name": "Tuned child",
+                "stage": "white_box",
+                "source_code": "{}",
+                "spec_json": legacy_child,
+                "causal_story": "",
+                "mutation_json": {},
+                "notes": "",
+                "created_at": datetime.now(UTC).isoformat(),
+            }
+        )
+        self.lab.ensure_seeded()
+        child = self.repo.get_version("ver_intraday_child")
+        self.assertEqual(child["spec_json"]["parameters"]["fast_len"], 123)
+        self.assertTrue(child["spec_json"]["parameters"]["time_decay_exit_enabled"])
+        self.assertEqual(child["spec_json"]["parameters"]["time_decay_bars"], 30)
+        self.assertEqual(child["spec_json"]["parameters"]["time_decay_min_mfe_r"], 0.25)
+        self.assertTrue(child["spec_json"]["parameters"]["short_time_risk_filter_enabled"])
+        self.assertEqual(child["spec_json"]["parameters"]["short_time_risk_block_utc_hours"], [6, 9, 16, 20])
+        self.assertEqual(child["spec_json"]["parameters"]["short_time_risk_block_weekdays"], [4])
+        self.assertTrue(child["spec_json"]["parameters"]["reverse_confirmation_enabled"])
+        self.assertEqual(child["spec_json"]["parameters"]["reverse_confirm_max_bars"], 2)
+        self.assertEqual(child["spec_json"]["parameters"]["reverse_confirm_min_mfe_r"], 0.2)
+        self.assertEqual(child["spec_json"]["parameters"]["reverse_confirm_allow_if_unrealized_r_lte"], -0.35)
+        self.assertTrue(child["spec_json"]["parameters"]["entry_blackbox_veto_enabled"])
+        self.assertEqual(child["spec_json"]["parameters"]["entry_blackbox_veto_utc_hours"], [15])
+        self.assertEqual(child["spec_json"]["parameters"]["entry_blackbox_veto_side_months"], ["long:8"])
+        child_edges = {edge["lever"] for edge in child["spec_json"]["mutation_space"]}
+        self.assertIn("time_decay_exit_enabled", child_edges)
+        self.assertIn("time_decay_bars", child_edges)
+        self.assertIn("time_decay_min_mfe_r", child_edges)
+        self.assertIn("short_time_risk_filter_enabled", child_edges)
+        self.assertIn("short_time_risk_block_utc_hours", child_edges)
+        self.assertIn("short_time_risk_block_weekdays", child_edges)
+        self.assertIn("reverse_confirmation_enabled", child_edges)
+        self.assertIn("reverse_confirm_max_bars", child_edges)
+        self.assertIn("reverse_confirm_min_mfe_r", child_edges)
+        self.assertIn("reverse_confirm_allow_if_unrealized_r_lte", child_edges)
+        self.assertIn("entry_blackbox_veto_enabled", child_edges)
+        self.assertIn("entry_blackbox_veto_utc_hours", child_edges)
+        self.assertIn("entry_blackbox_veto_side_months", child_edges)
+
+    def test_asm_engine_id_is_accepted_and_unknown_engine_still_fails(self) -> None:
+        result = self.lab.engine.run(build_asm_spec(), build_asm_bars())
+        self.assertIn("metrics", result)
+        self.assertGreaterEqual(result["diagnostics"]["entries"], 1)
+        with self.assertRaises(HTTPException) as ctx:
+            self.lab.engine.run({"engine_id": "not_real", "parameters": {}}, build_asm_bars())
+        self.assertEqual(ctx.exception.status_code, 400)
+
+    def test_asm_confirmed_pivots_wait_for_right_side_bars(self) -> None:
+        bars = build_asm_bars()
+        self.assertIsNone(self.lab.engine._confirmed_pivot(bars, 3, 2))
+        pivot = self.lab.engine._confirmed_pivot(bars, 4, 2)
+        self.assertIsNotNone(pivot)
+        self.assertEqual(pivot.kind, "low")
+        self.assertEqual(pivot.index, 2)
+
+    def test_asm_fvg_detection_matches_three_candle_definition(self) -> None:
+        start = datetime(2024, 1, 1, tzinfo=UTC)
+        bars = [
+            Bar(ts=start, open=99, high=100, low=98, close=99, volume=1000, symbol="BTCUSDT", timeframe="15m"),
+            Bar(ts=start + timedelta(minutes=15), open=100, high=102, low=99, close=101, volume=1000, symbol="BTCUSDT", timeframe="15m"),
+            Bar(ts=start + timedelta(minutes=30), open=106, high=110, low=105, close=109, volume=1000, symbol="BTCUSDT", timeframe="15m"),
+        ]
+        atr_values = [10.0 for _ in bars]
+        active = []
+        self.lab.engine._register_asm_fvg({"fvg_enabled": True, "fvg_min_gap_atr": 0.0}, bars, atr_values, active, 2)
+        self.assertTrue(active)
+        self.assertEqual(active[0].direction, 1)
+        self.assertEqual(active[0].bottom, bars[0].high)
+        self.assertEqual(active[0].top, bars[2].low)
+
+    def test_asm_liquidity_sweep_proxy_marks_long_and_short(self) -> None:
+        bars = build_asm_bars()
+        setup = self.lab.engine._build_asm_setup(
+            parameters=build_asm_spec()["parameters"],
+            bars=bars,
+            atr_value=10,
+            active_fvgs=[],
+            direction=1,
+            index=8,
+            origin=self.lab.engine._confirmed_pivot(bars, 4, 2),
+            broken=self.lab.engine._confirmed_pivot(bars, 7, 2),
+        )
+        self.assertIsNotNone(setup)
+        self.lab.engine._update_asm_setup_sweep(
+            {"sweep_lookback_bars": 3, "sweep_close_back_inside": True}, bars, setup, 9
+        )
+        self.assertEqual(setup.sweep_index, 9)
+
+        short_bars = [
+            Bar(ts=bars[0].ts + timedelta(minutes=15 * i), open=100, high=high, low=low, close=close, volume=1000, symbol="BTCUSDT", timeframe="15m")
+            for i, (high, low, close) in enumerate([(110, 100, 105), (108, 99, 104), (107, 98, 103), (111, 101, 106), (109, 100, 102)])
+        ]
+        short_setup = build_asm_spec()["parameters"]
+        del short_setup
+        setup_short = type(setup)(
+            direction=-1,
+            created_index=1,
+            setup_type="BOS",
+            origin_index=0,
+            origin_price=110,
+            extreme_index=1,
+            extreme_price=98,
+            range_size=12,
+            range_atr_multiple=1,
+            entry_price=105,
+            stop_price=110,
+            target_price=98,
+            discount_premium_passed=True,
+        )
+        self.lab.engine._update_asm_setup_sweep(
+            {"sweep_lookback_bars": 3, "sweep_close_back_inside": True}, short_bars, setup_short, 3
+        )
+        self.assertEqual(setup_short.sweep_index, 3)
+
+    def test_asm_known_bullish_fixture_enters_and_targets(self) -> None:
+        result = self.lab.engine.run(build_asm_spec(), build_asm_bars())
+        self.assertEqual(result["diagnostics"]["entries"], 1)
+        self.assertEqual(result["diagnostics"]["target_exits"], 1)
+        trade = result["trades"][0]
+        self.assertEqual(trade["direction"], "long")
+        self.assertEqual(trade["reason"], "target")
+        self.assertEqual(trade["entry_price"], 101.0)
+        self.assertEqual(trade["stop_price"], 90.0)
+        self.assertEqual(trade["exit_price"], 112.0)
+        self.assertIn("range_atr_multiple", trade["entry_features"])
+        self.assertIn("discount_premium_passed", trade["entry_features"])
+
+    def test_asm_same_bar_stop_target_ambiguity_uses_stop_first(self) -> None:
+        result = self.lab.engine.run(build_asm_spec(), build_asm_bars(same_bar_ambiguous=True))
+        self.assertEqual(result["diagnostics"]["entries"], 1)
+        self.assertEqual(result["diagnostics"]["same_bar_stop_first_exits"], 1)
+        self.assertEqual(result["trades"][0]["reason"], "stop")
+
+    def test_asm_intraday_stream_blocks_old_external_only_entry_path(self) -> None:
+        spec = build_asm_spec(
+            structure_stream="external_and_internal_intraday",
+            liquidity_sweep_required=True,
+            internal_confirmation_required=True,
+        )
+        result = self.lab.engine.run(spec, build_asm_bars()[:10])
+        self.assertEqual(result["diagnostics"]["entries"], 0)
+        self.assertGreater(result["diagnostics"]["blocked_no_internal_confirmation"], 0)
+
+    def test_asm_intraday_bullish_internal_confirmation_allows_entry(self) -> None:
+        spec = build_asm_spec(
+            structure_stream="external_and_internal_intraday",
+            liquidity_sweep_required=True,
+            internal_confirmation_required=True,
+        )
+        result = self.lab.engine.run(spec, build_asm_bars())
+        self.assertEqual(result["diagnostics"]["entries_after_internal_confirmation"], 1)
+        self.assertEqual(result["diagnostics"]["internal_confirmations_bullish"], 1)
+        features = result["trades"][0]["entry_features"]
+        self.assertEqual(features["external_bias"], "bullish")
+        self.assertEqual(features["internal_confirmation_type"], "bullish_bos")
+        self.assertIn("external_range_origin", features)
+        self.assertIn("internal_confirmation_age_bars", features)
+
+    def test_asm_intraday_bearish_internal_confirmation_allows_entry(self) -> None:
+        spec = build_asm_spec(
+            structure_stream="external_and_internal_intraday",
+            liquidity_sweep_required=True,
+            internal_confirmation_required=True,
+        )
+        result = self.lab.engine.run(spec, build_asm_bearish_bars())
+        self.assertEqual(result["diagnostics"]["entries_after_internal_confirmation"], 1)
+        self.assertEqual(result["diagnostics"]["internal_confirmations_bearish"], 1)
+        trade = result["trades"][0]
+        self.assertEqual(trade["direction"], "short")
+        self.assertEqual(trade["entry_features"]["external_bias"], "bearish")
+        self.assertEqual(trade["entry_features"]["internal_confirmation_type"], "bearish_bos")
+
+    def test_asm_intraday_confirmation_before_retracement_or_sweep_does_not_count(self) -> None:
+        bars = build_asm_bars()
+        spec = build_asm_spec(
+            structure_stream="external_and_internal_intraday",
+            liquidity_sweep_required=True,
+            internal_confirmation_required=True,
+        )
+        result = self.lab.engine.run(spec, bars[:10])
+        self.assertEqual(result["diagnostics"]["entries"], 0)
+        self.assertEqual(result["diagnostics"]["internal_confirmations_bullish"], 0)
+
+    def test_asm_intraday_old_internal_confirmation_is_rejected(self) -> None:
+        bars = build_asm_bars()
+        setup = self.lab.engine._build_asm_setup(
+            parameters=build_asm_spec()["parameters"],
+            bars=bars,
+            atr_value=10,
+            active_fvgs=[],
+            direction=1,
+            index=8,
+            origin=self.lab.engine._confirmed_pivot(bars, 4, 2),
+            broken=self.lab.engine._confirmed_pivot(bars, 7, 2),
+        )
+        self.assertIsNotNone(setup)
+        setup.retracement_index = 9
+        setup.sweep_index = 9
+        setup.internal_confirmation_index = 5
+        setup.internal_confirmation_type = "bullish_bos"
+        reason = self.lab.engine._asm_setup_block_reason(
+            build_asm_spec(
+                structure_stream="external_and_internal_intraday",
+                internal_confirmation_required=True,
+                internal_confirmation_max_age_bars=1,
+                liquidity_sweep_required=True,
+            )["parameters"],
+            bars,
+            setup,
+            [],
+            10,
+        )
+        self.assertEqual(reason, "blocked_no_internal_confirmation")
+
+    def test_asm_intraday_registered_parent_exposes_internal_mutation_edges(self) -> None:
+        asm_spec = json.loads(Path("strategies/asm_fib_liquidity_parent.json").read_text(encoding="utf-8"))
+        (settings.strategy_specs_dir / "asm_fib_liquidity_parent.json").write_text(json.dumps(asm_spec), encoding="utf-8")
+        self.lab.ensure_seeded()
+        edges = self.lab.list_tuning_edges("ver_asm_fib_liquidity_parent")
+        levers = {edge["lever"] for edge in edges}
+        self.assertIn("internal_confirmation_required", levers)
+        self.assertIn("internal_confirmation_event", levers)
+        self.assertIn("internal_confirmation_max_age_bars", levers)
+        self.assertIn("internal_pivot_period", levers)
+
+    def test_asm_timeframe_profile_overrides_base_parameters(self) -> None:
+        parameters = build_asm_spec(
+            use_timeframe_profile_overrides=True,
+            active_timeframe_profile="intraday_15m",
+            fib_entry_retracement=0.5,
+            timeframe_profiles={
+                "intraday_15m": {"execution_timeframe": "15m", "fib_entry_retracement": 0.67},
+                "swing_4h": {"execution_timeframe": "4h", "fib_entry_retracement": 0.71},
+            },
+        )["parameters"]
+        resolved, applied = self.lab.engine._resolve_asm_parameters(parameters)
+        self.assertTrue(applied)
+        self.assertEqual(resolved["fib_entry_retracement"], 0.67)
+
+        swing_params = dict(parameters)
+        swing_params["active_timeframe_profile"] = "swing_4h"
+        resolved_swing, _ = self.lab.engine._resolve_asm_parameters(swing_params)
+        self.assertEqual(resolved_swing["fib_entry_retracement"], 0.71)
+
+    def test_asm_dataset_timeframe_mismatch_raises_clear_error(self) -> None:
+        spec = build_asm_spec(execution_timeframe="5m")
+        with self.assertRaises(HTTPException) as ctx:
+            self.lab.engine.run(spec, build_asm_bars())
+        self.assertEqual(ctx.exception.status_code, 400)
+        self.assertIn("does not match ASM execution timeframe", ctx.exception.detail)
+
+    def test_asm_resamples_completed_15m_bars_to_1h_and_4h_without_leakage(self) -> None:
+        bars = build_resample_bars(count=18)
+        one_hour = self.lab.engine._resample_bars(bars, "15m", "1h")
+        four_hour = self.lab.engine._resample_bars(bars, "15m", "4h")
+        self.assertEqual(len(one_hour), 4)
+        self.assertEqual(one_hour[0].open, bars[0].open)
+        self.assertEqual(one_hour[0].close, bars[3].close)
+        self.assertEqual(one_hour[-1].close, bars[15].close)
+        self.assertEqual(len(four_hour), 1)
+        self.assertEqual(four_hour[0].close, bars[15].close)
+
+    def test_asm_context_bias_series_is_precomputed_per_completed_context_bar(self) -> None:
+        bars = build_resample_bars(count=18)
+        context = self.lab.engine._resample_bars(bars, "15m", "1h")
+        parameters = build_asm_spec(
+            context_bias_required=True,
+            resample_context_from_execution_bars=True,
+            context_timeframe="1h",
+            external_pivot_period=1,
+        )["parameters"]
+        series = self.lab.engine._context_bias_series(parameters, bars, context)
+        self.assertEqual(len(series), len(bars))
+        self.assertEqual(series[0]["bias"], None)
+        self.assertEqual(series[3], series[4])
+        self.assertNotEqual(id(series[3]), id(series[4]))
+
+    def test_asm_missing_context_bias_blocks_required_context(self) -> None:
+        spec = build_asm_spec(
+            context_bias_required=True,
+            resample_context_from_execution_bars=True,
+            context_timeframe="1h",
+            external_pivot_period=2,
+        )
+        result = self.lab.engine.run(spec, build_asm_bars())
+        self.assertEqual(result["diagnostics"]["entries"], 0)
+        self.assertGreater(result["diagnostics"]["blocked_no_context_bias"], 0)
+        self.assertEqual(result["diagnostics"]["context_bars_built"], 3)
+
+    def test_asm_context_bias_mismatch_blocks_execution_bias(self) -> None:
+        setup = self.lab.engine._build_asm_setup(
+            parameters=build_asm_spec()["parameters"],
+            bars=build_asm_bars(),
+            atr_value=10,
+            active_fvgs=[],
+            direction=1,
+            index=8,
+            origin=self.lab.engine._confirmed_pivot(build_asm_bars(), 4, 2),
+            broken=self.lab.engine._confirmed_pivot(build_asm_bars(), 7, 2),
+            context_bias={"bias": "bearish", "event": "bearish_bos", "bar_index": 1, "bar_ts": build_asm_bars()[1].ts, "age": 0},
+        )
+        self.assertIsNotNone(setup)
+        setup.retracement_index = 9
+        reason = self.lab.engine._asm_setup_block_reason(
+            build_asm_spec(context_bias_required=True, context_bias_must_align_with_external_bias=True)["parameters"],
+            build_asm_bars(),
+            setup,
+            [],
+            9,
+        )
+        self.assertEqual(reason, "blocked_context_bias_mismatch")
+
+    def test_asm_trade_features_include_profile_and_context_fields(self) -> None:
+        spec = build_asm_spec(
+            active_timeframe_profile="intraday_15m",
+            context_bias_required=False,
+            higher_context_timeframe="4h",
+        )
+        result = self.lab.engine.run(spec, build_asm_bars())
+        features = result["trades"][0]["entry_features"]
+        self.assertEqual(features["active_timeframe_profile"], "intraday_15m")
+        self.assertEqual(features["execution_timeframe"], "15m")
+        self.assertEqual(features["context_timeframe"], "1h")
+        self.assertEqual(features["higher_context_timeframe"], "4h")
+        self.assertIn("context_bias", features)
+        self.assertIn("fib_entry_retracement_resolved", features)
+
+    def test_asm_registered_family_runs_and_exports_artifacts(self) -> None:
+        asm_spec = build_asm_spec()
+        asm_spec["metadata"] = {
+            "family_id": "asm_fib_liquidity",
+            "title": "ASM Fibonacci Liquidity",
+            "causal_story": "Fixture registered ASM parent.",
+        }
+        (settings.strategy_specs_dir / "asm_fib_liquidity_parent.json").write_text(json.dumps(asm_spec), encoding="utf-8")
+        self.lab.ensure_seeded()
+        edges = self.lab.list_tuning_edges("ver_asm_fib_liquidity_parent")
+        self.assertTrue(any(edge["lever"] == "fib_entry_retracement" for edge in edges))
+        dataset = self.data_service.import_fixture_dataset(
+            build_asm_bars(),
+            symbol="BTCUSDT",
+            timeframe="15m",
+            name="asm-fixture",
+        )
+        payload = self.lab.run_version("ver_asm_fib_liquidity_parent", dataset["dataset_id"])
+        self.assertGreaterEqual(payload["metrics"]["total_trades"], 1)
+        self.assertTrue(Path(payload["artifact_path"]).exists())
+        self.assertTrue(Path(payload["report_path"]).exists())
+        self.assertIn("blocked_no_fvg", payload["diagnostics"])
 
     def test_run_parent_persists_metrics_and_artifacts(self) -> None:
         dataset = self.data_service.import_fixture_dataset(
@@ -143,60 +944,67 @@ class MutationLabTests(unittest.TestCase):
         stored_runs = self.repo.list_runs(family_id="btc_intraday")
         self.assertEqual(len(stored_runs), 1)
 
-    def test_import_mt5_csv_dataset_normalizes_rows(self) -> None:
-        source = self.root / "XAUUSD_M30_sample.csv"
-        mt5_header = (
-            "<DATE>\t<TIME>\t<OPEN>\t<HIGH>\t<LOW>\t<CLOSE>\t<TICKVOL>\t<VOL>\t<SPREAD>\n"
-            "2017.11.02\t07:00:00\t1280.14\t1280.56\t1279.13\t1279.83\t2354\t2354\t6\n"
-            "2017.11.02\t07:30:00\t1279.83\t1280.47\t1279.61\t1280.03\t2067\t2067\t6\n"
+    def test_mt5_production_execution_fills_after_signal_and_marks_open_equity(self) -> None:
+        bars = build_fixture_bars()
+        version = self.repo.get_version("ver_btc_intraday_parent")
+        result = self.lab.engine.run(version["spec_json"], bars)
+        self.assertEqual(result["diagnostics"]["execution_model"], "mt5_bar_proxy")
+        self.assertGreater(result["diagnostics"]["pending_entry_orders"], 0)
+        self.assertGreater(result["diagnostics"]["pending_order_fills"], 0)
+        self.assertGreater(result["metrics"]["total_trades"], 0)
+        first_trade = result["trades"][0]
+        self.assertNotEqual(first_trade["entry_features"]["signal_ts"], first_trade["entry_features"]["fill_ts"])
+        self.assertTrue(
+            any(
+                point["mark_to_market_equity"] != point["realized_equity"]
+                for point in result["equity_curve"]
+            )
         )
-        source.write_text(mt5_header, encoding="utf-8")
-        with self.assertRaises(HTTPException):
-            self.data_service.import_mt5_csv_dataset(str(source), "XAUUSD", "30m", "too-small")
 
-        mt5_body = mt5_header + "".join(
-            f"{(datetime(2017, 11, 3, tzinfo=UTC) + timedelta(minutes=30 * step)).strftime('%Y.%m.%d')}\t"
-            f"{(datetime(2017, 11, 3, tzinfo=UTC) + timedelta(minutes=30 * step)).strftime('%H:%M:%S')}\t"
-            "1280\t1281\t1279\t1280.5\t100\t100\t6\n"
-            for step in range(500)
+    def test_research_same_close_execution_remains_explicit_diagnostic_mode(self) -> None:
+        bars = build_fixture_bars()
+        spec = json.loads(json.dumps(self.repo.get_version("ver_btc_intraday_parent")["spec_json"]))
+        spec["parameters"]["execution_model"] = "research_same_close"
+        result = self.lab.engine.run(spec, bars)
+        self.assertEqual(result["diagnostics"]["execution_model"], "research_same_close")
+        self.assertGreater(result["metrics"]["total_trades"], 0)
+        first_trade = result["trades"][0]
+        self.assertEqual(first_trade["entry_features"]["signal_ts"], first_trade["entry_features"]["fill_ts"])
+
+    def test_mt5_bar_proxy_allows_stop_after_next_open_fill_inside_entry_bar(self) -> None:
+        bars = build_mt5_proxy_bars()
+        next_open = BacktestEngine().run(build_ma_proxy_spec(execution_model="next_bar_open"), bars)
+        mt5_proxy = BacktestEngine().run(build_ma_proxy_spec(execution_model="mt5_bar_proxy"), bars)
+        self.assertEqual(next_open["diagnostics"]["pending_order_fills"], 1)
+        self.assertEqual(next_open["diagnostics"]["stop_exits"], 1)
+        self.assertEqual(mt5_proxy["diagnostics"]["pending_order_fills"], 1)
+        self.assertEqual(mt5_proxy["diagnostics"]["stop_exits"], 1)
+        self.assertEqual(mt5_proxy["trades"][0]["reason"], "stop")
+        self.assertEqual(mt5_proxy["trades"][0]["bars_held"], 0)
+        self.assertEqual(mt5_proxy["trades"][0]["entry_features"]["execution_model"], "mt5_bar_proxy")
+
+    def test_mt5_bar_proxy_rejects_invalid_breakeven_stop_modification(self) -> None:
+        bars = build_mt5_proxy_bars()
+        bars[4] = Bar(
+            ts=bars[4].ts,
+            open=104.0,
+            high=110.0,
+            low=100.0,
+            close=105.0,
+            volume=bars[4].volume,
+            symbol=bars[4].symbol,
+            timeframe=bars[4].timeframe,
         )
-        source.write_text(mt5_body, encoding="utf-8")
-        payload = self.data_service.import_mt5_csv_dataset(str(source), "XAUUSD", "30m", "mt5-xau")
-        self.assertEqual(payload["symbol"], "XAUUSD")
-        self.assertEqual(payload["timeframe"], "30m")
-        self.assertEqual(payload["source"], "mt5_csv")
-        self.assertGreater(payload["rows_count"], 500)
-        bars = self.data_service.load_bars(payload["dataset_id"])
-        self.assertEqual(bars[0].ts, datetime(2017, 11, 2, 7, 0, tzinfo=UTC))
-        self.assertEqual(bars[0].symbol, "XAUUSD")
-        self.assertEqual(bars[0].timeframe, "30m")
-
-        uploaded = self.data_service.import_mt5_csv_content("sample.csv", mt5_body, "XAUUSD", "30m", "mt5-xau-upload")
-        self.assertEqual(uploaded["source"], "mt5_csv_upload")
-        self.assertGreater(uploaded["rows_count"], 500)
-
-    def test_load_bars_repairs_relocated_dataset_path(self) -> None:
-        bars = build_fixture_bars(520)
-        dataset_id = "ds_relocated"
-        relocated = settings.data_dir / f"{dataset_id}.csv"
-        self.data_service.write_bars(relocated, bars)
-        stale = self.root / "old" / "artifacts" / "data" / relocated.name
-        self.repo.put_dataset(
-            {
-                "dataset_id": dataset_id,
-                "name": "relocated",
-                "symbol": "BTCUSDT",
-                "timeframe": "15m",
-                "source": "fixture",
-                "rows_count": len(bars),
-                "path": str(stale),
-                "created_at": datetime.now(UTC).isoformat(),
-            }
+        result = BacktestEngine().run(
+            build_ma_proxy_spec(
+                execution_model="mt5_bar_proxy",
+                breakeven_stop_enabled=True,
+                breakeven_trigger_mfe_r=0.0,
+                breakeven_lock_r=0.5,
+            ),
+            bars,
         )
-        loaded = self.data_service.load_bars(dataset_id)
-        self.assertEqual(len(loaded), len(bars))
-        repaired = self.repo.get_dataset(dataset_id)
-        self.assertEqual(Path(repaired["path"]), relocated)
+        self.assertGreaterEqual(result["diagnostics"]["mt5_stop_modify_rejects"], 1)
 
     def test_ghl_dc_engine_runs(self) -> None:
         bars = build_fixture_bars(1200)
@@ -222,12 +1030,14 @@ class MutationLabTests(unittest.TestCase):
                 "sizing_mode": "fixed_risk_pct",
                 "risk_pct": 0.005,
                 "max_leverage": 1.0,
+                "execution_model": "mt5_bar_proxy",
             },
             "evaluation": {},
         }
         result = BacktestEngine().run(spec, bars)
         self.assertIn("metrics", result)
         self.assertIn("diagnostics", result)
+        self.assertEqual(result["diagnostics"]["execution_model"], "mt5_bar_proxy")
         self.assertGreaterEqual(result["diagnostics"]["bars"], 1200)
         self.assertIn("breakeven_stop_moves", result["diagnostics"])
         self.assertTrue(result["trades"])
@@ -293,46 +1103,13 @@ class MutationLabTests(unittest.TestCase):
                 "lot_step": 0.01,
                 "max_lot": 100.0,
                 "skip_below_min_lot": True,
+                "execution_model": "mt5_bar_proxy",
             },
             "evaluation": {},
         }
         result = BacktestEngine().run(spec, bars)
         self.assertGreater(result["diagnostics"]["mt5_invalid_lot_skips"], 0)
         self.assertEqual(result["diagnostics"]["entries"], 0)
-
-    def test_ghl_dc_breakeven_stop_moves_when_enabled(self) -> None:
-        bars = build_fixture_bars(1200)
-        for bar in bars:
-            bar.symbol = "XAUUSD"
-            bar.timeframe = "30m"
-        spec = {
-            "engine_id": "ghl_dc_breakout_v1",
-            "parameters": {
-                "gann_high_period": 5,
-                "gann_low_period": 8,
-                "donchian_length": 13,
-                "max_breakout_bars": 10,
-                "allow_long": True,
-                "allow_short": True,
-                "atr_len": 8,
-                "stop_mode": "atr",
-                "stop_mult": 2.0,
-                "breakeven_stop_enabled": True,
-                "breakeven_trigger_mfe_r": 0.1,
-                "breakeven_lock_r": 0.0,
-                "initial_capital": 100000.0,
-                "commission_pct": 0.0,
-                "slippage_ticks": 1,
-                "tick_size": 0.01,
-                "sizing_mode": "fixed_risk_pct",
-                "risk_pct": 0.005,
-                "max_leverage": 1.0,
-            },
-            "evaluation": {},
-        }
-        result = BacktestEngine().run(spec, bars)
-        self.assertGreater(result["diagnostics"]["breakeven_stop_moves"], 0)
-        self.assertTrue(any(trade["reason"] == "breakeven_stop" for trade in result["trades"]))
 
     def test_time_decay_confirmation_suppresses_unconfirmed_exit(self) -> None:
         diagnostics = {
@@ -508,43 +1285,43 @@ class MutationLabTests(unittest.TestCase):
         self.assertTrue(allowed)
         self.assertEqual(diagnostics["entry_exposure_gate_blocks"], 0)
 
-    def test_ghl_dc_time_risk_filter_blocks_entries_when_enabled(self) -> None:
-        bars = build_fixture_bars(1200)
-        for bar in bars:
-            bar.symbol = "XAUUSD"
-            bar.timeframe = "30m"
-        base_parameters = {
-            "gann_high_period": 5,
-            "gann_low_period": 8,
-            "donchian_length": 13,
-            "max_breakout_bars": 10,
-            "allow_long": True,
-            "allow_short": True,
-            "atr_len": 8,
-            "stop_mode": "atr",
-            "stop_mult": 2.0,
-            "initial_capital": 100000.0,
-            "commission_pct": 0.0,
-            "slippage_ticks": 1,
-            "tick_size": 0.01,
-            "sizing_mode": "fixed_risk_pct",
-            "risk_pct": 0.005,
-            "max_leverage": 1.0,
+    def test_entry_blackbox_veto_blocks_hour_and_side_month(self) -> None:
+        diagnostics = {
+            "entry_blackbox_veto_blocks": 0,
+            "entry_blackbox_veto_long_blocks": 0,
+            "entry_blackbox_veto_short_blocks": 0,
         }
-        base_spec = {"engine_id": "ghl_dc_breakout_v1", "parameters": base_parameters, "evaluation": {}}
-        base_result = BacktestEngine().run(base_spec, bars)
-        tuned_spec = json.loads(json.dumps(base_spec))
-        tuned_spec["parameters"].update(
-            {
-                "time_risk_filter_enabled": True,
-                "time_risk_block_utc_hours": list(range(24)),
-                "time_risk_block_weekdays": [],
-            }
+        parameters = {
+            "entry_blackbox_veto_enabled": True,
+            "entry_blackbox_veto_utc_hours": [15],
+            "entry_blackbox_veto_side_months": ["long:8"],
+        }
+
+        hour_allowed = BacktestEngine._entry_blackbox_veto_allows_entry(
+            parameters=parameters,
+            direction=-1,
+            entry_ts=datetime(2024, 1, 1, 15, 0, tzinfo=UTC),
+            diagnostics=diagnostics,
         )
-        tuned_result = BacktestEngine().run(tuned_spec, bars)
-        self.assertGreater(tuned_result["diagnostics"]["time_risk_filter_blocks"], 0)
-        self.assertEqual(tuned_result["diagnostics"]["entries"], 0)
-        self.assertLess(tuned_result["diagnostics"]["entries"], base_result["diagnostics"]["entries"])
+        side_month_allowed = BacktestEngine._entry_blackbox_veto_allows_entry(
+            parameters=parameters,
+            direction=1,
+            entry_ts=datetime(2024, 8, 1, 12, 0, tzinfo=UTC),
+            diagnostics=diagnostics,
+        )
+        clean_allowed = BacktestEngine._entry_blackbox_veto_allows_entry(
+            parameters=parameters,
+            direction=1,
+            entry_ts=datetime(2024, 9, 1, 12, 0, tzinfo=UTC),
+            diagnostics=diagnostics,
+        )
+
+        self.assertFalse(hour_allowed)
+        self.assertFalse(side_month_allowed)
+        self.assertTrue(clean_allowed)
+        self.assertEqual(diagnostics["entry_blackbox_veto_blocks"], 2)
+        self.assertEqual(diagnostics["entry_blackbox_veto_long_blocks"], 1)
+        self.assertEqual(diagnostics["entry_blackbox_veto_short_blocks"], 1)
 
     def test_time_decay_exit_is_disabled_by_default_and_opt_in(self) -> None:
         bars = build_fixture_bars()
@@ -645,8 +1422,11 @@ class MutationLabTests(unittest.TestCase):
         edges = self.lab.list_tuning_edges("ver_btc_intraday_parent")
         self.assertTrue(edges)
         self.assertGreaterEqual(edges[0]["priority"], edges[-1]["priority"])
-        initial_capital_edge = next(edge for edge in edges if edge["lever"] == "initial_capital")
-        self.assertFalse(initial_capital_edge["optimizable"])
+        edge_levers = {edge["lever"] for edge in edges}
+        self.assertIn("stop_mult", edge_levers)
+        self.assertNotIn("execution_model", edge_levers)
+        self.assertNotIn("sizing_mode", edge_levers)
+        self.assertNotIn("notional_pct", edge_levers)
         with self.assertRaises(HTTPException):
             self.lab.optimize_lever("ver_btc_intraday_parent", dataset["dataset_id"], "initial_capital")
         preview = self.lab.preview_tuned_version(
@@ -671,7 +1451,10 @@ class MutationLabTests(unittest.TestCase):
         self.assertEqual(stop_edge["current_value"], 4.0)
         self.assertTrue(any(edge["lever"] == "time_risk_block_utc_hours" for edge in child_edges))
         self.assertTrue(any(edge["value_type"] == "list" for edge in child_edges))
-        self.assertTrue(any(edge["lever"] == "sizing_mode" for edge in child_edges))
+        hidden_levers = {edge["lever"] for edge in child_edges}
+        self.assertNotIn("execution_model", hidden_levers)
+        self.assertNotIn("sizing_mode", hidden_levers)
+        self.assertNotIn("notional_pct", hidden_levers)
 
     def test_existing_child_versions_are_upgraded_with_phase_three_edges(self) -> None:
         version = self.repo.get_version("ver_btc_intraday_parent")
@@ -689,6 +1472,9 @@ class MutationLabTests(unittest.TestCase):
             "max_leverage",
         ):
             legacy_spec["parameters"].pop(key, None)
+        legacy_spec["parameters"]["execution_model"] = "next_bar_open"
+        legacy_spec["evaluation"]["production_sizing_modes"] = ["fixed_notional_pct", "fixed_risk_pct"]
+        legacy_spec["evaluation"]["maximum_initial_risk_pct"] = 5
         legacy_spec["mutation_space"] = [
             item
             for item in legacy_spec["mutation_space"]
@@ -710,6 +1496,10 @@ class MutationLabTests(unittest.TestCase):
         self.assertIn("hybrid_reverse_exit_triage_enabled", upgraded["spec_json"]["parameters"])
         self.assertIn("hybrid_time_decay_triage_enabled", upgraded["spec_json"]["parameters"])
         self.assertIn("sizing_mode", upgraded["spec_json"]["parameters"])
+        self.assertEqual(upgraded["spec_json"]["parameters"]["execution_model"], "mt5_bar_proxy")
+        self.assertEqual(upgraded["spec_json"]["parameters"]["sizing_mode"], "mt5_fixed_risk_lot")
+        self.assertEqual(upgraded["spec_json"]["evaluation"]["production_sizing_modes"], ["mt5_fixed_risk_lot"])
+        self.assertEqual(upgraded["spec_json"]["evaluation"]["maximum_initial_risk_pct"], 1.0)
         self.assertTrue(any(edge["lever"] == "breakeven_trigger_mfe_r" for edge in edges))
         self.assertTrue(any(edge["lever"] == "hybrid_reverse_exit_min_mfe_r" for edge in edges))
         self.assertTrue(any(edge["lever"] == "max_leverage" for edge in edges))
@@ -751,9 +1541,24 @@ class MutationLabTests(unittest.TestCase):
         self.assertGreaterEqual(len(self.lab._candidate_values(edges["hybrid_reverse_exit_min_mfe_r"])), 60)
         self.assertGreaterEqual(len(self.lab._candidate_values(edges["hybrid_time_decay_triage_max_unrealized_r"])), 30)
         self.assertGreaterEqual(len(self.lab._candidate_values(edges["hybrid_time_decay_triage_max_mfe_r"])), 20)
-        self.assertGreaterEqual(len(self.lab._candidate_values(edges["notional_pct"])), 15)
+        self.assertGreaterEqual(len(self.lab._candidate_values(edges["entry_exposure_gate_max_pct"])), 19)
+        self.assertGreaterEqual(len(self.lab._candidate_values(edges["reverse_confirm_max_bars"])), 12)
+        self.assertGreaterEqual(len(self.lab._candidate_values(edges["reverse_confirm_min_mfe_r"])), 40)
+        self.assertGreaterEqual(len(self.lab._candidate_values(edges["reverse_confirm_allow_if_unrealized_r_lte"])), 40)
+        self.assertGreaterEqual(len(self.lab._candidate_values(edges["time_decay_confirm_max_unrealized_r"])), 60)
+        self.assertGreaterEqual(len(self.lab._candidate_values(edges["time_decay_confirm_max_mfe_r"])), 40)
         self.assertGreaterEqual(len(self.lab._candidate_values(edges["risk_pct"])), 10)
         self.assertGreaterEqual(len(self.lab._candidate_values(edges["max_leverage"])), 4)
+
+    def test_execution_and_sizing_modes_are_hidden_from_operator_levers(self) -> None:
+        edges = {edge["lever"]: edge for edge in self.lab.list_tuning_edges("ver_btc_intraday_parent")}
+        self.assertNotIn("execution_model", edges)
+        self.assertNotIn("sizing_mode", edges)
+        self.assertNotIn("notional_pct", edges)
+        with self.assertRaises(HTTPException) as ctx:
+            self.lab.optimize_lever("ver_btc_intraday_parent", "missing_dataset", "execution_model", {})
+        self.assertEqual(ctx.exception.status_code, 404)
+        self.assertIn("not found", str(ctx.exception.detail))
 
     def test_portfolio_sizing_modes_change_exposure(self) -> None:
         bars = build_fixture_bars()
@@ -789,13 +1594,13 @@ class MutationLabTests(unittest.TestCase):
         self.assertLessEqual(max(trade["entry_exposure_pct"] for trade in risk_result["trades"]), 100.01)
         self.assertNotEqual(fixed_result["metrics"]["net_pnl"], notional_result["metrics"]["net_pnl"])
 
-    def test_capital_model_warnings_explain_all_in_notional_sizing(self) -> None:
+    def test_capital_model_warnings_explain_mt5_lot_sizing(self) -> None:
         version = self.repo.get_version("ver_btc_intraday_parent")
         spec = json.loads(json.dumps(version["spec_json"]))
         spec["parameters"].update(
             {
-                "sizing_mode": "fixed_notional_pct",
-                "notional_pct": 1.0,
+                "sizing_mode": "mt5_fixed_risk_lot",
+                "risk_pct": 0.005,
                 "allow_short": True,
             }
         )
@@ -806,8 +1611,8 @@ class MutationLabTests(unittest.TestCase):
             },
         )
         joined = " ".join(warnings)
-        self.assertIn("100.0%", joined)
-        self.assertIn("all-in 1x compounding", joined)
+        self.assertIn("mt5_fixed_risk_lot", joined)
+        self.assertIn("broker lot constraints", joined)
         self.assertIn("tail-risk flag", joined)
 
     def test_production_gate_requires_portfolio_model_or_benchmark_efficiency(self) -> None:
@@ -832,7 +1637,7 @@ class MutationLabTests(unittest.TestCase):
         self.assertEqual(self.lab._verdict(spec, metrics, None), "research_survivor")
 
         production_spec = json.loads(json.dumps(spec))
-        production_spec["parameters"]["sizing_mode"] = "fixed_risk_pct"
+        production_spec["parameters"]["sizing_mode"] = "mt5_fixed_risk_lot"
         self.assertEqual(self.lab._verdict(production_spec, metrics, None), "research_survivor")
 
         metrics["calmar_delta"] = 0.2
@@ -866,6 +1671,130 @@ class MutationLabTests(unittest.TestCase):
         self.assertIn("selection_mode", result)
         self.assertIn("score_components", result["best"])
         self.assertIn("best_spec", result)
+
+    def test_optimizer_skips_dataset_incompatible_timeframe_profiles(self) -> None:
+        spec = build_asm_spec(use_timeframe_profile_overrides=True)
+        spec["mutation_space"] = [
+            {
+                "kind": "white_box",
+                "lever": "active_timeframe_profile",
+                "path": "parameters.active_timeframe_profile",
+                "priority": 100,
+                "values": ["intraday_15m", "swing_4h"],
+                "search_mode": "values_only",
+                "rationale": "Run profile-specific baselines.",
+            }
+        ]
+        detail = self.lab.register_baseline(
+            family_id="asm_fixture",
+            title="ASM Fixture",
+            asset="BTCUSDT",
+            venue="Binance Spot",
+            timeframe="15m",
+            version_name="ASM Fixture Parent",
+            source_code="",
+            spec_json=spec,
+            causal_story="ASM fixture.",
+            notes="",
+        )
+        dataset = self.data_service.import_fixture_dataset(
+            build_fixture_bars(),
+            symbol="BTCUSDT",
+            timeframe="15m",
+            name="fixture-btc-15m",
+        )
+        version_id = detail["family"]["current_version_id"]
+        result = self.lab.optimize_lever(version_id, dataset["dataset_id"], "active_timeframe_profile", {})
+        self.assertEqual(result["mode"], "optimize_lever")
+        self.assertEqual(result["lever"], "active_timeframe_profile")
+        self.assertTrue(result["candidates"])
+        self.assertEqual(result["skipped_count"], 1)
+        self.assertEqual(result["skipped_candidates"][0]["value"], "swing_4h")
+        self.assertIn("Dataset timeframe `15m`", result["skipped_candidates"][0]["reason"])
+
+    def test_research_optimizer_can_move_when_no_production_candidate_is_eligible(self) -> None:
+        spec = {
+            "engine_id": "mock_engine_v1",
+            "asset": "BTCUSDT",
+            "venue": "Binance Spot",
+            "timeframe": "15m",
+            "metadata": {"family_id": "mock_optimizer", "title": "Mock Optimizer"},
+            "parameters": {"alpha": 1, "sizing_mode": "fixed_risk_pct", "risk_pct": 0.005, "max_leverage": 1.0},
+            "evaluation": {
+                "minimum_trades": 50,
+                "minimum_profit_factor": 10.0,
+                "maximum_drawdown_pct": 1.0,
+                "minimum_net_pnl": 0.0,
+                "minimum_daily_sharpe": 5.0,
+                "minimum_daily_sortino": 5.0,
+                "production_sizing_modes": ["fixed_risk_pct"],
+            },
+            "mutation_space": [
+                {
+                    "kind": "white_box",
+                    "lever": "alpha",
+                    "path": "parameters.alpha",
+                    "priority": 100,
+                    "values": [1, 2],
+                    "search_mode": "values_only",
+                    "rationale": "Mock alpha.",
+                }
+            ],
+        }
+        detail = self.lab.register_baseline(
+            family_id="mock_optimizer",
+            title="Mock Optimizer",
+            asset="BTCUSDT",
+            venue="Binance Spot",
+            timeframe="15m",
+            version_name="Mock Optimizer Parent",
+            source_code="",
+            spec_json=spec,
+            causal_story="Mock optimizer.",
+            notes="",
+        )
+        dataset = self.data_service.import_fixture_dataset(
+            build_fixture_bars(),
+            symbol="BTCUSDT",
+            timeframe="15m",
+            name="fixture-btc-15m",
+        )
+
+        def fake_run(tuned_spec: dict, bars: list[Bar]) -> dict:
+            alpha = tuned_spec["parameters"]["alpha"]
+            return {
+                "metrics": {
+                    "profit_factor": 0.8 + alpha,
+                    "return_pct": float(alpha),
+                    "total_trades": 60,
+                    "max_equity_drawdown_pct": 20.0,
+                    "daily_sharpe": float(alpha) * 0.1,
+                    "daily_sortino": float(alpha) * 0.1,
+                    "worst_daily_return_pct": -2.0,
+                    "calmar": float(alpha) * 0.1,
+                    "outperformance_pct": float(alpha),
+                    "max_initial_risk_pct": 0.5,
+                    "max_entry_exposure_pct": 100.0,
+                    "avg_entry_exposure_pct": 50.0,
+                    "net_pnl": 100.0 * alpha,
+                    "sharpe": float(alpha) * 0.1,
+                    "sortino": float(alpha) * 0.1,
+                    "percent_profitable": 40.0 + alpha,
+                    "expected_payoff": 10.0 * alpha,
+                    "calmar_delta": -1.0,
+                },
+                "diagnostics": {},
+                "trades": [],
+            }
+
+        with patch.object(self.lab.engine, "run", side_effect=fake_run):
+            version_id = detail["family"]["current_version_id"]
+            production = self.lab.optimize_lever(version_id, dataset["dataset_id"], "alpha", {}, optimization_mode="production")
+            research = self.lab.optimize_lever(version_id, dataset["dataset_id"], "alpha", {}, optimization_mode="research")
+        self.assertEqual(production["selection_mode"], "no_production_eligible_keep_current")
+        self.assertEqual(production["best"]["parameter_overrides"], {})
+        self.assertEqual(research["selection_mode"], "research_best_score")
+        self.assertEqual(research["best"]["parameter_overrides"]["alpha"], 2)
 
     def test_optimizer_penalizes_low_trade_high_profit_factor_candidates(self) -> None:
         spec = {
@@ -1012,62 +1941,43 @@ class MutationLabTests(unittest.TestCase):
         self.assertTrue(result["steps"])
         self.assertIn("preview", result)
         self.assertIn("parameter_overrides", result)
-        self.assertIn("research_fallback_steps", result)
-        self.assertIn("eligible_steps", result)
-        self.assertIn("selection_mode", result["steps"][0])
-        self.assertEqual(result["preview"]["spec"]["parameters"]["sizing_mode"], "fixed_risk_pct")
+        self.assertNotIn("execution_model", {step["lever"] for step in result["steps"]})
+        self.assertEqual(result["preview"]["spec"]["parameters"]["sizing_mode"], "mt5_fixed_risk_lot")
         self.assertLessEqual(result["preview"]["spec"]["parameters"]["risk_pct"], 0.01)
         self.assertLessEqual(result["preview"]["spec"]["parameters"]["max_leverage"], 1.0)
 
-    def test_optimize_all_stores_recoverable_result(self) -> None:
-        dataset = self.data_service.import_fixture_dataset(
-            build_fixture_bars(),
-            symbol="BTCUSDT",
-            timeframe="15m",
-            name="fixture-btc-15m",
-        )
-        result = self.lab.optimize_all("ver_btc_intraday_parent", dataset["dataset_id"], {}, passes=1)
-        progress = self.lab.optimization_progress()
-        recovered = self.lab.optimization_result()
-        self.assertFalse(progress["active"])
-        self.assertTrue(progress["result_available"])
-        self.assertEqual(recovered["mode"], "optimize_all")
-        self.assertEqual(recovered["base_version_id"], result["base_version_id"])
-        self.assertEqual(recovered["dataset_id"], result["dataset_id"])
-        self.assertEqual(recovered["preview"]["metrics"], result["preview"]["metrics"])
+    def test_optimize_all_emits_parameter_progress(self) -> None:
+        progress_events: list[dict[str, Any]] = []
+        fake_edges = [
+            {"lever": "fast_len", "current_value": 25, "optimizable": True},
+            {"lever": "slow_len", "current_value": 96, "optimizable": True},
+        ]
 
-    def test_optimize_all_keeps_starting_values_when_final_candidate_is_not_eligible(self) -> None:
-        dataset = self.data_service.import_fixture_dataset(
-            build_fixture_bars(),
-            symbol="BTCUSDT",
-            timeframe="15m",
-            name="fixture-btc-15m",
-        )
-        with patch.object(self.lab, "_optimization_eligible", return_value=False):
-            result = self.lab.optimize_all("ver_btc_intraday_parent", dataset["dataset_id"], {}, passes=1)
-        self.assertTrue(result["final_candidate_rejected"])
-        self.assertEqual(result["rejection_reason"], "optimized_candidate_failed_production_gates")
-        self.assertEqual(result["preview"]["spec"]["parameters"]["sizing_mode"], "fixed_risk_pct")
-        self.assertIn("rejected_parameter_overrides", result)
+        def fake_optimize_lever(version_id: str, dataset_id: str, lever: str, overrides: dict, optimization_mode: str = "production") -> dict:
+            next_overrides = {**overrides, lever: 26 if lever == "fast_len" else 104}
+            return {"best": {"parameter_overrides": next_overrides, "score": 1.0, "metrics": {}}}
 
-    def test_optimization_rejects_second_active_job(self) -> None:
-        dataset = self.data_service.import_fixture_dataset(
-            build_fixture_bars(),
-            symbol="BTCUSDT",
-            timeframe="15m",
-            name="fixture-btc-15m",
-        )
-        self.lab._start_optimization_progress(
-            mode="optimize_all",
-            version_id="ver_btc_intraday_parent",
-            dataset_id=dataset["dataset_id"],
-            total_candidates=10,
-            total_levers=2,
-            passes=1,
-        )
-        with self.assertRaises(HTTPException) as context:
-            self.lab.optimize_all("ver_btc_intraday_parent", dataset["dataset_id"], {}, passes=1)
-        self.assertEqual(context.exception.status_code, 409)
+        with (
+            patch.object(self.lab, "list_tuning_edges", return_value=fake_edges),
+            patch.object(self.lab, "optimize_lever", side_effect=fake_optimize_lever),
+            patch.object(self.lab, "preview_tuned_version", return_value={"mode": "preview"}),
+        ):
+            self.lab.optimize_all(
+                "ver_btc_intraday_parent",
+                "fake_dataset",
+                {},
+                passes=1,
+                optimization_mode="research",
+                progress_callback=progress_events.append,
+            )
+        self.assertGreaterEqual(len(progress_events), 1)
+        first = progress_events[0]
+        self.assertEqual(first["pass"], 1)
+        self.assertEqual(first["passes"], 1)
+        self.assertEqual(first["edge_index"], 1)
+        self.assertGreaterEqual(first["total_edges"], 1)
+        self.assertIn("lever", first)
+        self.assertIn("next_lever", first)
 
     def test_robustness_check_returns_walk_forward_and_cost_stress(self) -> None:
         dataset = self.data_service.import_fixture_dataset(
@@ -1083,10 +1993,30 @@ class MutationLabTests(unittest.TestCase):
         )
         self.assertEqual(result["mode"], "robustness_check")
         self.assertEqual(len(result["walk_forward"]), 4)
+        self.assertEqual(len(result["anchored_train_test"]), 3)
         self.assertEqual(len(result["cost_stress"]), 3)
         self.assertIn(result["summary"]["label"], {"production_robustness_candidate", "needs_review", "not_robust"})
         self.assertIn("daily_sharpe", result["walk_forward"][0]["metrics"])
+        self.assertIn("anchored_train_test_total", result["summary"])
         self.assertIn("commission_2x", {item["scenario"] for item in result["cost_stress"]})
+
+    def test_execution_feasibility_audit_flags_diagnostic_sizing(self) -> None:
+        dataset = self.data_service.import_fixture_dataset(
+            build_fixture_bars(),
+            symbol="BTCUSDT",
+            timeframe="15m",
+            name="fixture-btc-15m-execution-audit",
+        )
+        run = self.lab.save_tuned_version(
+            "ver_btc_intraday_parent",
+            dataset["dataset_id"],
+            {"sizing_mode": "fixed_quantity", "quantity": 1.0},
+        )
+        audit = self.lab.execution_feasibility_audit(run["run_id"])
+        self.assertEqual(audit["mode"], "execution_feasibility_audit")
+        self.assertFalse(audit["passed"])
+        self.assertIn("diagnostic_fixed_quantity_sizing", audit["failures"])
+        self.assertIn("order_samples", audit)
 
     def test_promote_child_updates_current_version(self) -> None:
         dataset = self.data_service.import_fixture_dataset(
@@ -1243,6 +2173,33 @@ class MutationLabTests(unittest.TestCase):
         self.assertIn("bad_time_decay_path_score", result["rows"][0])
         self.assertIn("checkpoint_bars", result["rows"][0])
         self.assertIn("unrealized_r", result["rows"][0])
+
+    def test_bos_demand_exact_pine_wick_bos_enters_from_confirmed_pivot(self) -> None:
+        result = BacktestEngine().run(build_bos_demand_spec(), build_bos_demand_bars())
+        self.assertEqual(result["diagnostics"]["wick_bos_events"], 1)
+        self.assertEqual(result["diagnostics"]["close_bos_events"], 0)
+        self.assertEqual(result["diagnostics"]["signals_long"], 1)
+        self.assertEqual(result["metrics"]["total_trades"], 1)
+        self.assertEqual(result["trades"][0]["reason"], "target")
+        self.assertEqual(result["trades"][0]["entry_features"]["variant"], "v0_exact_pine")
+
+    def test_bos_demand_close_bos_variant_rejects_wick_only_break(self) -> None:
+        result = BacktestEngine().run(
+            build_bos_demand_spec(variant="v0_integrity_close_bos"),
+            build_bos_demand_bars(),
+        )
+        self.assertEqual(result["diagnostics"]["wick_bos_events"], 0)
+        self.assertEqual(result["diagnostics"]["close_bos_events"], 0)
+        self.assertEqual(result["diagnostics"]["signals_long"], 0)
+        self.assertEqual(result["metrics"]["total_trades"], 0)
+
+    def test_bos_demand_no_ema_variant_forces_filter_off(self) -> None:
+        result = BacktestEngine().run(
+            build_bos_demand_spec(variant="v0_no_ema_diagnostic"),
+            build_bos_demand_bars(),
+        )
+        self.assertEqual(result["diagnostics"]["ema_filter_enabled"], 0)
+        self.assertEqual(result["trades"][0]["entry_features"]["ema_filter_enabled"], False)
 
 
 if __name__ == "__main__":

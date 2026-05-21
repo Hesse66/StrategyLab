@@ -1,180 +1,172 @@
 <!doctype html>
-<html lang="en">
+<html class="dark" lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Mutation Lab</title>
-    <link rel="stylesheet" href="/ui/style.css" />
+    <title>MUTATION LAB | Production Cockpit</title>
+    <link rel="stylesheet" href="/ui/style.css?v=20260520-production-rail" />
   </head>
   <body>
-    <aside class="side-rail" aria-label="Mutation Lab navigation">
-      <a class="brand-mark" href="#top" aria-label="Mutation Lab home">
-        <span class="brand-sigil">ML</span>
-        <span>
-          <strong>Mutation Lab</strong>
-          <small>white-box research</small>
-        </span>
-      </a>
-
-      <nav class="rail-nav" aria-label="Primary">
-        <a href="#data">Data Intake</a>
-        <a href="#lab">Command Deck</a>
-        <a href="#runs">Evidence Ledger</a>
-        <a href="#prompts">Prompt Core</a>
-      </nav>
-
-      <div class="rail-status">
-        <span class="pulse-dot"></span>
-        <span>Local engine online</span>
+    <header class="topbar" aria-label="Mutation Lab context">
+      <div class="brand">MUTATION LAB</div>
+      <div class="context-strip" aria-label="Current lab context">
+        <label class="context-field">
+          <span>Family</span>
+          <select id="familySelect"></select>
+        </label>
+        <label class="context-field wide">
+          <span>Parent / Child Base</span>
+          <select id="versionSelect"></select>
+        </label>
+        <label class="context-field">
+          <span>Dataset</span>
+          <select id="datasetSelect"></select>
+        </label>
       </div>
+      <div class="topbar-right">
+        <div class="system-clock">
+          <strong id="clock">--:--:--</strong>
+          <span><i></i>Local engine online</span>
+        </div>
+        <button id="refreshButton" class="icon-button" type="button" aria-label="Refresh">R</button>
+        <button class="icon-button" type="button" aria-label="Settings">S</button>
+        <span class="operator-chip">OP</span>
+      </div>
+    </header>
+
+    <aside class="side-rail" aria-label="Primary navigation">
+      <nav>
+        <a class="active" href="#top" aria-label="Command">
+          <svg class="rail-svg" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M5 15a7 7 0 0 1 14 0" />
+            <path d="M12 15l4-5" />
+            <path d="M7 15h10" />
+          </svg>
+        </a>
+        <a href="#data" aria-label="Data">
+          <svg class="rail-svg" viewBox="0 0 24 24" aria-hidden="true">
+            <ellipse cx="12" cy="7" rx="6" ry="3" />
+            <path d="M6 7v7c0 1.7 2.7 3 6 3s6-1.3 6-3V7" />
+            <path d="M6 11c0 1.7 2.7 3 6 3s6-1.3 6-3" />
+          </svg>
+        </a>
+        <a href="#optimizer" aria-label="Tuning">
+          <svg class="rail-svg" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M4 7h16" />
+            <path d="M4 12h16" />
+            <path d="M4 17h16" />
+            <path d="M8 5v4" />
+            <path d="M15 10v4" />
+            <path d="M11 15v4" />
+          </svg>
+        </a>
+        <a href="#versions" aria-label="Version tree">
+          <svg class="rail-svg" viewBox="0 0 24 24" aria-hidden="true">
+            <rect x="4" y="4" width="5" height="5" />
+            <rect x="15" y="4" width="5" height="5" />
+            <rect x="9.5" y="15" width="5" height="5" />
+            <path d="M9 6.5h6" />
+            <path d="M12 9v6" />
+          </svg>
+        </a>
+        <a href="#advanced" aria-label="Terminal">
+          <svg class="rail-svg" viewBox="0 0 24 24" aria-hidden="true">
+            <rect x="4" y="6" width="16" height="12" />
+            <path d="M8 10l3 2-3 2" />
+            <path d="M13 15h4" />
+          </svg>
+        </a>
+      </nav>
+      <a class="rail-help" href="#output" aria-label="Help">?</a>
     </aside>
 
     <main id="top" class="app-shell">
-      <header class="app-header">
-        <div>
-          <p class="eyebrow">Production robustness cockpit</p>
-          <h1>Mutation Lab</h1>
-          <p class="lede">
-            Freeze a parent, tune one evidence edge at a time, stress the candidate, then paper trade only what survives.
-          </p>
-        </div>
-        <div class="header-actions">
-          <button id="refreshButton" class="nav-action">Refresh</button>
-        </div>
-      </header>
-
-      <section class="summary-grid" id="summaryGrid" aria-label="Lab summary"></section>
-
-      <section id="data" class="panel data-panel">
-        <div class="panel-head">
-          <div>
-            <p class="eyebrow">Step 1</p>
-            <h2>Research Data</h2>
-          </div>
-          <p>Binance public candles or local MT5 CSV exports normalized into the research store.</p>
-        </div>
-
-        <div class="control-grid data-grid">
-          <label>
-            Symbol
-            <input id="symbolInput" value="BTCUSDT" />
-          </label>
-          <label>
-            Timeframe
-            <select id="timeframeSelect">
-              <option value="15m" selected>15m</option>
-              <option value="5m">5m</option>
-              <option value="30m">30m</option>
-              <option value="1h">1h</option>
-              <option value="4h">4h</option>
-            </select>
-          </label>
-          <label>
-            Bars
-            <input id="barsInput" type="number" value="40000" min="40000" max="1000000" step="1000" />
-          </label>
-          <label class="checkbox">
-            <input id="fullHistoryInput" type="checkbox" />
-            Full history
-          </label>
-          <label class="span-2">
-            Optional dataset label
-            <input id="datasetNameInput" placeholder="binance-btcusdt-15m-40000" />
-          </label>
-          <button id="downloadButton" class="primary">Download Dataset</button>
-        </div>
-        <div class="control-grid data-grid">
-          <label class="span-2">
-            MT5 CSV file
-            <input id="mt5CsvFileInput" type="file" accept=".csv,.txt,text/csv,text/plain" />
-          </label>
-          <label class="span-2">
-            MT5 CSV path fallback
-            <input id="mt5CsvPathInput" placeholder="C:\path\XAUUSD_M30_201711020700_202605011900.csv" />
-          </label>
-          <label>
-            MT5 symbol
-            <input id="mt5SymbolInput" value="XAUUSD" />
-          </label>
-          <label>
-            MT5 timeframe
-            <select id="mt5TimeframeSelect">
-              <option value="30m" selected>30m</option>
-              <option value="15m">15m</option>
-              <option value="1h">1h</option>
-              <option value="4h">4h</option>
-            </select>
-          </label>
-          <label class="span-2">
-            MT5 dataset label
-            <input id="mt5DatasetNameInput" placeholder="icmarkets-xauusd-30m-20171102-20260501" />
-          </label>
-          <button id="importMt5Button" class="primary">Import MT5 CSV</button>
-        </div>
-        <p id="downloadStatus" class="status"></p>
-      </section>
-
-      <section id="lab" class="command-grid">
-        <section class="panel command-panel">
-          <div class="panel-head">
-            <div>
-              <p class="eyebrow">Step 2</p>
-              <h2>Current Family</h2>
+      <section class="cockpit-grid" aria-label="Production cockpit">
+        <div class="left-stack">
+          <section class="panel performance-panel" aria-labelledby="performanceTitle">
+            <div class="panel-title compact-line">
+              <span class="eyebrow">Performance Overview</span>
+              <div class="mode-tabs" aria-label="Performance views">
+                <button type="button" class="active">Equity Curve</button>
+                <button type="button">Returns</button>
+                <button type="button">Drawdown</button>
+              </div>
             </div>
-            <p>Choose the mutation base and dataset. Working values below update the live instrument panel.</p>
-          </div>
+            <h1 id="performanceTitle">Command Deck</h1>
+            <div id="summaryGrid" class="summary-grid"></div>
+          </section>
 
-          <div class="control-grid three-col">
-            <label>
-              Selected family
-              <select id="familySelect"></select>
-            </label>
-            <label>
-              Mutation base
-              <select id="versionSelect"></select>
-            </label>
-            <label>
-              Dataset
-              <select id="datasetSelect"></select>
-            </label>
-          </div>
+          <section id="data" class="split-row">
+            <section class="panel data-panel">
+              <span class="eyebrow">Data Intake</span>
+              <h2>Research Data</h2>
+              <div class="control-grid data-grid">
+                <label>
+                  <span>Symbol</span>
+                  <input id="symbolInput" value="BTCUSDT" />
+                </label>
+                <label>
+                  <span>Timeframe</span>
+                  <select id="timeframeSelect">
+                    <option value="15m" selected>15m</option>
+                    <option value="5m">5m</option>
+                    <option value="1h">1h</option>
+                    <option value="4h">4h</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Bars</span>
+                  <input id="barsInput" type="number" value="40000" min="40000" max="1000000" step="1000" />
+                </label>
+                <label class="check-field">
+                  <input id="fullHistoryInput" type="checkbox" />
+                  <span>Full history</span>
+                </label>
+              </div>
+              <label>
+                <span>Optional Dataset Label</span>
+                <input id="datasetNameInput" placeholder="binance-btcusdt-15m-40000" />
+              </label>
+              <button id="downloadButton" class="commit-action full" type="button">Download Dataset</button>
+              <p id="downloadStatus" class="status"></p>
+            </section>
 
-          <div id="familyMeta" class="family-meta"></div>
+            <section class="panel quick-actions">
+              <button id="optimizeResearchButton" class="outline-action" type="button">Optimize Analogue Base</button>
+              <button id="optimizeAllButton" class="outline-action" type="button">Optimize Production Target</button>
+              <button id="saveTuneButton" class="commit-action" type="button">Commit Base Version</button>
+              <div id="optimizationStatus" class="optimization-status" aria-live="polite"></div>
+            </section>
+          </section>
+        </div>
 
-          <div class="action-row">
-            <button id="runParentButton" class="primary">Run Selected Version</button>
-            <button id="productionDefaultsButton">Apply Production Defaults</button>
-            <button id="robustnessButton">Run Robustness Gate</button>
-            <button id="resetTuneButton">Reset To Selected Base</button>
-            <button id="saveTuneButton">Save Tuned Child</button>
-          </div>
-          <p id="familyStatus" class="status">
-            Change any working value in Mutation Edges and the preview will refresh automatically.
-          </p>
-        </section>
-
-        <section class="panel metrics-panel">
-          <div class="panel-head compact">
-            <div>
-              <p class="eyebrow">Live Instrument Panel</p>
-              <h2>Latest Run</h2>
-            </div>
-            <p>Unsaved previews appear here before you save a child.</p>
+        <section class="panel gates-panel" aria-label="Production metrics">
+          <div class="panel-title compact-line">
+            <span class="eyebrow">Production Gates</span>
+            <span id="gateBadge" class="gate-badge">Awaiting Evidence</span>
           </div>
           <div id="metricsGrid" class="metrics-grid"></div>
         </section>
 
-        <section class="panel tuning-panel">
-          <div class="panel-head compact">
-            <div>
-              <p class="eyebrow">Parameter Tuning</p>
-              <h2>Mutation Edges</h2>
+        <section id="lab" class="panel family-panel">
+          <span class="eyebrow">Current Family</span>
+          <h2>Frozen Base</h2>
+          <div id="familyMeta" class="family-meta"></div>
+        </section>
+
+        <section id="optimizer" class="panel tuning-panel">
+          <div class="action-bar">
+            <div class="action-row">
+              <button id="runParentButton" class="outline-action" type="button">Run Selected Version</button>
+              <button id="productionDefaultsButton" class="ghost-action" type="button">Apply Production Defaults</button>
+              <button id="robustnessButton" class="ghost-action" type="button">Run Robustness Gate</button>
+              <button id="resetTuneButton" class="ghost-action" type="button">Reset All To Parent</button>
             </div>
-            <div class="optimizer-tools">
-              <p>Optimize one lever or run a two-pass production sequence.</p>
-              <button id="optimizeAllButton" class="primary">Optimize Production Twice</button>
-              <div id="optimizationStatus" class="optimization-status" aria-live="polite"></div>
-            </div>
+            <span id="familyStatus" class="status inline-status">Change any working value in Mutation Levers and the preview will refresh automatically.</span>
+          </div>
+          <div class="panel-bar">
+            <span class="eyebrow">Mutation Levers</span>
+            <strong>Single Parameter Mode</strong>
           </div>
           <div class="table-wrap">
             <table>
@@ -182,7 +174,7 @@
                 <tr>
                   <th>Lever</th>
                   <th>Current</th>
-                  <th>Working Value</th>
+                  <th>Cycle Value</th>
                   <th>Action</th>
                 </tr>
               </thead>
@@ -190,128 +182,123 @@
             </table>
           </div>
         </section>
-      </section>
 
-      <section class="panel coverage-panel">
-        <div class="panel-head compact">
-          <div>
-            <p class="eyebrow">Datasets</p>
-            <h2>Coverage</h2>
+        <section class="panel coverage-panel">
+          <div class="section-head">
+            <span class="eyebrow">Datasets</span>
+            <strong>Coverage</strong>
           </div>
-        </div>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Name</th>
-                <th>Symbol</th>
-                <th>TF</th>
-                <th>Rows</th>
-                <th>Action</th>
-              </tr>
-            </thead>
-            <tbody id="datasetsTable"></tbody>
-          </table>
-        </div>
-      </section>
-
-      <section id="runs" class="panel runs-panel">
-        <div class="panel-head compact">
-          <div>
-            <p class="eyebrow">Evidence Ledger</p>
-            <h2>Parent vs Child Runs</h2>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Symbol</th>
+                  <th>TF</th>
+                  <th>Rows</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody id="datasetsTable"></tbody>
+            </table>
           </div>
-          <p>Live previews stay unsaved until you decide they deserve a version.</p>
-        </div>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Version</th>
-                <th>Verdict</th>
-                <th>PF</th>
-                <th>Trades</th>
-                <th>DD%</th>
-                <th>Net PnL</th>
-                <th>Artifacts</th>
-                <th>Action</th>
-              </tr>
-            </thead>
-            <tbody id="runsTable"></tbody>
-          </table>
-        </div>
-      </section>
-
-      <section class="panel versions-panel">
-        <div class="panel-head compact">
-          <div>
-            <p class="eyebrow">Saved Mutation Bases</p>
-            <h2>Versions</h2>
-          </div>
-          <p>Clean out generated children you do not want to keep. Current family version cannot be deleted.</p>
-        </div>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Version</th>
-                <th>Stage</th>
-                <th>Parent</th>
-                <th>Created</th>
-                <th>Action</th>
-              </tr>
-            </thead>
-            <tbody id="versionsTable"></tbody>
-          </table>
-        </div>
-      </section>
-
-      <section id="prompts" class="prompt-grid">
-        <section class="panel prompt-panel">
-          <div class="panel-head compact">
-            <div>
-              <p class="eyebrow">Prompt Core</p>
-              <h2>Mutation Engine</h2>
-            </div>
-          </div>
-          <div id="promptsList" class="prompt-list"></div>
         </section>
 
-        <section class="panel register-panel">
-          <div class="panel-head compact">
-            <div>
-              <p class="eyebrow">Advanced</p>
-              <h2>Register Baseline</h2>
-            </div>
-            <p>Use only when you have source code, a spec JSON, and a causal story.</p>
+        <section id="runs" class="panel runs-panel">
+          <div class="section-head stacked">
+            <span class="eyebrow">Evidence Ledger</span>
+            <strong>Parent vs Child Runs</strong>
           </div>
-          <div class="form-stack">
-            <input id="registerFamilyId" placeholder="family_id" />
-            <input id="registerTitle" placeholder="Family title" />
-            <input id="registerAsset" placeholder="Asset (e.g. BTCUSDT)" />
-            <input id="registerVenue" placeholder="Venue (e.g. Binance Spot)" />
-            <input id="registerTimeframe" placeholder="Timeframe (e.g. 15m)" />
-            <input id="registerVersionName" placeholder="Version name" />
-            <textarea id="registerCausalStory" placeholder="Causal story"></textarea>
-            <textarea id="registerNotes" placeholder="Notes"></textarea>
-            <textarea id="registerSourceCode" placeholder="Baseline source code"></textarea>
-            <textarea id="registerSpecJson" placeholder="Canonical spec JSON"></textarea>
-            <button id="registerButton">Register Baseline</button>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Version</th>
+                  <th>Verdict</th>
+                  <th>PF</th>
+                  <th>Trades</th>
+                  <th>DD%</th>
+                  <th>Net PnL</th>
+                  <th>Artifacts</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody id="runsTable"></tbody>
+            </table>
           </div>
-          <p id="registerStatus" class="status"></p>
         </section>
-      </section>
 
-      <section class="panel output-panel">
-        <div class="panel-head compact">
-          <div>
-            <p class="eyebrow">Output</p>
-            <h2>API Payload</h2>
+        <section id="versions" class="panel versions-panel">
+          <div class="section-head">
+            <div>
+              <span class="eyebrow">Saved Mutation Bases</span>
+              <strong>Versions</strong>
+            </div>
+            <span>Use any saved child as a new base without promoting it first.</span>
           </div>
-        </div>
-        <pre id="outputBox"></pre>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Version</th>
+                  <th>Stage</th>
+                  <th>Parent</th>
+                  <th>Created</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody id="versionsTable"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section id="advanced" class="advanced-grid">
+          <details class="panel prompt-panel">
+            <summary><span>Prompt Core</span></summary>
+            <div id="promptsList" class="prompt-list"></div>
+          </details>
+
+          <details class="panel register-panel">
+            <summary><span>Register Baseline</span></summary>
+            <div class="form-stack">
+              <input id="registerFamilyId" placeholder="family_id" />
+              <input id="registerTitle" placeholder="Family title" />
+              <input id="registerAsset" placeholder="Asset (e.g. BTCUSDT)" />
+              <input id="registerVenue" placeholder="Venue (e.g. Binance Spot)" />
+              <input id="registerTimeframe" placeholder="Timeframe (e.g. 15m)" />
+              <input id="registerVersionName" placeholder="Version name" />
+              <textarea id="registerCausalStory" placeholder="Causal story"></textarea>
+              <textarea id="registerNotes" placeholder="Notes"></textarea>
+              <textarea id="registerSourceCode" placeholder="Baseline source code"></textarea>
+              <textarea id="registerSpecJson" placeholder="Canonical spec JSON"></textarea>
+              <button id="registerButton" class="outline-action" type="button">Register Baseline</button>
+            </div>
+            <p id="registerStatus" class="status"></p>
+          </details>
+        </section>
+
+        <details id="output" class="panel output-panel">
+          <summary><span>API Payload</span></summary>
+          <pre id="outputBox"></pre>
+        </details>
       </section>
     </main>
-    <script src="/ui/app.js" defer></script>
+
+    <footer class="status-bar" aria-label="System status">
+      <div><span>Market Data</span><i></i></div>
+      <div class="ticker">
+        <span><b>S&P 500</b> 5,308.15 <em>+0.47%</em></span>
+        <span><b>VIX</b> 12.53 <em class="risk">-1.18%</em></span>
+        <span><b>10Y YIELD</b> 4.51% <em class="risk">-0.02%</em></span>
+        <span><b>BTC-USD</b> 68,742 <em>+1.21%</em></span>
+      </div>
+      <div class="resource-strip">
+        <span>EEM <meter min="0" max="100" value="42"></meter></span>
+        <span>CPY <meter min="0" max="100" value="18"></meter></span>
+        <span>v2.4.2</span>
+      </div>
+    </footer>
+
+    <script src="/ui/app.js?v=20260520-production-rail-fix1" defer></script>
   </body>
 </html>

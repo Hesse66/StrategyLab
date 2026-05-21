@@ -19,6 +19,17 @@
     "time_decay_exit_enabled": false,
     "time_decay_bars": 96,
     "time_decay_min_mfe_r": 0.5,
+    "time_decay_triage_confirmation_enabled": false,
+    "time_decay_confirm_max_unrealized_r": 0.0,
+    "time_decay_confirm_max_mfe_r": 0.35,
+    "time_decay_confirm_require_no_breakeven_move": false,
+    "reverse_confirmation_enabled": false,
+    "reverse_confirm_max_bars": 2,
+    "reverse_confirm_min_mfe_r": 0.2,
+    "reverse_confirm_allow_if_unrealized_r_lte": -0.35,
+    "reverse_confirm_require_no_breakeven_move": false,
+    "entry_exposure_gate_enabled": false,
+    "entry_exposure_gate_max_pct": 75.0,
     "short_quality_gate_enabled": false,
     "short_quality_gate_rule": "block_below_sma",
     "short_quality_gate_len_bars": 19200,
@@ -43,10 +54,16 @@
     "hybrid_time_decay_triage_max_mfe_r": 0.25,
     "hybrid_reverse_exit_triage_enabled": true,
     "hybrid_reverse_exit_min_mfe_r": 0.1,
-    "sizing_mode": "fixed_risk_pct",
+    "sizing_mode": "mt5_fixed_risk_lot",
     "notional_pct": 0.25,
     "risk_pct": 0.005,
-    "max_leverage": 1.0
+    "max_leverage": 1.0,
+    "contract_size": 100.0,
+    "min_lot": 0.01,
+    "lot_step": 0.01,
+    "max_lot": 100.0,
+    "skip_below_min_lot": true,
+    "execution_model": "mt5_bar_proxy"
   },
   "evaluation": {
     "minimum_trades": 50,
@@ -63,8 +80,7 @@
     "maximum_avg_exposure_pct": 100.0,
     "maximum_worst_daily_loss_pct": 5.0,
     "production_sizing_modes": [
-      "fixed_notional_pct",
-      "fixed_risk_pct"
+      "mt5_fixed_risk_lot"
     ],
     "benchmark_policy": "outperform_return_or_calmar"
   },
@@ -579,39 +595,9 @@
     },
     {
       "kind": "portfolio",
-      "lever": "sizing_mode",
-      "path": "parameters.sizing_mode",
-      "priority": 130,
-      "values": [
-        "fixed_quantity",
-        "fixed_notional_pct",
-        "fixed_risk_pct"
-      ],
-      "search_mode": "values_only",
-      "rationale": "Choose the capital model. fixed_quantity is an alpha-engine diagnostic, fixed_notional_pct compounds a notional share of current equity, and fixed_risk_pct sizes by loss budget to the stop."
-    },
-    {
-      "kind": "portfolio",
-      "lever": "notional_pct",
-      "path": "parameters.notional_pct",
-      "priority": 129,
-      "values": [
-        0.1,
-        0.25,
-        0.5,
-        1.0
-      ],
-      "search_mode": "range",
-      "search_min": 0.05,
-      "search_max": 1.0,
-      "search_step": 0.05,
-      "rationale": "When sizing_mode is fixed_notional_pct, tune the current-equity fraction used as trade notional. 1.0 means every new trade uses 100% of current equity and compounds after each closed trade."
-    },
-    {
-      "kind": "portfolio",
       "lever": "risk_pct",
       "path": "parameters.risk_pct",
-      "priority": 128,
+      "priority": 130,
       "values": [
         0.0025,
         0.005,
@@ -621,7 +607,7 @@
       "search_min": 0.001,
       "search_max": 0.01,
       "search_step": 0.001,
-      "rationale": "When sizing_mode is fixed_risk_pct, tune the current-equity fraction risked to the stop. 0.01 means a 1% account-loss budget before max-leverage caps."
+      "rationale": "Tune the current-equity loss budget that mt5_fixed_risk_lot converts into broker-rounded lots at the initial stop."
     },
     {
       "kind": "portfolio",
@@ -637,6 +623,70 @@
       "search_max": 1.0,
       "search_step": 0.25,
       "rationale": "Cap position notional as a multiple of current equity. Production optimization defaults to unlevered exposure at 1.0 or lower; higher leverage should be tested only as an explicit research stress scenario."
+    },
+    {
+      "kind": "portfolio",
+      "lever": "contract_size",
+      "path": "parameters.contract_size",
+      "priority": 126,
+      "values": [
+        1.0,
+        10.0,
+        100.0
+      ],
+      "search_mode": "values_only",
+      "rationale": "Contract size used by mt5_fixed_risk_lot sizing."
+    },
+    {
+      "kind": "portfolio",
+      "lever": "min_lot",
+      "path": "parameters.min_lot",
+      "priority": 125,
+      "values": [
+        0.01,
+        0.1,
+        1.0
+      ],
+      "search_mode": "values_only",
+      "rationale": "Broker minimum lot used by mt5_fixed_risk_lot sizing."
+    },
+    {
+      "kind": "portfolio",
+      "lever": "lot_step",
+      "path": "parameters.lot_step",
+      "priority": 124,
+      "values": [
+        0.01,
+        0.1,
+        1.0
+      ],
+      "search_mode": "values_only",
+      "rationale": "Broker lot step used by mt5_fixed_risk_lot sizing."
+    },
+    {
+      "kind": "portfolio",
+      "lever": "max_lot",
+      "path": "parameters.max_lot",
+      "priority": 123,
+      "values": [
+        1.0,
+        10.0,
+        100.0
+      ],
+      "search_mode": "values_only",
+      "rationale": "Broker maximum lot cap used by mt5_fixed_risk_lot sizing."
+    },
+    {
+      "kind": "portfolio",
+      "lever": "skip_below_min_lot",
+      "path": "parameters.skip_below_min_lot",
+      "priority": 122,
+      "values": [
+        true,
+        false
+      ],
+      "search_mode": "values_only",
+      "rationale": "Choose whether MT5 lot sizing skips entries below the minimum lot or floors them to min lot for an explicit stress test."
     }
   ]
 }

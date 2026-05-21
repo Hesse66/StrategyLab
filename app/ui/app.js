@@ -13,9 +13,11 @@ const state = {
 const outputBox = document.getElementById("outputBox");
 const summaryGrid = document.getElementById("summaryGrid");
 const metricsGrid = document.getElementById("metricsGrid");
+const gateBadge = document.getElementById("gateBadge");
 const familySelect = document.getElementById("familySelect");
 const versionSelect = document.getElementById("versionSelect");
 const datasetSelect = document.getElementById("datasetSelect");
+const optimizeResearchButton = document.getElementById("optimizeResearchButton");
 const optimizeAllButton = document.getElementById("optimizeAllButton");
 const optimizationStatus = document.getElementById("optimizationStatus");
 const barsInput = document.getElementById("barsInput");
@@ -27,12 +29,29 @@ const runsTable = document.getElementById("runsTable");
 const versionsTable = document.getElementById("versionsTable");
 const promptsList = document.getElementById("promptsList");
 let previewTimer = null;
+let optimizationProgressTimer = null;
 const MIN_DATASET_BARS = 40000;
 const FULL_HISTORY_SENTINEL_BARS = 1000000;
 const OUTPUT_ARRAY_LIMIT = 20;
 const OUTPUT_MAX_CHARS = 60000;
+const OPTIMIZATION_POLL_MS = 2500;
 let optimizationInFlight = false;
-let optimizationProgressTimer = null;
+
+function updateClock() {
+  const node = document.getElementById("clock");
+  if (!node) {
+    return;
+  }
+  node.textContent = new Date().toLocaleTimeString("en-US", {
+    hour12: false,
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+
+updateClock();
+window.setInterval(updateClock, 1000);
 
 function setStatus(elementId, message, tone = "") {
   const node = document.getElementById(elementId);
@@ -72,8 +91,7 @@ function summarizeForOutput(value, depth = 0, key = "") {
 }
 
 function showOutput(payload) {
-  const text =
-    typeof payload === "string" ? payload : JSON.stringify(summarizeForOutput(payload), null, 2);
+  const text = typeof payload === "string" ? payload : JSON.stringify(summarizeForOutput(payload), null, 2);
   outputBox.textContent =
     text.length > OUTPUT_MAX_CHARS
       ? `${text.slice(0, OUTPUT_MAX_CHARS)}\n\n[output truncated to keep the browser responsive]`
@@ -252,11 +270,7 @@ async function recoverOptimizationResult() {
 
 function setOptimizationBusy(isBusy, activeLever = "") {
   optimizationInFlight = isBusy;
-  if (isBusy) {
-    startOptimizationProgressPolling();
-  } else {
-    stopOptimizationProgressPolling();
-  }
+  optimizeResearchButton.disabled = isBusy;
   optimizeAllButton.disabled = isBusy;
   proposalsTable.querySelectorAll('[data-action="optimize-lever"]').forEach((button) => {
     button.disabled = isBusy && button.dataset.key !== activeLever;
@@ -299,6 +313,10 @@ async function fetchJson(url, options = {}) {
   return payload;
 }
 
+function wait(ms) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
 async function attachActiveOptimizationIfAny() {
   try {
     const progress = await fetchJson("/api/optimization-progress");
@@ -308,6 +326,7 @@ async function attachActiveOptimizationIfAny() {
     setOptimizationBusy(true);
     renderOptimizationProgress(progress);
     setStatus("familyStatus", "An optimization is already running. Reattached to progress updates.", "");
+    startOptimizationProgressPolling();
     return true;
   } catch {
     return false;
@@ -450,77 +469,90 @@ function productionGateSummary(spec, metrics) {
 function renderMetrics() {
   const metrics = activeMetrics();
   if (!metrics) {
+    if (gateBadge) {
+      gateBadge.textContent = "Awaiting Evidence";
+      gateBadge.className = "gate-badge";
+    }
     metricsGrid.innerHTML = `<div class="empty-state">Run the selected version or change a tuning value to populate the performance panel.</div>`;
     return;
   }
   const spec = activeSpec();
   const comparison = state.previewResult?.comparison || null;
   const warnings = capitalModelWarnings(spec, metrics);
-  const items = [
-    ["Source", activeMetricSource()],
-    ["Sizing Mode", spec?.parameters?.sizing_mode || "fixed_quantity"],
-    ["Initial Capital", formatNumber(spec?.parameters?.initial_capital, 2)],
-    ["Risk %", formatNumber(Number(spec?.parameters?.risk_pct || 0) * 100, 4)],
-    ["Max Leverage", formatNumber(spec?.parameters?.max_leverage, 2)],
-    ["Min Lot", formatNumber(spec?.parameters?.min_lot, 2)],
-    ["Lot Step", formatNumber(spec?.parameters?.lot_step, 2)],
-    ["Invalid Lot Skips", formatNumber(state.previewResult?.diagnostics?.mt5_invalid_lot_skips || 0, 0)],
-    ["Production Gate", productionGateSummary(spec, metrics)],
-    ["Net PnL", formatNumber(metrics.net_pnl)],
-    ["Return %", `${formatNumber(metrics.return_pct)}%`],
-    ["Profit Factor", formatNumber(metrics.profit_factor, 4)],
-    ["Expected Payoff", formatNumber(metrics.expected_payoff)],
-    ["Trades", formatNumber(metrics.total_trades, 0)],
-    ["Win Rate", `${formatNumber(metrics.percent_profitable)}%`],
-    ["Max Drawdown %", `${formatNumber(metrics.max_equity_drawdown_pct)}%`],
-    ["Trade Sharpe", formatNumber(metrics.sharpe, 4)],
-    ["Trade Sortino", formatNumber(metrics.sortino, 4)],
+  const gateSummary = productionGateSummary(spec, metrics);
+  if (gateBadge) {
+    gateBadge.textContent = gateSummary;
+    gateBadge.className = `gate-badge ${gateSummary === "Production candidate" ? "pass" : ""}`.trim();
+  }
+  const warningText = warnings.length
+    ? warnings.map((warning) => escapeHtml(warning)).join(" ")
+    : "Capital model is compatible with the selected evaluation contract.";
+  const majorLines = [
+    ["Net PnL", formatNumber(metrics.net_pnl), "major"],
+    ["Return %", `${formatNumber(metrics.return_pct)}%`, "major"],
+    ["Profit Factor", formatNumber(metrics.profit_factor, 4), "major"],
+    ["Trades", formatNumber(metrics.total_trades, 0), ""],
+    ["Win Rate", `${formatNumber(metrics.percent_profitable)}%`, ""],
+    ["Max Drawdown", `${formatNumber(metrics.max_equity_drawdown_pct)}%`, "risk"],
+  ];
+  const detailLines = [
     ["Daily Sharpe", formatNumber(metrics.daily_sharpe, 4)],
     ["Daily Sortino", formatNumber(metrics.daily_sortino, 4)],
+    ["Trade Sharpe", formatNumber(metrics.sharpe, 4)],
+    ["Trade Sortino", formatNumber(metrics.sortino, 4)],
     ["Daily Vol %", `${formatNumber(metrics.daily_volatility_pct)}%`],
     ["Worst Day %", `${formatNumber(metrics.worst_daily_return_pct)}%`],
-    ["Positive Day %", `${formatNumber(metrics.positive_day_pct)}%`],
     ["Calmar", formatNumber(metrics.calmar, 4)],
-    ["B&H Max DD %", `${formatNumber(metrics.buy_hold_max_drawdown_pct)}%`],
     ["B&H Calmar", formatNumber(metrics.buy_hold_calmar, 4)],
     ["Calmar Delta", formatNumber(metrics.calmar_delta, 4)],
     ["Avg Exposure %", `${formatNumber(metrics.avg_entry_exposure_pct)}%`],
     ["Max Exposure %", `${formatNumber(metrics.max_entry_exposure_pct)}%`],
-    ["Avg Risk %", `${formatNumber(metrics.avg_initial_risk_pct, 4)}%`],
     ["Max Risk %", `${formatNumber(metrics.max_initial_risk_pct, 4)}%`],
+    ["B&H Asset %", `${formatNumber(metrics.buy_hold_return_pct)}%`],
+    ["Alpha vs B&H %", `${formatNumber(metrics.outperformance_pct)}%`],
     ["Base PF Delta", comparison ? formatNumber(comparison.profit_factor_delta, 4) : "n/a"],
     ["Base DD Delta", comparison ? `${formatNumber(comparison.drawdown_pct_delta)}%` : "n/a"],
-    ["Buy & Hold PnL", formatNumber(metrics.buy_hold_return)],
-    ["Buy & Hold Asset %", `${formatNumber(metrics.buy_hold_return_pct)}%`],
-    ["Alpha vs B&H", formatNumber(metrics.outperformance)],
-    ["Alpha vs B&H %", `${formatNumber(metrics.outperformance_pct)}%`],
-    ["Gross Profit", formatNumber(metrics.gross_profit)],
-    ["Gross Loss", formatNumber(metrics.gross_loss)],
-    ["Avg Trade", formatNumber(metrics.avg_pnl)],
-    ["Avg Win/Loss", formatNumber(metrics.ratio_avg_win_loss, 4)],
   ];
-  const warningCards = warnings
-    .map(
-      (warning) => `
-        <article class="metric-card metric-warning">
-          <span>Capital Model</span>
-          <strong>${escapeHtml(warning)}</strong>
-        </article>
-      `,
-    )
-    .join("");
-  metricsGrid.innerHTML =
-    warningCards +
-    items
-    .map(
-      ([label, value]) => `
-        <article class="metric-card">
-          <span>${label}</span>
-          <strong class="numeric">${value}</strong>
-        </article>
-      `,
-    )
-    .join("");
+  metricsGrid.innerHTML = `
+    <section class="metrics-warning">
+      <span class="metric-label">Capital Model</span>
+      <strong>${warningText}</strong>
+    </section>
+    <section class="metrics-pair-grid">
+      <div>
+        <span class="metric-label">Source</span>
+        <strong class="metric-value">${activeMetricSource()}</strong>
+      </div>
+      <div>
+        <span class="metric-label">Sizing Mode</span>
+        <strong class="metric-value accent">${spec?.parameters?.sizing_mode || "fixed_quantity"}</strong>
+      </div>
+    </section>
+    <section>
+      ${majorLines
+        .map(
+          ([label, value, tone]) => `
+            <div class="metric-line ${tone}">
+              <span class="metric-label">${label}</span>
+              <strong class="metric-value numeric">${value}</strong>
+            </div>
+          `,
+        )
+        .join("")}
+    </section>
+    <section class="metric-detail-grid">
+      ${detailLines
+        .map(
+          ([label, value]) => `
+            <div class="metric-detail">
+              <span>${label}</span>
+              <span class="numeric">${value}</span>
+            </div>
+          `,
+        )
+        .join("")}
+    </section>
+  `;
 }
 
 function syncWorkingParameters() {
@@ -833,6 +865,7 @@ function renderRuns() {
               <div class="table-actions">
                 <button class="ghost" data-action="select-version" data-version="${run.version_id}">Tune</button>
                 ${promoteButton}
+                <button class="ghost" data-action="execution-audit" data-id="${run.run_id}">Audit Execution</button>
                 <button class="danger" data-action="delete-run" data-id="${run.run_id}">Delete</button>
               </div>
             </td>
@@ -1249,7 +1282,46 @@ async function optimizeLever(lever) {
   }
 }
 
-async function optimizeAll() {
+function applyOptimizeAllResult(result, recovered = false, startingParameters = null) {
+  const baseParameters = startingParameters || currentVersion().spec_json.parameters;
+  state.workingParameters = { ...baseParameters, ...result.parameter_overrides };
+  state.previewResult = result.preview;
+  renderSummary();
+  renderTuningEdges();
+  renderRuns();
+  showOutput(result);
+
+  const tunedCount = Object.entries(result.parameter_overrides).filter(
+    ([key, value]) => JSON.stringify(value) !== JSON.stringify(baseParameters[key]),
+  ).length;
+  const selectedCount = Object.keys(result.parameter_overrides).length;
+  const fallbackCount = Number(result.research_fallback_steps || 0);
+  const eligibleCount = Number(result.eligible_steps || 0);
+  const modeNote = fallbackCount
+    ? `${fallbackCount} research fallback steps, ${eligibleCount} production-eligible steps`
+    : `${eligibleCount} production-eligible steps`;
+  const selectedNote =
+    selectedCount === tunedCount ? "" : `; ${selectedCount} selected values matched or filled the base`;
+  const recoveredNote = recovered ? " Recovered completed preview from backend." : "";
+  const rejectedNote = result.final_candidate_rejected
+    ? " Optimized candidate failed production gates, so the starting values were kept."
+    : "";
+  const message = `Optimization complete. Applied ${tunedCount} changed values (${modeNote}${selectedNote}).${rejectedNote}${recoveredNote}`;
+  setStatus("familyStatus", message, "success");
+  setOptimizationStatus(message, "success");
+  clearOptimizationStatus(9000);
+}
+
+function optimizationProgressMessage(job) {
+  const startedAt = job.created_at ? new Date(job.created_at).toLocaleTimeString() : "unknown time";
+  const progress = job.progress || {};
+  const progressText = progress.lever
+    ? ` Pass ${progress.pass}/${progress.passes}, parameter ${progress.edge_index}/${progress.total_edges}: optimizing ${progress.lever}${progress.next_lever ? `; next ${progress.next_lever}` : "; final parameter in pass"}.`
+    : " Waiting for first parameter...";
+  return `Optimization job ${job.job_id} is ${job.status}. Started ${startedAt}.${progressText}`;
+}
+
+async function optimizeAll(optimizationMode = "production") {
   const version = currentVersion();
   const datasetId = selectedDatasetId();
   if (!version || !datasetId) {
@@ -1259,20 +1331,25 @@ async function optimizeAll() {
   if (optimizationInFlight) {
     return;
   }
-  setOptimizationBusy(true);
-  setOptimizationStatus("Running two-pass production optimization. Fixed-quantity and over-levered candidates are not eligible...");
   let reattachedExistingJob = false;
+  setOptimizationBusy(true);
+  const startingParameters = { ...currentVersion().spec_json.parameters, ...collectOverrides() };
+  const modeLabel = optimizationMode === "research" ? "baseline research" : "production";
+  setOptimizationStatus(`Starting background two-pass ${modeLabel} optimization...`);
   try {
-    const result = await fetchJson(`/api/versions/${version.version_id}/optimize-all`, {
+    const job = await fetchJson(`/api/versions/${version.version_id}/optimize-all/jobs`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         dataset_id: datasetId,
         parameter_overrides: collectOverrides(),
         passes: 2,
+        optimization_mode: optimizationMode,
       }),
     });
-    applyOptimizeAllResult(result);
+    setOptimizationStatus(optimizationProgressMessage(job));
+    const result = await waitForOptimizationJob(job.job_id);
+    applyOptimizeAllResult(result, false, startingParameters);
   } catch (error) {
     if (error.status === 409) {
       setStatus("familyStatus", "An optimization is already running. Reattached to progress updates.", "");
@@ -1288,6 +1365,32 @@ async function optimizeAll() {
     if (!reattachedExistingJob) {
       setOptimizationBusy(false);
     }
+  }
+}
+
+async function waitForOptimizationJob(jobId) {
+  let connectionFailures = 0;
+  while (true) {
+    await wait(OPTIMIZATION_POLL_MS);
+    let job;
+    try {
+      job = await fetchJson(`/api/optimization-jobs/${jobId}`);
+      connectionFailures = 0;
+    } catch (error) {
+      connectionFailures += 1;
+      setOptimizationStatus(
+        `Optimization job ${jobId} is still being tracked, but the browser lost contact (${connectionFailures}). Retrying...`,
+        "working",
+      );
+      continue;
+    }
+    if (job.status === "completed") {
+      return job.result;
+    }
+    if (job.status === "failed") {
+      throw new Error(job.error || "Optimization job failed.");
+    }
+    setOptimizationStatus(optimizationProgressMessage(job));
   }
 }
 
@@ -1312,7 +1415,7 @@ async function runRobustnessGate() {
     const summary = result.summary || {};
     setStatus(
       "familyStatus",
-      `Robustness: ${summary.label}. Walk-forward ${summary.walk_forward_passed}/${summary.walk_forward_total}; cost stress ${summary.cost_stress_passed}/${summary.cost_stress_total}.`,
+      `Robustness: ${summary.label}. Walk-forward ${summary.walk_forward_passed}/${summary.walk_forward_total}; anchored OOS ${summary.anchored_train_test_passed}/${summary.anchored_train_test_total}; cost stress ${summary.cost_stress_passed}/${summary.cost_stress_total}.`,
       summary.passed ? "success" : "error",
     );
   } catch (error) {
@@ -1351,13 +1454,14 @@ function applyProductionDefaults() {
   state.workingParameters = {
     ...state.workingParameters,
     sizing_mode: "fixed_risk_pct",
+    execution_model: "mt5_bar_proxy",
     risk_pct: 0.005,
     max_leverage: 1,
     notional_pct: 0.25,
   };
   renderTuningEdges();
   schedulePreview(true);
-  setStatus("familyStatus", "Production defaults applied: fixed risk 0.5%, max exposure 1x.", "success");
+  setStatus("familyStatus", "Production defaults applied: MT5 proxy execution, fixed risk 0.5%, max exposure 1x.", "success");
 }
 
 async function saveTune() {
@@ -1499,6 +1603,17 @@ async function handleTableClick(event) {
       await fetchJson(`/api/runs/${button.dataset.id}`, { method: "DELETE" });
       await refreshFamilyDetail();
       showOutput({ status: "deleted", run_id: button.dataset.id });
+      return;
+    }
+    if (action === "execution-audit") {
+      setStatus("familyStatus", "Running execution feasibility audit for the saved run...", "");
+      const result = await fetchJson(`/api/runs/${button.dataset.id}/execution-audit`, { method: "POST" });
+      showOutput(result);
+      setStatus(
+        "familyStatus",
+        `Execution audit ${result.status}. ${result.failures?.length || 0} failures; ${result.warnings?.length || 0} warnings.`,
+        result.passed ? "success" : "error",
+      );
     }
   } catch (error) {
     setStatus("familyStatus", error.message, "error");
@@ -1531,6 +1646,13 @@ async function handlePromptClick(event) {
   }
 }
 
+function bindClick(id, handler) {
+  const node = document.getElementById(id);
+  if (node) {
+    node.addEventListener("click", handler);
+  }
+}
+
 function handleWorkingInput(event) {
   const control = event.target.closest("[data-working-key]");
   if (!control) {
@@ -1550,16 +1672,17 @@ function handleWorkingInput(event) {
   schedulePreview();
 }
 
-document.getElementById("refreshButton").addEventListener("click", refreshAll);
-document.getElementById("downloadButton").addEventListener("click", downloadDataset);
-document.getElementById("importMt5Button").addEventListener("click", importMt5Dataset);
-document.getElementById("runParentButton").addEventListener("click", runParent);
-document.getElementById("productionDefaultsButton").addEventListener("click", applyProductionDefaults);
-document.getElementById("robustnessButton").addEventListener("click", runRobustnessGate);
-document.getElementById("resetTuneButton").addEventListener("click", resetTune);
-document.getElementById("saveTuneButton").addEventListener("click", saveTune);
-optimizeAllButton.addEventListener("click", optimizeAll);
-document.getElementById("registerButton").addEventListener("click", registerBaseline);
+bindClick("refreshButton", refreshAll);
+bindClick("downloadButton", downloadDataset);
+bindClick("importMt5Button", importMt5Dataset);
+bindClick("runParentButton", runParent);
+bindClick("productionDefaultsButton", applyProductionDefaults);
+bindClick("robustnessButton", runRobustnessGate);
+bindClick("resetTuneButton", resetTune);
+bindClick("saveTuneButton", saveTune);
+optimizeResearchButton.addEventListener("click", () => optimizeAll("research"));
+optimizeAllButton.addEventListener("click", () => optimizeAll("production"));
+bindClick("registerButton", registerBaseline);
 familySelect.addEventListener("change", refreshFamilyDetail);
 versionSelect.addEventListener("change", refreshSelectedVersion);
 datasetSelect.addEventListener("change", () => schedulePreview(true));

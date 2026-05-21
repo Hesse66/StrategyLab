@@ -27,6 +27,7 @@ class Settings:
     report_dir: Path = Path(os.getenv("APP_REPORT_DIR", str(BASE_DIR / "artifacts" / "reports")))
     diagnostic_dir: Path = Path(os.getenv("APP_DIAGNOSTIC_DIR", str(BASE_DIR / "artifacts" / "diagnostics")))
     prompt_dir: Path = BASE_DIR / "agents" / "translation and generation" / "whitebox"
+    strategy_specs_dir: Path = BASE_DIR / "strategies"
     seed_strategy_path: Path = BASE_DIR / "pre-strategies" / "BTC-intraday.txt"
     seed_spec_path: Path = BASE_DIR / "strategies" / "btc_intraday_parent.json"
 
@@ -41,7 +42,7 @@ class Settings:
             self.run_dir,
             self.report_dir,
             self.diagnostic_dir,
-            self.seed_spec_path.parent,
+            self.strategy_specs_dir,
         ):
             path.mkdir(parents=True, exist_ok=True)
 
