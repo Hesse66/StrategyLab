@@ -1390,7 +1390,11 @@ async function waitForOptimizationJob(jobId) {
     if (job.status === "failed") {
       throw new Error(job.error || "Optimization job failed.");
     }
-    setOptimizationStatus(optimizationProgressMessage(job));
+    if (job.progress) {
+      renderOptimizationProgress({ ...job.progress, active: true, job_id: job.job_id });
+    } else {
+      setOptimizationStatus(optimizationProgressMessage(job));
+    }
   }
 }
 

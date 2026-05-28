@@ -1701,6 +1701,9 @@ class MutationLabService:
         lever: str,
         parameter_overrides: dict[str, Any] | None = None,
         optimization_mode: str = "production",
+        _progress_context: dict[str, Any] | None = None,
+        _bars: list[Any] | None = None,
+        _progress_callback: Any | None = None,
     ) -> dict[str, Any]:
         optimization_mode = self._normalize_optimization_mode(optimization_mode)
         version = self._get_upgraded_version(version_id)
@@ -1713,11 +1716,33 @@ class MutationLabService:
             raise HTTPException(status_code=404, detail="Tuning lever not found.")
         if not edge.get("optimizable", True):
             raise HTTPException(status_code=400, detail=f"{lever} is manually editable but not optimizable.")
-        bars = self.data_service.load_bars(dataset_id)
+        bars = _bars if _bars is not None else self.data_service.load_bars(dataset_id)
         candidates: list[dict[str, Any]] = []
         skipped_candidates: list[dict[str, Any]] = []
         values = self._candidate_values(edge)
-        for value in values:
+        for candidate_index, value in enumerate(values, start=1):
+            if _progress_context is not None:
+                progress = {
+                    "active": True,
+                    "mode": "optimize_all",
+                    "pass": _progress_context.get("pass_index", 1),
+                    "current_pass": _progress_context.get("pass_index", 1),
+                    "passes": _progress_context.get("passes", 1),
+                    "edge_index": _progress_context.get("lever_index", 1),
+                    "current_lever_index": _progress_context.get("lever_index", 1),
+                    "total_edges": _progress_context.get("total_levers", 1),
+                    "total_levers": _progress_context.get("total_levers", 1),
+                    "lever": lever,
+                    "current_lever": lever,
+                    "candidate_index": candidate_index,
+                    "total_candidates": len(values),
+                    "overall_index": int(_progress_context.get("overall_done", 0)) + candidate_index,
+                    "total_overall": _progress_context.get("total_overall", len(values)),
+                    "message": f"Pass {_progress_context.get('pass_index', 1)}/{_progress_context.get('passes', 1)}: optimizing {lever} candidate {candidate_index}/{len(values)}",
+                }
+                self._set_optimization_progress(**progress)
+                if _progress_callback:
+                    _progress_callback(progress)
             overrides = {**base_overrides, lever: value}
             tuned_spec = self._apply_parameter_overrides(version["spec_json"], overrides)
             try:
@@ -1807,56 +1832,11 @@ class MutationLabService:
             raise HTTPException(status_code=404, detail="Version not found.")
         self._ensure_no_active_optimization()
         passes = max(1, min(int(passes), 5))
-        overrides = self._production_baseline_overrides(version["spec_json"], dict(parameter_overrides or {}))
-        steps: list[dict[str, Any]] = []
-        for pass_index in range(1, passes + 1):
-            improved = False
-            optimizable_edges = [edge for edge in self.list_tuning_edges(version_id) if edge.get("optimizable", True)]
-            total_edges = len(optimizable_edges)
-            for edge_index, edge in enumerate(optimizable_edges, start=1):
-                next_edge = optimizable_edges[edge_index] if edge_index < total_edges else None
-                if progress_callback:
-                    progress_callback(
-                        {
-                            "pass": pass_index,
-                            "passes": passes,
-                            "edge_index": edge_index,
-                            "total_edges": total_edges,
-                            "lever": edge["lever"],
-                            "next_lever": next_edge["lever"] if next_edge else None,
-                            "mode": optimization_mode,
-                        }
-                    )
-                before = dict(overrides)
-                result = self.optimize_lever(version_id, dataset_id, edge["lever"], overrides, optimization_mode=optimization_mode)
-                best_overrides = result["best"]["parameter_overrides"]
-                if best_overrides != before:
-                    improved = True
-                    overrides = best_overrides
-                steps.append(
-                    {
-                        "pass": pass_index,
-                        "lever": edge["lever"],
-                        "before": before.get(edge["lever"], edge["current_value"]),
-                        "after": overrides.get(edge["lever"], edge["current_value"]),
-                        "best_score": result["best"]["score"],
-                        "best_metrics": result["best"]["metrics"],
-                        "skipped_count": result.get("skipped_count", 0),
-                    }
-                )
-            if not improved:
-                break
-        preview = self.preview_tuned_version(version_id, dataset_id, overrides)
-        return {
-            "mode": "optimize_all",
-            "base_version_id": version_id,
-            "dataset_id": dataset_id,
-            "optimization_mode": optimization_mode,
-            "passes_requested": passes,
-            "parameter_overrides": overrides,
-            "steps": steps,
-            "preview": preview,
-        }
+        starting_overrides = dict(parameter_overrides or {})
+        overrides = self._production_baseline_overrides(version["spec_json"], starting_overrides)
+        edges = [edge for edge in self.list_tuning_edges(version_id) if edge.get("optimizable", True)]
+        candidate_counts = {edge["lever"]: len(self._candidate_values(edge)) for edge in edges}
+        total_overall = max(1, sum(candidate_counts.values()) * passes)
         self._start_optimization_progress(
             mode="optimize_all",
             version_id=version_id,
@@ -1865,6 +1845,12 @@ class MutationLabService:
             total_levers=len(edges),
             passes=passes,
         )
+        progress_context: dict[str, Any] = {
+            "passes": passes,
+            "total_levers": len(edges),
+            "total_overall": total_overall,
+            "overall_done": 0,
+        }
         steps: list[dict[str, Any]] = []
         bars: list[Any] | None = None
         try:
@@ -1881,8 +1867,10 @@ class MutationLabService:
                         dataset_id,
                         edge["lever"],
                         overrides,
+                        optimization_mode=optimization_mode,
                         _progress_context=progress_context,
                         _bars=bars,
+                        _progress_callback=progress_callback,
                     )
                     progress_context["overall_done"] += candidate_counts[edge["lever"]]
                     best_overrides = result["best"]["parameter_overrides"]
