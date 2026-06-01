@@ -22,11 +22,14 @@ Mutation Lab is a white-box-first strategy mutation workbench for repeatable par
 
 The mutation engine prompt set lives in:
 - [01_translation.md](C:/Users/Baham/Documents/pre-nexuz/memecorp&starfish/markov_dove-red/StrategyLab/agents/translation%20and%20generation/whitebox/01_translation.md)
+- [01-5_baseline_transformation.md](C:/Users/Baham/Documents/pre-nexuz/memecorp&starfish/markov_dove-red/StrategyLab/agents/translation%20and%20generation/whitebox/01-5_baseline_transformation.md)
 - [02_baseline.md](C:/Users/Baham/Documents/pre-nexuz/memecorp&starfish/markov_dove-red/StrategyLab/agents/translation%20and%20generation/whitebox/02_baseline.md)
 - [03_full-whitebox.md](C:/Users/Baham/Documents/pre-nexuz/memecorp&starfish/markov_dove-red/StrategyLab/agents/translation%20and%20generation/whitebox/03_full-whitebox.md)
 - [04_hybrid-blackbox.md](C:/Users/Baham/Documents/pre-nexuz/memecorp&starfish/markov_dove-red/StrategyLab/agents/translation%20and%20generation/whitebox/04_hybrid-blackbox.md)
+- [04-2_blackbox_viability.md](C:/Users/Baham/Documents/pre-nexuz/memecorp&starfish/markov_dove-red/StrategyLab/agents/translation%20and%20generation/whitebox/04-2_blackbox_viability.md)
+- [04-3_successor_baseline.md](C:/Users/Baham/Documents/pre-nexuz/memecorp&starfish/markov_dove-red/StrategyLab/agents/translation%20and%20generation/whitebox/04-3_successor_baseline.md)
 
-Prompt `03` now assumes one freeform research packet and derives the next white-box mutation from the winning baseline and evidence. Prompt `04` now assumes one surviving white-box parent and derives the first hybrid mutation from that parent’s remaining weakness without canned examples.
+Prompt `01-5` is the baseline transformation route: start from an inspectable open-source baseline, use the desired strategy explanation as the target identity, and test each transformation layer before stacking the next. Prompt `03` now assumes one freeform research packet and derives the next white-box mutation from the winning baseline and evidence. Prompt `04` now assumes one surviving white-box parent and derives the first hybrid mutation from that parent’s remaining weakness without canned examples. Prompt `04-3` is the optional no-blind-restart route: use the completed lineage as evidence to find a stronger successor baseline, then send that successor back through phase 2.
 
 ## Run
 
