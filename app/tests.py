@@ -350,6 +350,39 @@ def build_bos_demand_spec(**overrides: object) -> dict[str, object]:
     }
 
 
+def build_quant_smc_bars(count: int = 160) -> list[Bar]:
+    start = datetime(2024, 1, 1, tzinfo=UTC)
+    bars: list[Bar] = []
+    price = 100.0
+    for index in range(count):
+        drift = 1.2 if (index // 20) % 2 == 0 else -1.1
+        open_price = price
+        close = max(1.0, open_price + drift)
+        high = max(open_price, close) + (2.5 if index % 13 == 0 else 0.8)
+        low = min(open_price, close) - (2.5 if index % 17 == 0 else 0.8)
+        volume = 2000.0 if index % 11 == 0 else 1000.0
+        bars.append(
+            Bar(
+                ts=start + timedelta(minutes=15 * index),
+                open=open_price,
+                high=high,
+                low=max(0.01, low),
+                close=close,
+                volume=volume,
+                symbol="BTCUSDT",
+                timeframe="15m",
+            )
+        )
+        price = close
+    return bars
+
+
+def build_quant_smc_spec(**overrides: object) -> dict[str, object]:
+    spec = json.loads(Path("strategies/quant_smc_parent.json").read_text(encoding="utf-8"))
+    spec["parameters"].update(overrides)
+    return spec
+
+
 class MutationLabTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -589,6 +622,56 @@ class MutationLabTests(unittest.TestCase):
         with self.assertRaises(HTTPException) as ctx:
             self.lab.engine.run({"engine_id": "not_real", "parameters": {}}, build_asm_bars())
         self.assertEqual(ctx.exception.status_code, 400)
+
+    def test_quant_smc_engine_runs_saved_open_source_parent(self) -> None:
+        result = self.lab.engine.run(
+            build_quant_smc_spec(
+                require_sweep=False,
+                require_fvg_overlap=False,
+                require_pd_zone=False,
+                ob_volume_required=False,
+                min_ob_score=0,
+                execution_model="research_same_close",
+                sizing_mode="fixed_quantity",
+                quantity=1.0,
+                commission_pct=0.0,
+                slippage_ticks=0,
+            ),
+            build_quant_smc_bars(),
+        )
+        self.assertIn("metrics", result)
+        self.assertIn("major_pivots", result["diagnostics"])
+        self.assertIn("bull_major_breaks", result["diagnostics"])
+        self.assertIn("bear_major_breaks", result["diagnostics"])
+
+    def test_quant_smc_asm_transformation_hooks_are_runnable(self) -> None:
+        result = self.lab.engine.run(
+            build_quant_smc_spec(
+                entry_price_source="asm_external_fib",
+                entry_timing_mode="after_retracement_sweep_internal",
+                pd_method="external_range_midpoint",
+                context_bias_required=True,
+                resample_context_from_execution_bars=True,
+                execution_timeframe="15m",
+                context_timeframe="1h",
+                internal_confirmation_required=True,
+                target_mode="opposing_external_range",
+                require_fvg_overlap=False,
+                require_pd_zone=False,
+                ob_volume_required=False,
+                min_ob_score=0,
+                execution_model="research_same_close",
+                sizing_mode="fixed_quantity",
+                quantity=1.0,
+                commission_pct=0.0,
+                slippage_ticks=0,
+            ),
+            build_quant_smc_bars(240),
+        )
+        self.assertIn("metrics", result)
+        self.assertGreater(result["diagnostics"]["context_bars_built"], 0)
+        self.assertIn("blocked_no_internal_confirmation", result["diagnostics"])
+        self.assertIn("entries_after_internal_confirmation", result["diagnostics"])
 
     def test_asm_confirmed_pivots_wait_for_right_side_bars(self) -> None:
         bars = build_asm_bars()

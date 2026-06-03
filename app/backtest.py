@@ -78,6 +78,17 @@ class AsmSetup:
     context_bias_age: int | None = None
 
 
+@dataclass(slots=True)
+class QuantSmcZone:
+    direction: int
+    created_index: int
+    top: float
+    bottom: float
+    score: float
+    source: str
+    mitigated: bool = False
+
+
 def sma(values: list[float], length: int) -> list[float | None]:
     output: list[float | None] = []
     running = 0.0
@@ -420,6 +431,8 @@ class BacktestEngine:
             return self._run_bos_demand_pullback(spec, bars)
         if engine_id == "asm_fib_liquidity_fvg_v1":
             return self._run_asm_fib_liquidity_fvg(spec, bars)
+        if engine_id == "quant_smc_strategy_v1":
+            return self._run_quant_smc_strategy(spec, bars)
         raise HTTPException(status_code=400, detail=f"Unsupported engine: {engine_id}")
 
     def _run_bos_demand_pullback(self, spec: dict[str, Any], bars: list[Bar]) -> dict[str, Any]:
@@ -2399,6 +2412,597 @@ class BacktestEngine:
             "time_stop_bars": int(parameters.get("time_stop_bars", 0)),
             "time_stop_min_mfe_r": float(parameters.get("time_stop_min_mfe_r", 0.0)),
         }
+
+    def _run_quant_smc_strategy(self, spec: dict[str, Any], bars: list[Bar]) -> dict[str, Any]:
+        parameters = spec["parameters"]
+        if len(bars) < 100:
+            raise HTTPException(status_code=400, detail="Quant SMC engine requires at least 100 bars.")
+        execution_model = str(parameters.get("execution_model", "mt5_bar_proxy"))
+        if execution_model not in {"research_same_close", "mt5_bar_proxy"}:
+            raise HTTPException(status_code=400, detail="execution_model must be `research_same_close` or `mt5_bar_proxy`.")
+
+        atr_len = int(parameters.get("atr_len", 14))
+        atr_values = atr(bars, atr_len)
+        volumes = [bar.volume for bar in bars]
+        vol_avg = sma(volumes, int(parameters.get("volume_sma_len", 20)))
+        context_bars = (
+            self._resample_bars(
+                bars,
+                str(parameters.get("execution_timeframe", bars[0].timeframe)),
+                str(parameters.get("context_timeframe", bars[0].timeframe)),
+            )
+            if parameters.get("resample_context_from_execution_bars", False)
+            else []
+        )
+        context_bias_by_index = self._context_bias_series(parameters, bars, context_bars)
+        equity = float(parameters.get("initial_capital", 100_000.0))
+        initial_capital = equity
+        tick_size = float(parameters.get("tick_size", 0.01))
+        slippage = int(parameters.get("slippage_ticks", 0)) * tick_size
+        commission_pct = float(parameters.get("commission_pct", 0.0)) / 100
+        mt5_bar_proxy = execution_model == "mt5_bar_proxy"
+        warmup = max(atr_len, int(parameters.get("fixed_pivot_window", 25)) * 2 + 2, int(parameters.get("minor_pivot_window", 4)) * 2 + 2, 50)
+
+        major_pivots: list[Pivot] = []
+        minor_pivots: list[Pivot] = []
+        bull_fvgs: list[QuantSmcZone] = []
+        bear_fvgs: list[QuantSmcZone] = []
+        bull_obs: list[QuantSmcZone] = []
+        bear_obs: list[QuantSmcZone] = []
+        major_state = 0
+        minor_state = 0
+        anchor_index = 0
+        avwap_num = 0.0
+        avwap_den = 0.0
+        rc_high = bars[0].high
+        rc_high_index = 0
+        rc_low = bars[0].low
+        rc_low_index = 0
+        last_confirmed_direction = 0
+        pending_high: Pivot | None = None
+        pending_low: Pivot | None = None
+        pending_minor_high: Pivot | None = None
+        pending_minor_low: Pivot | None = None
+        last_bull_sweep = -10_000
+        last_bear_sweep = -10_000
+        latest_bull_sweep_index: int | None = None
+        latest_bear_sweep_index: int | None = None
+        active_setup: dict[str, Any] | None = None
+        pending_setup: dict[str, Any] | None = None
+        position: Position | None = None
+        trades: list[dict[str, Any]] = []
+        equity_curve: list[dict[str, Any]] = []
+        diagnostics = {
+            "bars": len(bars),
+            "major_pivots": 0,
+            "minor_pivots": 0,
+            "bull_major_breaks": 0,
+            "bear_major_breaks": 0,
+            "bull_minor_breaks": 0,
+            "bear_minor_breaks": 0,
+            "mss_breaks": 0,
+            "choch_breaks": 0,
+            "bos_breaks": 0,
+            "bull_fvgs": 0,
+            "bear_fvgs": 0,
+            "bull_sweeps": 0,
+            "bear_sweeps": 0,
+            "bull_obs": 0,
+            "bear_obs": 0,
+            "blocked_no_sweep": 0,
+            "blocked_no_fvg_overlap": 0,
+            "blocked_pd_zone": 0,
+            "blocked_low_score": 0,
+            "context_bars_built": len(context_bars),
+            "context_bias_bullish_events": 0,
+            "context_bias_bearish_events": 0,
+            "blocked_no_context_bias": 0,
+            "blocked_context_bias_mismatch": 0,
+            "blocked_no_internal_confirmation": 0,
+            "entries_after_internal_confirmation": 0,
+            "signals_long": 0,
+            "signals_short": 0,
+            "entries": 0,
+            "pending_entry_orders": 0,
+            "pending_order_fills": 0,
+            "pending_orders_expired": 0,
+            "target_exits": 0,
+            "stop_exits": 0,
+            "time_exits": 0,
+            "same_bar_stop_first_exits": 0,
+            "execution_model": execution_model,
+        }
+
+        def append_equity_point(current_bar: Bar) -> None:
+            mtm = mark_to_market_equity(equity, position, current_bar.close, commission_pct)
+            equity_curve.append({"ts": current_bar.ts.isoformat(), "equity": round(mtm, 2), "mark_to_market_equity": round(mtm, 2), "realized_equity": round(equity, 2)})
+
+        def add_fvg(index: int, current_atr: float) -> None:
+            if not parameters.get("show_fvg", True) or index < 2:
+                return
+            older = bars[index - 2]
+            middle = bars[index - 1]
+            current = bars[index]
+            min_gap = current_atr * float(parameters.get("fvg_min_atr", 0.20))
+            if current.low > older.high and middle.close > older.high and current.low - older.high >= min_gap:
+                bull_fvgs.append(QuantSmcZone(1, index, current.low, older.high, 0.0, "fvg"))
+                diagnostics["bull_fvgs"] += 1
+            if current.high < older.low and middle.close < older.low and older.low - current.high >= min_gap:
+                bear_fvgs.append(QuantSmcZone(-1, index, older.low, current.high, 0.0, "fvg"))
+                diagnostics["bear_fvgs"] += 1
+            max_fvgs = int(parameters.get("fvg_max", 30))
+            del bull_fvgs[:-max_fvgs]
+            del bear_fvgs[:-max_fvgs]
+
+        def mitigate_zones(zones: list[QuantSmcZone], index: int) -> None:
+            bar = bars[index]
+            retained: list[QuantSmcZone] = []
+            for zone in zones:
+                if zone.direction == 1:
+                    mitigated = bar.low < zone.bottom
+                else:
+                    mitigated = bar.high > zone.top
+                if not mitigated:
+                    retained.append(zone)
+            zones[:] = retained
+
+        def fvg_overlap(direction: int, top: float, bottom: float) -> bool:
+            zones = bull_fvgs if direction == 1 else bear_fvgs
+            return any(zone.top >= bottom and zone.bottom <= top for zone in zones)
+
+        def fvg_entry_overlap(direction: int, entry_price: float, current_atr: float) -> bool:
+            tolerance = float(parameters.get("fvg_overlap_tolerance_atr", 0.1)) * current_atr
+            zones = bull_fvgs if direction == 1 else bear_fvgs
+            return any(zone.bottom - tolerance <= entry_price <= zone.top + tolerance for zone in zones)
+
+        def compute_ob_score(top: float, bottom: float, direction: int, index: int, current_atr: float) -> float:
+            size_score = min(((top - bottom) / max(current_atr, 0.000001)) / 2.0, 1.0) * 30.0
+            disp_body = abs(bars[index].close - bars[index].open)
+            disp_score = min(disp_body / max(current_atr * 1.5, 0.000001), 1.0) * 30.0
+            volume_score = 20.0 if vol_avg[index] is not None and bars[index].volume > float(vol_avg[index]) else 10.0
+            confluence_score = 20.0 if fvg_overlap(direction, top, bottom) else 0.0
+            return size_score + disp_score + volume_score + confluence_score
+
+        def find_origin(direction: int, index: int, current_atr: float) -> QuantSmcZone | None:
+            selected: QuantSmcZone | None = None
+            for offset in range(1, min(int(parameters.get("ob_scan_bars", 30)), index) + 1):
+                source = bars[index - offset]
+                rng = source.high - source.low
+                body = abs(source.close - source.open)
+                body_ratio = body / rng if rng > 0 else 0.0
+                vol_ok = True
+                if parameters.get("ob_volume_required", True) and vol_avg[index - offset] is not None:
+                    vol_ok = source.volume >= float(vol_avg[index - offset]) * float(parameters.get("ob_volume_mult", 1.25))
+                not_volatile = rng < current_atr * float(parameters.get("ob_max_range_atr", 2.5))
+                quality_ok = body_ratio >= float(parameters.get("ob_min_body_ratio", 0.25))
+                opposite = source.close < source.open if direction == 1 else source.close > source.open
+                if not (opposite and not_volatile and vol_ok and quality_ok):
+                    continue
+                score = compute_ob_score(source.high, source.low, direction, index, current_atr)
+                candidate = QuantSmcZone(direction, index, source.high, source.low, score, "order_block")
+                if selected is None:
+                    selected = candidate
+                elif direction == 1 and candidate.bottom < selected.bottom:
+                    selected = candidate
+                elif direction == -1 and candidate.top > selected.top:
+                    selected = candidate
+            return selected
+
+        def premium_discount_pass(
+            direction: int,
+            index: int,
+            entry_price: float,
+            range_origin: float | None = None,
+            range_extreme: float | None = None,
+        ) -> bool:
+            if not parameters.get("require_pd_zone", True):
+                return True
+            pd_method = str(parameters.get("pd_method", "avwap"))
+            if pd_method == "external_range_midpoint" and range_origin is not None and range_extreme is not None:
+                equilibrium = (range_origin + range_extreme) / 2
+            else:
+                lookback = max(1, min(index - anchor_index, int(parameters.get("pd_lookback_cap", 500))))
+                window = bars[index - lookback + 1 : index + 1]
+                hh = max(item.high for item in window)
+                ll = min(item.low for item in window)
+                equilibrium = avwap_num / avwap_den if pd_method == "avwap" and avwap_den > 0 else (hh + ll) / 2
+            return entry_price <= equilibrium if direction == 1 else entry_price >= equilibrium
+
+        def latest_sweep_ok(direction: int, index: int) -> bool:
+            if not parameters.get("require_sweep", True):
+                return True
+            sweep_index = latest_bull_sweep_index if direction == 1 else latest_bear_sweep_index
+            return sweep_index is not None and 0 <= index - sweep_index <= int(parameters.get("sweep_max_age_bars", 48))
+
+        def latest_major_pivot(kind: str, before_index: int) -> Pivot | None:
+            return next((pivot for pivot in reversed(major_pivots) if pivot.kind == kind and pivot.index < before_index), None)
+
+        def build_setup(direction: int, index: int, kind: str, current_atr: float) -> dict[str, Any] | None:
+            zone = find_origin(direction, index, current_atr)
+            if zone is None:
+                return None
+            if zone.score < float(parameters.get("min_ob_score", 0)):
+                diagnostics["blocked_low_score"] += 1
+                return None
+            entry_source = str(parameters.get("entry_price_source", "ob_midpoint"))
+            if entry_source != "asm_external_fib" and parameters.get("require_fvg_overlap", True) and not fvg_overlap(direction, zone.top, zone.bottom):
+                diagnostics["blocked_no_fvg_overlap"] += 1
+                return None
+            origin_pivot: Pivot | None = None
+            broken_pivot: Pivot | None = None
+            range_origin: float | None = None
+            range_extreme: float | None = None
+            if entry_source == "asm_external_fib":
+                fib = float(parameters.get("fib_entry_retracement", 0.67))
+                if direction == 1:
+                    broken_pivot = pending_high
+                    origin_pivot = latest_major_pivot("low", index)
+                    if origin_pivot is None or broken_pivot is None:
+                        return None
+                    range_origin = origin_pivot.price
+                    range_extreme = max(bar.high, broken_pivot.price)
+                    range_size = range_extreme - range_origin
+                    if range_size <= 0:
+                        return None
+                    entry = range_extreme - (range_size * fib)
+                else:
+                    broken_pivot = pending_low
+                    origin_pivot = latest_major_pivot("high", index)
+                    if origin_pivot is None or broken_pivot is None:
+                        return None
+                    range_origin = origin_pivot.price
+                    range_extreme = min(bar.low, broken_pivot.price)
+                    range_size = range_origin - range_extreme
+                    if range_size <= 0:
+                        return None
+                    entry = range_extreme + (range_size * fib)
+            elif entry_source == "ob_near_edge":
+                entry = zone.top if direction == 1 else zone.bottom
+            else:
+                entry = (zone.top + zone.bottom) / 2
+            if entry_source == "asm_external_fib" and parameters.get("require_fvg_overlap", True) and not fvg_entry_overlap(direction, entry, current_atr):
+                diagnostics["blocked_no_fvg_overlap"] += 1
+                return None
+            if not premium_discount_pass(direction, index, entry, range_origin, range_extreme):
+                diagnostics["blocked_pd_zone"] += 1
+                return None
+            timing_mode = str(parameters.get("entry_timing_mode", "source_confluence"))
+            if timing_mode == "source_confluence" and not latest_sweep_ok(direction, index):
+                diagnostics["blocked_no_sweep"] += 1
+                return None
+            buffer = current_atr * float(parameters.get("stop_buffer_atr_mult", 0.1))
+            if entry_source == "asm_external_fib" and range_origin is not None:
+                stop = range_origin - buffer if direction == 1 else range_origin + buffer
+            else:
+                stop = zone.bottom - buffer if direction == 1 else zone.top + buffer
+            risk = abs(entry - stop)
+            if risk <= 0:
+                return None
+            if parameters.get("target_mode", "fixed_r") == "opposing_external_range" and range_extreme is not None:
+                target = range_extreme
+            else:
+                target = entry + (risk * float(parameters.get("target_rr", 2.0))) if direction == 1 else entry - (risk * float(parameters.get("target_rr", 2.0)))
+            context_bias = context_bias_by_index[index] if index < len(context_bias_by_index) else {"bias": None, "event": None, "age": None, "bar_index": None}
+            if parameters.get("context_bias_required", False):
+                expected_bias = "bullish" if direction == 1 else "bearish"
+                if context_bias.get("bias") is None or context_bias.get("age") is None or int(context_bias.get("age") or 0) > int(parameters.get("context_bias_max_age_bars", 96)):
+                    diagnostics["blocked_no_context_bias"] += 1
+                    return None
+                if parameters.get("context_bias_must_align_with_external_bias", True) and context_bias.get("bias") != expected_bias:
+                    diagnostics["blocked_context_bias_mismatch"] += 1
+                    return None
+            return {
+                "direction": direction,
+                "created_index": index,
+                "entry": entry,
+                "stop": stop,
+                "target": target,
+                "zone": zone,
+                "kind": kind,
+                "origin_price": range_origin,
+                "extreme_price": range_extreme,
+                "origin_index": origin_pivot.index if origin_pivot else None,
+                "extreme_index": index if range_extreme is not None else None,
+                "retracement_index": None,
+                "sweep_index": None
+                if timing_mode == "after_retracement_sweep_internal"
+                else latest_bull_sweep_index
+                if direction == 1
+                else latest_bear_sweep_index,
+                "internal_confirmation_index": None,
+                "internal_confirmation_type": None,
+                "context_bias": context_bias,
+            }
+
+        def open_quant_position(setup: dict[str, Any], entry_bar: Bar, entry_index: int) -> Position | None:
+            direction = int(setup["direction"])
+            fill = float(setup["entry"]) + slippage if direction == 1 else max(float(setup["entry"]) - slippage, 0.0)
+            quantity = self._position_quantity(parameters, equity, fill, float(setup["stop"]))
+            if quantity <= 0:
+                return None
+            zone = setup["zone"]
+            features = {
+                "side": "long" if direction == 1 else "short",
+                "direction": "long" if direction == 1 else "short",
+                "setup_type": setup["kind"],
+                "source_baseline": "quantitative_smc_framework",
+                "ob_top": round(zone.top, 6),
+                "ob_bottom": round(zone.bottom, 6),
+                "ob_score": round(zone.score, 4),
+                "entry_price": round(fill, 6),
+                "stop_price": round(float(setup["stop"]), 6),
+                "target_price": round(float(setup["target"]), 6),
+                "target_rr": float(parameters.get("target_rr", 2.0)),
+                "entry_price_source": parameters.get("entry_price_source", "ob_midpoint"),
+                "target_mode": parameters.get("target_mode", "fixed_r"),
+                "fib_entry_retracement": float(parameters.get("fib_entry_retracement", 0.0)),
+                "external_range_origin": round(float(setup["origin_price"]), 6) if setup.get("origin_price") is not None else None,
+                "external_range_extreme": round(float(setup["extreme_price"]), 6) if setup.get("extreme_price") is not None else None,
+                "context_bias": setup.get("context_bias", {}).get("bias") if isinstance(setup.get("context_bias"), dict) else None,
+                "context_bias_event": setup.get("context_bias", {}).get("event") if isinstance(setup.get("context_bias"), dict) else None,
+                "context_bias_age_bars": setup.get("context_bias", {}).get("age") if isinstance(setup.get("context_bias"), dict) else None,
+                "internal_confirmation_type": setup.get("internal_confirmation_type"),
+                "internal_confirmation_bar_index": setup.get("internal_confirmation_index"),
+                "weekday": entry_bar.ts.weekday(),
+                "utc_hour": entry_bar.ts.hour,
+                "month": entry_bar.ts.month,
+                "execution_model": execution_model,
+                "signal_ts": bars[int(setup["created_index"])].ts.isoformat(),
+                "fill_ts": entry_bar.ts.isoformat(),
+            }
+            return self._open_position(direction, entry_index, entry_bar, fill, float(setup["stop"]), quantity, commission_pct, equity, features)
+
+        def exit_position(index: int, bar: Bar) -> tuple[dict[str, Any], str] | None:
+            if position is None:
+                return None
+            target = float(position.entry_features["target_price"])
+            if position.direction == 1:
+                stop_hit = bar.low <= position.stop_price
+                target_hit = bar.high >= target
+                stop_price = max(position.stop_price - slippage, 0.0)
+                target_price = max(target - slippage, 0.0)
+            else:
+                stop_hit = bar.high >= position.stop_price
+                target_hit = bar.low <= target
+                stop_price = position.stop_price + slippage
+                target_price = target + slippage
+            if stop_hit and target_hit:
+                diagnostics["same_bar_stop_first_exits"] += 1
+                return self._close_trade(position, bar, index, stop_price, "stop", commission_pct, equity), "stop_exits"
+            if stop_hit:
+                return self._close_trade(position, bar, index, stop_price, "stop", commission_pct, equity), "stop_exits"
+            if target_hit:
+                return self._close_trade(position, bar, index, target_price, "target", commission_pct, equity), "target_exits"
+            return None
+
+        for index, bar in enumerate(bars):
+            current_atr = atr_values[index]
+            if current_atr is None:
+                append_equity_point(bar)
+                continue
+            avwap_num += ((bar.high + bar.low + bar.close) / 3.0) * (bar.volume or 1.0)
+            avwap_den += bar.volume or 1.0
+            add_fvg(index, float(current_atr))
+            mitigate_zones(bull_fvgs, index)
+            mitigate_zones(bear_fvgs, index)
+            mitigate_zones(bull_obs, index)
+            mitigate_zones(bear_obs, index)
+
+            new_major: Pivot | None = None
+            if parameters.get("pivot_engine", "adaptive") == "adaptive":
+                threshold = float(current_atr) * float(parameters.get("adaptive_atr_mult", 1.8))
+                if bar.high >= rc_high:
+                    rc_high, rc_high_index = bar.high, index
+                if bar.low <= rc_low:
+                    rc_low, rc_low_index = bar.low, index
+                if last_confirmed_direction != 1 and (rc_high - bar.low) >= threshold:
+                    new_major = Pivot(rc_high_index, rc_high, "high")
+                    last_confirmed_direction = 1
+                    rc_low, rc_low_index = bar.low, index
+                elif last_confirmed_direction != -1 and (bar.high - rc_low) >= threshold:
+                    new_major = Pivot(rc_low_index, rc_low, "low")
+                    last_confirmed_direction = -1
+                    rc_high, rc_high_index = bar.high, index
+            else:
+                new_major = self._confirmed_pivot(bars, index, int(parameters.get("fixed_pivot_window", 25)))
+            if new_major:
+                major_pivots.append(new_major)
+                del major_pivots[:-40]
+                diagnostics["major_pivots"] += 1
+                if new_major.kind == "high":
+                    pending_high = new_major
+                else:
+                    pending_low = new_major
+
+            new_minor = self._confirmed_pivot(bars, index, int(parameters.get("minor_pivot_window", 4)))
+            if new_minor:
+                minor_pivots.append(new_minor)
+                del minor_pivots[:-80]
+                diagnostics["minor_pivots"] += 1
+                if new_minor.kind == "high":
+                    pending_minor_high = new_minor
+                else:
+                    pending_minor_low = new_minor
+
+            bull_sweep = False
+            bear_sweep = False
+            if parameters.get("show_sweep", True) and minor_pivots:
+                recent_high = next((p for p in reversed(minor_pivots[-12:]) if p.kind == "high" and index - p.index > 2), None)
+                recent_low = next((p for p in reversed(minor_pivots[-12:]) if p.kind == "low" and index - p.index > 2), None)
+                rng = max(bar.high - bar.low, 0.000001)
+                top_wick = bar.high - max(bar.open, bar.close)
+                bot_wick = min(bar.open, bar.close) - bar.low
+                if recent_high and bar.high > recent_high.price and bar.close < recent_high.price and top_wick >= float(current_atr) * float(parameters.get("sweep_wick_atr", 0.8)) and top_wick / rng >= float(parameters.get("sweep_wick_ratio", 0.35)) and index - last_bear_sweep > int(parameters.get("sweep_cooldown_bars", 8)):
+                    bear_sweep = True
+                    last_bear_sweep = index
+                    latest_bear_sweep_index = index
+                    diagnostics["bear_sweeps"] += 1
+                if recent_low and bar.low < recent_low.price and bar.close > recent_low.price and bot_wick >= float(current_atr) * float(parameters.get("sweep_wick_atr", 0.8)) and bot_wick / rng >= float(parameters.get("sweep_wick_ratio", 0.35)) and index - last_bull_sweep > int(parameters.get("sweep_cooldown_bars", 8)):
+                    bull_sweep = True
+                    last_bull_sweep = index
+                    latest_bull_sweep_index = index
+                    diagnostics["bull_sweeps"] += 1
+
+            if not position and pending_setup and mt5_bar_proxy:
+                if index - int(pending_setup["created_index"]) > int(parameters.get("max_setup_age_bars", 48)):
+                    diagnostics["pending_orders_expired"] += 1
+                    pending_setup = None
+                elif bar.low <= float(pending_setup["entry"]) <= bar.high:
+                    position = open_quant_position(pending_setup, bar, index)
+                    if position:
+                        diagnostics["entries"] += 1
+                        diagnostics["pending_order_fills"] += 1
+                        if pending_setup.get("internal_confirmation_index") is not None:
+                            diagnostics["entries_after_internal_confirmation"] += 1
+                    pending_setup = None
+
+            if position:
+                self._update_excursion(position, bar)
+                result = exit_position(index, bar)
+                if result:
+                    trade, reason = result
+                    trades.append(trade)
+                    equity += trade["net_pnl"]
+                    diagnostics[reason] += 1
+                    position = None
+
+            if index < warmup:
+                append_equity_point(bar)
+                continue
+
+            bull_break = pending_high is not None and bar.close > pending_high.price and bars[index - 1].close <= pending_high.price
+            bear_break = pending_low is not None and bar.close < pending_low.price and bars[index - 1].close >= pending_low.price
+            bull_minor_break = pending_minor_high is not None and bar.close > pending_minor_high.price and bars[index - 1].close <= pending_minor_high.price
+            bear_minor_break = pending_minor_low is not None and bar.close < pending_minor_low.price and bars[index - 1].close >= pending_minor_low.price
+            previous_minor_state = minor_state
+            if bull_minor_break:
+                diagnostics["bull_minor_breaks"] += 1
+                minor_state = 1
+                pending_minor_high = None
+            if bear_minor_break:
+                diagnostics["bear_minor_breaks"] += 1
+                minor_state = -1
+                pending_minor_low = None
+
+            if active_setup:
+                if index - int(active_setup["created_index"]) > int(parameters.get("max_setup_age_bars", 48)):
+                    diagnostics["pending_orders_expired"] += 1
+                    active_setup = None
+                else:
+                    if active_setup.get("retracement_index") is None and bar.low <= float(active_setup["entry"]) <= bar.high:
+                        active_setup["retracement_index"] = index
+                    if active_setup.get("sweep_index") is None:
+                        if int(active_setup["direction"]) == 1 and bull_sweep:
+                            active_setup["sweep_index"] = index
+                        elif int(active_setup["direction"]) == -1 and bear_sweep:
+                            active_setup["sweep_index"] = index
+                    if parameters.get("internal_confirmation_required", False) and active_setup.get("retracement_index") is not None and active_setup.get("sweep_index") is not None:
+                        if int(active_setup["direction"]) == 1 and bull_minor_break:
+                            active_setup["internal_confirmation_index"] = index
+                            active_setup["internal_confirmation_type"] = "bullish_ichoch" if previous_minor_state == -1 else "bullish_ibos"
+                        elif int(active_setup["direction"]) == -1 and bear_minor_break:
+                            active_setup["internal_confirmation_index"] = index
+                            active_setup["internal_confirmation_type"] = "bearish_ichoch" if previous_minor_state == 1 else "bearish_ibos"
+                    active_ready = active_setup.get("retracement_index") is not None
+                    if parameters.get("require_sweep", True):
+                        active_ready = active_ready and active_setup.get("sweep_index") is not None
+                    if parameters.get("internal_confirmation_required", False):
+                        active_ready = active_ready and active_setup.get("internal_confirmation_index") is not None
+                    if active_ready and pending_setup is None and not position:
+                        if int(active_setup["direction"]) == 1:
+                            diagnostics["signals_long"] += 1
+                        else:
+                            diagnostics["signals_short"] += 1
+                        if mt5_bar_proxy:
+                            pending_setup = active_setup
+                            diagnostics["pending_entry_orders"] += 1
+                        else:
+                            position = open_quant_position(active_setup, bar, index)
+                            if position:
+                                diagnostics["entries"] += 1
+                        active_setup = None
+
+            setup: dict[str, Any] | None = None
+            if bull_break and parameters.get("allow_long", True):
+                diagnostics["bull_major_breaks"] += 1
+                shift = major_state == -1
+                kind = "BOS"
+                if shift:
+                    disp_ok = self._quant_smc_displacement_bar(bar, float(current_atr), float(parameters.get("displacement_atr_mult", 1.2)))
+                    kind = "MSS" if parameters.get("require_mss_displacement", True) and disp_ok else "CHoCH"
+                    anchor_index, avwap_num, avwap_den = index, 0.0, 0.0
+                diagnostics["mss_breaks" if kind == "MSS" else "choch_breaks" if kind == "CHoCH" else "bos_breaks"] += 1
+                major_state = 1
+                setup = build_setup(1, index, kind, float(current_atr))
+                if setup:
+                    bull_obs.append(setup["zone"])
+                    diagnostics["bull_obs"] += 1
+                    pending_high = None
+            if bear_break and parameters.get("allow_short", True):
+                diagnostics["bear_major_breaks"] += 1
+                shift = major_state == 1
+                kind = "BOS"
+                if shift:
+                    disp_ok = self._quant_smc_displacement_bar(bar, float(current_atr), float(parameters.get("displacement_atr_mult", 1.2)))
+                    kind = "MSS" if parameters.get("require_mss_displacement", True) and disp_ok else "CHoCH"
+                    anchor_index, avwap_num, avwap_den = index, 0.0, 0.0
+                diagnostics["mss_breaks" if kind == "MSS" else "choch_breaks" if kind == "CHoCH" else "bos_breaks"] += 1
+                major_state = -1
+                setup = build_setup(-1, index, kind, float(current_atr))
+                if setup:
+                    bear_obs.append(setup["zone"])
+                    diagnostics["bear_obs"] += 1
+                    pending_low = None
+
+            if setup and not position and pending_setup is None:
+                if parameters.get("entry_timing_mode", "source_confluence") == "after_retracement_sweep_internal":
+                    active_setup = setup
+                else:
+                    if setup["direction"] == 1:
+                        diagnostics["signals_long"] += 1
+                    else:
+                        diagnostics["signals_short"] += 1
+                    if mt5_bar_proxy:
+                        pending_setup = setup
+                        diagnostics["pending_entry_orders"] += 1
+                    else:
+                        position = open_quant_position(setup, bar, index)
+                        if position:
+                            diagnostics["entries"] += 1
+
+            append_equity_point(bar)
+
+        if position:
+            last_bar = bars[-1]
+            exit_price = max(last_bar.close - slippage, 0.0) if position.direction == 1 else last_bar.close + slippage
+            trade = self._close_trade(position, last_bar, len(bars) - 1, exit_price, "time_exit", commission_pct, equity)
+            trades.append(trade)
+            equity += trade["net_pnl"]
+            diagnostics["time_exits"] += 1
+            if equity_curve:
+                equity_curve[-1] = {"ts": last_bar.ts.isoformat(), "equity": round(equity, 2), "mark_to_market_equity": round(equity, 2), "realized_equity": round(equity, 2)}
+
+        buy_hold_start_price = bars[warmup].close if len(bars) > warmup else bars[0].close
+        buy_hold_end_price = bars[-1].close
+        buy_hold_return_pct = ((buy_hold_end_price - buy_hold_start_price) / buy_hold_start_price) * 100 if buy_hold_start_price else 0.0
+        metrics = compute_metrics(
+            initial_capital=initial_capital,
+            trades=trades,
+            equity_curve=equity_curve,
+            buy_hold_return=initial_capital * (buy_hold_return_pct / 100),
+            buy_hold_return_pct=buy_hold_return_pct,
+            buy_hold_start_price=buy_hold_start_price,
+            buy_hold_end_price=buy_hold_end_price,
+            buy_hold_max_drawdown_pct=buy_hold_drawdown_pct(bars, warmup),
+        )
+        return {"metrics": metrics, "trades": trades, "equity_curve": equity_curve, "diagnostics": diagnostics, "resolved_parameters": parameters}
+
+    @staticmethod
+    def _quant_smc_displacement_bar(bar: Bar, atr_value: float, impulse: float) -> bool:
+        body = abs(bar.close - bar.open)
+        rng = bar.high - bar.low
+        ratio = body / rng if rng > 0 else 0.0
+        return ratio >= 0.55 and body >= atr_value * impulse
 
     def _run_ghl_dc_breakout(self, spec: dict[str, Any], bars: list[Bar]) -> dict[str, Any]:
         parameters = spec["parameters"]
