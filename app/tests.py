@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 from fastapi import HTTPException
@@ -2115,14 +2116,53 @@ class MutationLabTests(unittest.TestCase):
             {"lever": "slow_len", "current_value": 96, "optimizable": True},
         ]
 
-        def fake_optimize_lever(version_id: str, dataset_id: str, lever: str, overrides: dict, optimization_mode: str = "production") -> dict:
+        def fake_optimize_lever(version_id: str, dataset_id: str, lever: str, overrides: dict, optimization_mode: str = "production", **kwargs: Any) -> dict:
             next_overrides = {**overrides, lever: 26 if lever == "fast_len" else 104}
-            return {"best": {"parameter_overrides": next_overrides, "score": 1.0, "metrics": {}}}
+            callback = kwargs.get("_progress_callback")
+            context = kwargs.get("_progress_context") or {}
+            if callback:
+                callback(
+                    {
+                        "pass": context.get("pass_index", 1),
+                        "passes": context.get("passes", 1),
+                        "edge_index": context.get("lever_index", 1),
+                        "total_edges": context.get("total_levers", 1),
+                        "lever": lever,
+                        "next_lever": None,
+                    }
+                )
+            return {
+                "best": {"parameter_overrides": next_overrides, "score": 1.0, "metrics": {}},
+                "selection_mode": "research_score_fallback",
+                "eligible_count": 1,
+            }
 
         with (
             patch.object(self.lab, "list_tuning_edges", return_value=fake_edges),
             patch.object(self.lab, "optimize_lever", side_effect=fake_optimize_lever),
-            patch.object(self.lab, "preview_tuned_version", return_value={"mode": "preview"}),
+            patch.object(
+                self.lab,
+                "preview_tuned_version",
+                return_value={
+                    "mode": "preview",
+                    "spec": {"parameters": {"sizing_mode": "mt5_fixed_risk_lot"}, "evaluation": {}},
+                    "metrics": {
+                        "total_trades": 100,
+                        "net_pnl": 1000.0,
+                        "profit_factor": 2.0,
+                        "max_equity_drawdown_pct": 1.0,
+                        "daily_sharpe": 2.0,
+                        "daily_sortino": 2.0,
+                        "calmar": 2.0,
+                        "worst_daily_return_pct": -1.0,
+                        "max_initial_risk_pct": 0.5,
+                        "avg_entry_exposure_pct": 50.0,
+                        "max_entry_exposure_pct": 75.0,
+                        "outperformance_pct": 1.0,
+                        "calmar_delta": 1.0,
+                    },
+                },
+            ),
         ):
             self.lab.optimize_all(
                 "ver_btc_intraday_parent",

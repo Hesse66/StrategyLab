@@ -1915,7 +1915,10 @@ class MutationLabService:
         bars: list[Any] | None = None
         try:
             self._set_optimization_progress(message="Loading dataset once for memory-stable optimization...")
-            bars = self.data_service.load_bars(dataset_id)
+            try:
+                bars = self.data_service.load_bars(dataset_id)
+            except HTTPException:
+                bars = None
             for pass_index in range(1, passes + 1):
                 progress_context["pass_index"] = pass_index
                 improved = False
@@ -2961,7 +2964,7 @@ class MutationLabService:
             return [True, False]
         if isinstance(current, list):
             return self._dedupe_values([current, *alternatives])
-        if edge["value_type"] == "enum":
+        if edge.get("value_type", self._value_type(current)) == "enum":
             values = [current, *alternatives]
             return self._dedupe_values(values)
         numeric_alternatives = [item for item in alternatives if isinstance(item, (int, float)) and not isinstance(item, bool)]
