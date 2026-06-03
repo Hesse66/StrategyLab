@@ -447,6 +447,11 @@ GHL_DC_PHASE_3_PARAMETERS = {
     "breakeven_stop_enabled": False,
     "breakeven_trigger_mfe_r": 0.75,
     "breakeven_lock_r": 0.0,
+    "breakeven_min_bars": 0,
+    "failed_entry_triage_enabled": False,
+    "failed_entry_triage_bars": 3,
+    "failed_entry_triage_min_mfe_r": 0.25,
+    "failed_entry_triage_max_current_r": 0.0,
     "time_risk_filter_enabled": False,
     "time_risk_block_utc_hours": [],
     "time_risk_block_weekdays": [],
@@ -485,6 +490,18 @@ GHL_DC_PHASE_3_MUTATION_SPACE = [
         "search_max": 0.5,
         "search_step": 0.1,
         "rationale": "Tune how much R is locked after the GHL+DC breakeven stop is armed.",
+    },
+    {
+        "kind": "white_box",
+        "lever": "breakeven_min_bars",
+        "path": "parameters.breakeven_min_bars",
+        "priority": 55,
+        "values": [0, 1, 2, 3, 4, 5],
+        "search_mode": "range",
+        "search_min": 0,
+        "search_max": 5,
+        "search_step": 1,
+        "rationale": "Require a minimum trade age before moving the GHL+DC stop to breakeven, reducing immature stop modifications.",
     },
     {
         "kind": "white_box",
@@ -716,36 +733,40 @@ PORTFOLIO_MUTATION_SPACE = [
         "lever": "contract_size",
         "path": "parameters.contract_size",
         "priority": 128,
-        "values": [1.0, 10.0, 100.0],
+        "values": [100.0],
         "search_mode": "values_only",
-        "rationale": "Contract size used by mt5_fixed_risk_lot sizing.",
+        "optimizable": False,
+        "rationale": "Broker contract size used by mt5_fixed_risk_lot sizing. Treat it as an execution constant, not an alpha lever.",
     },
     {
         "kind": "portfolio",
         "lever": "min_lot",
         "path": "parameters.min_lot",
         "priority": 127,
-        "values": [0.01, 0.1, 1.0],
+        "values": [0.01],
         "search_mode": "values_only",
-        "rationale": "Broker minimum lot used by mt5_fixed_risk_lot sizing.",
+        "optimizable": False,
+        "rationale": "Broker minimum lot used by mt5_fixed_risk_lot sizing. Treat it as an execution constant, not an alpha lever.",
     },
     {
         "kind": "portfolio",
         "lever": "lot_step",
         "path": "parameters.lot_step",
         "priority": 126,
-        "values": [0.01, 0.1, 1.0],
+        "values": [0.01],
         "search_mode": "values_only",
-        "rationale": "Broker lot step used by mt5_fixed_risk_lot sizing.",
+        "optimizable": False,
+        "rationale": "Broker lot step used by mt5_fixed_risk_lot sizing. Treat it as an execution constant, not an alpha lever.",
     },
     {
         "kind": "portfolio",
         "lever": "max_lot",
         "path": "parameters.max_lot",
         "priority": 125,
-        "values": [1.0, 10.0, 100.0],
+        "values": [100.0],
         "search_mode": "values_only",
-        "rationale": "Broker maximum lot cap used by mt5_fixed_risk_lot sizing.",
+        "optimizable": False,
+        "rationale": "Broker maximum lot cap used by mt5_fixed_risk_lot sizing. Treat it as an execution constant, not an alpha lever.",
     },
     {
         "kind": "portfolio",
@@ -1148,7 +1169,46 @@ class MutationLabService:
         if parameters.get("sizing_mode") in {None, "fixed_quantity", "fixed_notional_pct", "fixed_risk_pct"}:
             parameters["sizing_mode"] = "mt5_fixed_risk_lot"
             changed = True
-        if upgraded.get("engine_id") != "ma_cross_atr_stop_v1":
+        engine_id = upgraded.get("engine_id")
+        if engine_id == "ghl_dc_breakout_v1":
+            for key, value in {**GHL_DC_PHASE_3_PARAMETERS, **PORTFOLIO_PARAMETERS, **EXECUTION_PARAMETERS}.items():
+                if key not in parameters:
+                    parameters[key] = json.loads(json.dumps(value))
+                    changed = True
+            evaluation = upgraded.setdefault("evaluation", {})
+            for key, value in PRODUCTION_EVALUATION_DEFAULTS.items():
+                if key == "production_sizing_modes":
+                    current_modes = list(evaluation.get(key, []))
+                    if current_modes != value:
+                        evaluation[key] = json.loads(json.dumps(value))
+                        changed = True
+                elif key not in evaluation:
+                        evaluation[key] = json.loads(json.dumps(value))
+                        changed = True
+            mutation_space = upgraded.setdefault("mutation_space", [])
+            next_mutation_space = [
+                item
+                for item in mutation_space
+                if not str(item.get("lever", "")).startswith("failed_entry_triage")
+            ]
+            if len(next_mutation_space) != len(mutation_space):
+                upgraded["mutation_space"] = next_mutation_space
+                mutation_space = next_mutation_space
+                changed = True
+            existing_by_lever = {item.get("lever"): item for item in mutation_space}
+            for mutation in [*GHL_DC_PHASE_3_MUTATION_SPACE, *PORTFOLIO_MUTATION_SPACE]:
+                existing = existing_by_lever.get(mutation["lever"])
+                if existing is None:
+                    mutation_space.append(json.loads(json.dumps(mutation)))
+                    changed = True
+                    continue
+                for key in ("priority", "values", "search_mode", "search_min", "search_max", "search_step", "optimizable", "rationale", "path", "kind"):
+                    next_value = mutation.get(key, True) if key == "optimizable" else mutation.get(key)
+                    if existing.get(key) != next_value:
+                        existing[key] = json.loads(json.dumps(next_value))
+                        changed = True
+            return upgraded, changed
+        if engine_id != "ma_cross_atr_stop_v1":
             return upgraded, changed
         metadata = upgraded.get("metadata", {})
         baseline_only = metadata.get("phase") == "phase_2_baseline"
@@ -3367,7 +3427,10 @@ class MutationLabService:
                 f"- Entry black-box veto long blocks: `{payload['diagnostics'].get('entry_blackbox_veto_long_blocks', 0)}`",
                 f"- Entry black-box veto short blocks: `{payload['diagnostics'].get('entry_blackbox_veto_short_blocks', 0)}`",
                 f"- Breakeven stop moves: `{payload['diagnostics'].get('breakeven_stop_moves', 0)}`",
+                f"- Breakeven maturity blocks: `{payload['diagnostics'].get('breakeven_maturity_blocks', 0)}`",
                 f"- MT5 stop modify rejects: `{payload['diagnostics'].get('mt5_stop_modify_rejects', 0)}`",
+                f"- Failed-entry triage exits: `{payload['diagnostics'].get('failed_entry_triage_exits', 0)}`",
+                f"- Failed-entry triage candidates: `{payload['diagnostics'].get('failed_entry_triage_candidates', 0)}`",
                 f"- Time risk filter blocks: `{payload['diagnostics'].get('time_risk_filter_blocks', 0)}`",
                 f"- Entry exposure gate blocks: `{payload['diagnostics'].get('entry_exposure_gate_blocks', 0)}`",
                 f"- Entry exposure gate long blocks: `{payload['diagnostics'].get('entry_exposure_gate_long_blocks', 0)}`",

@@ -2452,6 +2452,9 @@ class BacktestEngine:
             "stop_exits": 0,
             "breakeven_stop_moves": 0,
             "breakeven_stop_exits": 0,
+            "breakeven_maturity_blocks": 0,
+            "failed_entry_triage_exits": 0,
+            "failed_entry_triage_candidates": 0,
             "time_risk_filter_blocks": 0,
             "time_risk_filter_long_blocks": 0,
             "time_risk_filter_short_blocks": 0,
@@ -2509,24 +2512,50 @@ class BacktestEngine:
             if position and parameters.get("breakeven_stop_enabled", False):
                 initial_risk = position.initial_risk_per_unit
                 if initial_risk > 0:
+                    bars_held = index - position.entry_index
+                    min_bars = int(parameters.get("breakeven_min_bars", 0))
                     trigger_r = float(parameters.get("breakeven_trigger_mfe_r", 1.0))
                     lock_r = float(parameters.get("breakeven_lock_r", 0.0))
                     if position.direction == 1 and ((bar.high - position.entry_price) / initial_risk) >= trigger_r:
-                        new_stop = position.entry_price + (initial_risk * lock_r)
-                        if mt5_bar_proxy and new_stop >= bar.close:
-                            diagnostics["mt5_stop_modify_rejects"] += 1
-                        elif new_stop > position.stop_price:
-                            position.stop_price = new_stop
-                            position.stop_moved_to_breakeven = True
-                            diagnostics["breakeven_stop_moves"] += 1
+                        if bars_held < min_bars:
+                            diagnostics["breakeven_maturity_blocks"] += 1
+                        else:
+                            new_stop = position.entry_price + (initial_risk * lock_r)
+                            if mt5_bar_proxy and new_stop >= bar.close:
+                                diagnostics["mt5_stop_modify_rejects"] += 1
+                            elif new_stop > position.stop_price:
+                                position.stop_price = new_stop
+                                position.stop_moved_to_breakeven = True
+                                diagnostics["breakeven_stop_moves"] += 1
                     elif position.direction == -1 and ((position.entry_price - bar.low) / initial_risk) >= trigger_r:
-                        new_stop = position.entry_price - (initial_risk * lock_r)
-                        if mt5_bar_proxy and new_stop <= bar.close:
-                            diagnostics["mt5_stop_modify_rejects"] += 1
-                        elif new_stop < position.stop_price:
-                            position.stop_price = new_stop
-                            position.stop_moved_to_breakeven = True
-                            diagnostics["breakeven_stop_moves"] += 1
+                        if bars_held < min_bars:
+                            diagnostics["breakeven_maturity_blocks"] += 1
+                        else:
+                            new_stop = position.entry_price - (initial_risk * lock_r)
+                            if mt5_bar_proxy and new_stop <= bar.close:
+                                diagnostics["mt5_stop_modify_rejects"] += 1
+                            elif new_stop < position.stop_price:
+                                position.stop_price = new_stop
+                                position.stop_moved_to_breakeven = True
+                                diagnostics["breakeven_stop_moves"] += 1
+
+            if position and parameters.get("failed_entry_triage_enabled", False):
+                initial_risk = position.initial_risk_per_unit
+                bars_held = index - position.entry_index
+                triage_bars = int(parameters.get("failed_entry_triage_bars", 3))
+                min_mfe_r = float(parameters.get("failed_entry_triage_min_mfe_r", 0.25))
+                max_current_r = float(parameters.get("failed_entry_triage_max_current_r", 0.0))
+                if initial_risk > 0 and bars_held >= triage_bars:
+                    current_r = ((bar.close - position.entry_price) * position.direction) / initial_risk
+                    mfe_r = position.max_favorable_excursion / initial_risk
+                    if mfe_r < min_mfe_r and current_r <= max_current_r:
+                        diagnostics["failed_entry_triage_candidates"] += 1
+                        exit_price = max(bar.close - slippage, 0.0) if position.direction == 1 else bar.close + slippage
+                        trade = self._close_trade(position, bar, index, exit_price, "failed_entry_triage_exit", commission_pct, equity)
+                        trades.append(trade)
+                        equity += trade["net_pnl"]
+                        diagnostics["failed_entry_triage_exits"] += 1
+                        position = None
 
             previous_hilo = hilo_values[index - 1]
             current_hilo = hilo_values[index]

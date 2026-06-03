@@ -1074,6 +1074,47 @@ class MutationLabTests(unittest.TestCase):
         )
         self.assertEqual(quantity, 2.0)
 
+    def test_ghl_dc_failed_entry_triage_exits_weak_young_trades(self) -> None:
+        bars = build_fixture_bars(1200)
+        for bar in bars:
+            bar.symbol = "XAUUSD"
+            bar.timeframe = "30m"
+        spec = {
+            "engine_id": "ghl_dc_breakout_v1",
+            "parameters": {
+                "gann_high_period": 5,
+                "gann_low_period": 8,
+                "donchian_length": 13,
+                "max_breakout_bars": 10,
+                "allow_long": True,
+                "allow_short": True,
+                "atr_len": 8,
+                "stop_mode": "atr",
+                "stop_mult": 2.0,
+                "initial_capital": 100000.0,
+                "commission_pct": 0.0,
+                "slippage_ticks": 1,
+                "tick_size": 0.01,
+                "sizing_mode": "fixed_risk_pct",
+                "risk_pct": 0.005,
+                "max_leverage": 1.0,
+                "execution_model": "mt5_bar_proxy",
+                "failed_entry_triage_enabled": True,
+                "failed_entry_triage_bars": 1,
+                "failed_entry_triage_min_mfe_r": 999.0,
+                "failed_entry_triage_max_current_r": 999.0,
+            },
+            "evaluation": {},
+        }
+
+        result = BacktestEngine().run(spec, bars)
+
+        self.assertGreater(result["diagnostics"]["failed_entry_triage_exits"], 0)
+        self.assertEqual(
+            result["diagnostics"]["failed_entry_triage_exits"],
+            sum(1 for trade in result["trades"] if trade["reason"] == "failed_entry_triage_exit"),
+        )
+
     def test_ghl_dc_mt5_sizing_reports_invalid_lot_skips(self) -> None:
         bars = build_fixture_bars(1200)
         for bar in bars:
@@ -1376,6 +1417,44 @@ class MutationLabTests(unittest.TestCase):
         tuned_result = self.lab.engine.run(tuned_spec, bars)
         self.assertGreater(tuned_result["diagnostics"]["breakeven_stop_moves"], 0)
         self.assertTrue(any(abs(trade["stop_price"] - trade["entry_price"]) < 0.01 for trade in tuned_result["trades"]))
+
+    def test_breakeven_min_bars_blocks_immature_stop_moves(self) -> None:
+        bars = build_fixture_bars(1200)
+        for bar in bars:
+            bar.symbol = "XAUUSD"
+            bar.timeframe = "30m"
+        spec = {
+            "engine_id": "ghl_dc_breakout_v1",
+            "parameters": {
+                "gann_high_period": 5,
+                "gann_low_period": 8,
+                "donchian_length": 13,
+                "max_breakout_bars": 10,
+                "allow_long": True,
+                "allow_short": True,
+                "atr_len": 8,
+                "stop_mode": "atr",
+                "stop_mult": 2.0,
+                "initial_capital": 100000.0,
+                "commission_pct": 0.0,
+                "slippage_ticks": 1,
+                "tick_size": 0.01,
+                "sizing_mode": "fixed_risk_pct",
+                "risk_pct": 0.005,
+                "max_leverage": 1.0,
+                "execution_model": "mt5_bar_proxy",
+                "breakeven_stop_enabled": True,
+                "breakeven_trigger_mfe_r": 0.0,
+                "breakeven_lock_r": 0.0,
+                "breakeven_min_bars": 999,
+            },
+            "evaluation": {},
+        }
+
+        result = BacktestEngine().run(spec, bars)
+
+        self.assertGreater(result["diagnostics"]["breakeven_maturity_blocks"], 0)
+        self.assertEqual(result["diagnostics"]["breakeven_stop_moves"], 0)
 
     def test_time_risk_filter_is_disabled_by_default_and_blocks_opt_in_entries(self) -> None:
         bars = build_fixture_bars()

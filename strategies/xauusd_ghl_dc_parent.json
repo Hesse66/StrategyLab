@@ -27,6 +27,11 @@
     "breakeven_stop_enabled": false,
     "breakeven_trigger_mfe_r": 0.75,
     "breakeven_lock_r": 0.0,
+    "breakeven_min_bars": 0,
+    "failed_entry_triage_enabled": false,
+    "failed_entry_triage_bars": 3,
+    "failed_entry_triage_min_mfe_r": 0.25,
+    "failed_entry_triage_max_current_r": 0.0,
     "time_risk_filter_enabled": false,
     "time_risk_block_utc_hours": [],
     "time_risk_block_weekdays": [],
@@ -185,6 +190,24 @@
     },
     {
       "kind": "white_box",
+      "lever": "breakeven_min_bars",
+      "path": "parameters.breakeven_min_bars",
+      "values": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
+      "search_mode": "range",
+      "search_min": 0,
+      "search_max": 5,
+      "search_step": 1,
+      "rationale": "Require a minimum trade age before moving the GHL+DC stop to breakeven, reducing immature stop modifications."
+    },
+    {
+      "kind": "white_box",
       "lever": "time_risk_filter_enabled",
       "path": "parameters.time_risk_filter_enabled",
       "values": [
@@ -340,7 +363,8 @@
         100.0
       ],
       "search_mode": "values_only",
-      "rationale": "XAUUSD contract size used by mt5_fixed_risk_lot sizing."
+      "optimizable": false,
+      "rationale": "XAUUSD broker contract size used by mt5_fixed_risk_lot sizing. Treat it as an execution constant, not an alpha lever."
     },
     {
       "kind": "portfolio",
@@ -350,7 +374,8 @@
         0.01
       ],
       "search_mode": "values_only",
-      "rationale": "Broker minimum lot used by mt5_fixed_risk_lot sizing."
+      "optimizable": false,
+      "rationale": "Broker minimum lot used by mt5_fixed_risk_lot sizing. Treat it as an execution constant, not an alpha lever."
     },
     {
       "kind": "portfolio",
@@ -360,7 +385,8 @@
         0.01
       ],
       "search_mode": "values_only",
-      "rationale": "Broker lot step used by mt5_fixed_risk_lot sizing."
+      "optimizable": false,
+      "rationale": "Broker lot step used by mt5_fixed_risk_lot sizing. Treat it as an execution constant, not an alpha lever."
     },
     {
       "kind": "portfolio",
@@ -370,7 +396,8 @@
         100.0
       ],
       "search_mode": "values_only",
-      "rationale": "Broker maximum lot cap used by mt5_fixed_risk_lot sizing."
+      "optimizable": false,
+      "rationale": "Broker maximum lot cap used by mt5_fixed_risk_lot sizing. Treat it as an execution constant, not an alpha lever."
     },
     {
       "kind": "portfolio",
