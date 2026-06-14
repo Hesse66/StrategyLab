@@ -465,6 +465,36 @@ GHL_DC_PHASE_3_PARAMETERS = {
 GHL_DC_PHASE_3_MUTATION_SPACE = [
     {
         "kind": "white_box",
+        "lever": "gann_exit_confirmation_enabled",
+        "path": "parameters.gann_exit_confirmation_enabled",
+        "priority": 65,
+        "values": [True, False],
+        "search_mode": "values_only",
+        "rationale": "Require limited confirmation before acting on a Gann state exit while preserving an adverse-R escape.",
+    },
+    {
+        "kind": "white_box",
+        "lever": "gann_exit_confirm_bars",
+        "path": "parameters.gann_exit_confirm_bars",
+        "priority": 64,
+        "values": [1, 2, 3, 4],
+        "search_mode": "range",
+        "search_min": 1,
+        "search_max": 4,
+        "search_step": 1,
+        "rationale": "Tune the number of completed bars required to confirm a Gann state exit.",
+    },
+    {
+        "kind": "white_box",
+        "lever": "gann_exit_confirm_allow_if_unrealized_r_lte",
+        "path": "parameters.gann_exit_confirm_allow_if_unrealized_r_lte",
+        "priority": 63,
+        "values": [-0.75, -0.5, -0.35, -0.2, 0.0],
+        "search_mode": "values_only",
+        "rationale": "Allow immediate Gann exit when unrealized R is sufficiently adverse instead of waiting for confirmation.",
+    },
+    {
+        "kind": "white_box",
         "lever": "breakeven_stop_enabled",
         "path": "parameters.breakeven_stop_enabled",
         "priority": 58,
@@ -779,11 +809,39 @@ PORTFOLIO_MUTATION_SPACE = [
         "lever": "skip_below_min_lot",
         "path": "parameters.skip_below_min_lot",
         "priority": 124,
-        "values": [True, False],
+        "values": [True],
         "search_mode": "values_only",
-        "rationale": "Choose whether MT5 lot sizing skips entries below the minimum lot or floors them to min lot for an explicit stress test.",
+        "optimizable": False,
+        "rationale": "Skip orders below the broker minimum instead of flooring volume and silently exceeding the intended risk budget.",
     },
 ]
+
+
+BROKER_EXECUTION_CONSTANT_LEVERS = {
+    "contract_size",
+    "min_lot",
+    "lot_step",
+    "max_lot",
+    "skip_below_min_lot",
+}
+
+
+def _mutation_for_spec(mutation: dict[str, Any], parameters: dict[str, Any]) -> dict[str, Any]:
+    resolved = json.loads(json.dumps(mutation))
+    lever = str(resolved.get("lever", ""))
+    if lever in BROKER_EXECUTION_CONSTANT_LEVERS and lever in parameters:
+        resolved["values"] = [json.loads(json.dumps(parameters[lever]))]
+        resolved["search_mode"] = "values_only"
+        resolved["optimizable"] = False
+    if lever == "time_risk_block_utc_hours":
+        current_hours = parameters.get(lever)
+        if isinstance(current_hours, list):
+            candidate_values = list(resolved.get("values", []))
+            for value in [[], *[[hour] for hour in current_hours], current_hours]:
+                if value not in candidate_values:
+                    candidate_values.append(json.loads(json.dumps(value)))
+            resolved["values"] = candidate_values
+    return resolved
 
 
 SEED_SPEC = {
@@ -1202,7 +1260,8 @@ class MutationLabService:
                 mutation_space = next_mutation_space
                 changed = True
             existing_by_lever = {item.get("lever"): item for item in mutation_space}
-            for mutation in [*GHL_DC_PHASE_3_MUTATION_SPACE, *PORTFOLIO_MUTATION_SPACE]:
+            for default_mutation in [*GHL_DC_PHASE_3_MUTATION_SPACE, *PORTFOLIO_MUTATION_SPACE]:
+                mutation = _mutation_for_spec(default_mutation, parameters)
                 existing = existing_by_lever.get(mutation["lever"])
                 if existing is None:
                     mutation_space.append(json.loads(json.dumps(mutation)))
@@ -1255,7 +1314,8 @@ class MutationLabService:
         mutation_defaults = [*PORTFOLIO_MUTATION_SPACE]
         if not baseline_only:
             mutation_defaults = [*PHASE_3_MUTATION_SPACE, *PHASE_4_MUTATION_SPACE, *PHASE_4_2_MUTATION_SPACE, *mutation_defaults]
-        for mutation in mutation_defaults:
+        for default_mutation in mutation_defaults:
+            mutation = _mutation_for_spec(default_mutation, parameters)
             existing = existing_by_lever.get(mutation["lever"])
             if existing is None:
                 mutation_space.append(json.loads(json.dumps(mutation)))
@@ -1683,16 +1743,23 @@ class MutationLabService:
     def _cost_stress_runs(self, spec: dict[str, Any], bars: list[Any]) -> list[dict[str, Any]]:
         parameters = spec.get("parameters", {})
         base_commission = float(parameters.get("commission_pct", 0.0))
+        base_commission_per_lot_side = float(parameters.get("commission_per_lot_side", 0.0))
         base_slippage = int(parameters.get("slippage_ticks", 0))
         scenarios = [
-            ("commission_2x", base_commission * 2, base_slippage),
-            ("slippage_2x", base_commission, base_slippage * 2),
-            ("commission_2x_slippage_2x", base_commission * 2, base_slippage * 2),
+            ("commission_2x", base_commission * 2, base_commission_per_lot_side * 2, base_slippage),
+            ("slippage_2x", base_commission, base_commission_per_lot_side, base_slippage * 2),
+            (
+                "commission_2x_slippage_2x",
+                base_commission * 2,
+                base_commission_per_lot_side * 2,
+                base_slippage * 2,
+            ),
         ]
         results: list[dict[str, Any]] = []
-        for name, commission, slippage in scenarios:
+        for name, commission, commission_per_lot_side, slippage in scenarios:
             stressed = json.loads(json.dumps(spec))
             stressed.setdefault("parameters", {})["commission_pct"] = commission
+            stressed["parameters"]["commission_per_lot_side"] = commission_per_lot_side
             stressed["parameters"]["slippage_ticks"] = slippage
             result = self.engine.run(stressed, bars)
             portfolio_failures = self._portfolio_gate_failures(stressed, result["metrics"])
@@ -1706,6 +1773,7 @@ class MutationLabService:
                 {
                     "scenario": name,
                     "commission_pct": commission,
+                    "commission_per_lot_side": commission_per_lot_side,
                     "slippage_ticks": slippage,
                     "passed": not failures,
                     "failures": failures,
@@ -2432,6 +2500,129 @@ class MutationLabService:
         payload["report_path"] = str(report_path)
         return payload
 
+    def run_hybrid_entry_sizing_experiment(
+        self,
+        run_id: str,
+        reduced_fraction: float = 0.10,
+        risk_multiplier: float = 0.50,
+    ) -> dict[str, Any]:
+        run = self.repo.get_run(run_id)
+        if not run:
+            raise HTTPException(status_code=404, detail="Run not found.")
+        artifact_path = Path(run["artifact_path"])
+        if not artifact_path.exists():
+            raise HTTPException(status_code=404, detail="Run artifact not found.")
+        parent_payload = json.loads(artifact_path.read_text(encoding="utf-8"))
+        bars = self.data_service.load_bars(parent_payload["dataset_id"])
+        result = self.engine.run(parent_payload["spec"], bars)
+        rows = self._hybrid_trade_rows(
+            run_id=run_id,
+            family_id=parent_payload["family_id"],
+            version_id=parent_payload["version_id"],
+            dataset_id=parent_payload["dataset_id"],
+            trades=result["trades"],
+        )
+        if len(rows) < 100:
+            raise HTTPException(status_code=400, detail="Hybrid sizing experiment requires at least 100 trades.")
+
+        ordered_rows = sorted(rows, key=lambda row: row["entry_ts"])
+        for index, row in enumerate(ordered_rows):
+            row["chronological_fold"] = min(4, (index * 4 // len(ordered_rows)) + 1)
+            mfe_r = float(row.get("mfe_r", 0.0))
+            net_pnl = float(row.get("net_pnl", 0.0))
+            row["quality_label"] = (
+                "worthwhile" if net_pnl > 0 or mfe_r >= 0.25
+                else "bad" if net_pnl < 0 and mfe_r < 0.20
+                else "ambiguous"
+            )
+            row["bad_entry_quality"] = row["quality_label"] == "bad"
+            row["bad_entry_quality_score"] = None
+            row["risk_multiplier"] = 1.0
+
+        fold_models: list[dict[str, Any]] = []
+        for test_fold in (2, 3, 4):
+            train_rows = [
+                row for row in ordered_rows
+                if row["chronological_fold"] < test_fold and row["quality_label"] != "ambiguous"
+            ]
+            test_rows = [row for row in ordered_rows if row["chronological_fold"] == test_fold]
+            model = self._fit_logistic_entry_quality(train_rows)
+            train_scores = [self._logistic_entry_quality_score(row, model) for row in train_rows]
+            cutoff = self._quantile(train_scores, 1.0 - reduced_fraction)
+            reduced_count = 0
+            for row in test_rows:
+                score = self._logistic_entry_quality_score(row, model)
+                row["bad_entry_quality_score"] = round(score, 6)
+                if score >= cutoff:
+                    row["risk_multiplier"] = risk_multiplier
+                    reduced_count += 1
+            fold_models.append(
+                {
+                    "test_fold": test_fold,
+                    "trained_rows": len(train_rows),
+                    "train_bad_rows": sum(1 for row in train_rows if row["bad_entry_quality"]),
+                    "cutoff": round(cutoff, 6),
+                    "test_rows": len(test_rows),
+                    "reduced_rows": reduced_count,
+                    "model": model,
+                }
+            )
+
+        scaled_trades = [self._scale_trade(row["trade"], row["risk_multiplier"]) for row in ordered_rows]
+        hybrid_metrics = self._metrics_from_filtered_trades(parent_payload["spec"], bars, scaled_trades)
+        parent_metrics = result["metrics"]
+        reduced_rows = [row for row in ordered_rows if row["risk_multiplier"] < 1.0]
+        acceptance = {
+            "all_trades_retained": hybrid_metrics["total_trades"] == parent_metrics["total_trades"],
+            "reduced_fraction_in_range": 0.05 <= len(reduced_rows) / len(ordered_rows) <= 0.15,
+            "net_pnl_retained": hybrid_metrics["net_pnl"] >= parent_metrics["net_pnl"] * 0.98,
+            "profit_factor": hybrid_metrics["profit_factor"] >= 1.50,
+            "max_drawdown": hybrid_metrics["max_equity_drawdown_pct"] <= 3.09,
+            "daily_sharpe": hybrid_metrics["daily_sharpe"] >= 1.69,
+            "daily_sortino": hybrid_metrics["daily_sortino"] >= 1.95,
+            "worst_day": hybrid_metrics["worst_daily_return_pct"] >= -0.79,
+            "calmar": hybrid_metrics["calmar"] >= 17.05,
+        }
+        verdict = "offline_hybrid_candidate" if all(acceptance.values()) else "rejected_offline_contract"
+        experiment_id = f"hyb_{uuid.uuid4().hex[:12]}"
+        comparison = {
+            "net_pnl_delta": round(hybrid_metrics["net_pnl"] - parent_metrics["net_pnl"], 2),
+            "profit_factor_delta": round(hybrid_metrics["profit_factor"] - parent_metrics["profit_factor"], 4),
+            "drawdown_pct_delta": round(hybrid_metrics["max_equity_drawdown_pct"] - parent_metrics["max_equity_drawdown_pct"], 2),
+            "daily_sharpe_delta": round(hybrid_metrics["daily_sharpe"] - parent_metrics["daily_sharpe"], 4),
+            "daily_sortino_delta": round(hybrid_metrics["daily_sortino"] - parent_metrics["daily_sortino"], 4),
+            "calmar_delta": round(hybrid_metrics["calmar"] - parent_metrics["calmar"], 4),
+        }
+        payload = {
+            "experiment_id": experiment_id,
+            "parent_run_id": run_id,
+            "family_id": parent_payload["family_id"],
+            "version_id": parent_payload["version_id"],
+            "dataset_id": parent_payload["dataset_id"],
+            "mode": "offline_entry_quality_conservative_sizing",
+            "reduced_fraction": reduced_fraction,
+            "risk_multiplier": risk_multiplier,
+            "parent_metrics": parent_metrics,
+            "hybrid_metrics": hybrid_metrics,
+            "comparison": comparison,
+            "acceptance": acceptance,
+            "verdict": verdict,
+            "reduced_count": len(reduced_rows),
+            "reduced_actual_fraction": round(len(reduced_rows) / len(ordered_rows), 6),
+            "fold_models": fold_models,
+            "rows": [
+                {key: value for key, value in row.items() if key != "trade"}
+                for row in ordered_rows
+            ],
+        }
+        export_path = settings.diagnostic_dir / f"{experiment_id}_entry_quality_sizing.json"
+        report_path = settings.diagnostic_dir / f"{experiment_id}.md"
+        export_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        report_path.write_text(self._hybrid_entry_sizing_report(payload), encoding="utf-8")
+        payload["export_path"] = str(export_path)
+        payload["report_path"] = str(report_path)
+        return payload
+
     def run_hybrid_time_decay_triage_experiment(
         self,
         run_id: str,
@@ -2712,6 +2903,117 @@ class MutationLabService:
         if year <= 2024:
             return "validation"
         return "test"
+
+    @staticmethod
+    def _fit_logistic_entry_quality(rows: list[dict[str, Any]]) -> dict[str, Any]:
+        categorical = ["side", "weekday", "utc_hour", "month", "gann_state", "gap_fill"]
+        numeric = [
+            "gann_high_slope",
+            "gann_low_slope",
+            "normalized_ma_distance",
+            "bars_since_gann_flip",
+            "breakout_age_bars",
+            "donchian_channel_width_pct",
+            "donchian_breakout_distance_atr",
+            "atr_pct",
+            "recent_return_20",
+            "recent_range_20",
+            "recent_volatility_20",
+            "recent_cross_count",
+            "stop_distance_atr",
+            "stop_distance_pct",
+        ]
+        categories = {
+            name: sorted({str(row.get(name, "missing")) for row in rows})
+            for name in categorical
+        }
+        means: dict[str, float] = {}
+        scales: dict[str, float] = {}
+        for name in numeric:
+            values = [float(row.get(name, 0.0) or 0.0) for row in rows]
+            mean = sum(values) / len(values) if values else 0.0
+            variance = sum((value - mean) ** 2 for value in values) / len(values) if values else 0.0
+            means[name] = mean
+            scales[name] = math.sqrt(variance) or 1.0
+        feature_names = ["intercept", *numeric]
+        for name in categorical:
+            feature_names.extend(f"{name}={value}" for value in categories[name])
+
+        def encode(row: dict[str, Any]) -> list[float]:
+            vector = [1.0]
+            vector.extend((float(row.get(name, 0.0) or 0.0) - means[name]) / scales[name] for name in numeric)
+            for name in categorical:
+                value = str(row.get(name, "missing"))
+                vector.extend(1.0 if value == category else 0.0 for category in categories[name])
+            return vector
+
+        vectors = [encode(row) for row in rows]
+        labels = [1.0 if row["bad_entry_quality"] else 0.0 for row in rows]
+        positives = sum(labels)
+        negatives = len(labels) - positives
+        positive_weight = len(labels) / (2.0 * positives) if positives else 1.0
+        negative_weight = len(labels) / (2.0 * negatives) if negatives else 1.0
+        weights = [0.0] * len(feature_names)
+        learning_rate = 0.05
+        regularization = 0.05
+        for _ in range(800):
+            gradient = [0.0] * len(weights)
+            for vector, label in zip(vectors, labels):
+                linear = sum(weight * value for weight, value in zip(weights, vector))
+                probability = 1.0 / (1.0 + math.exp(-max(-35.0, min(35.0, linear))))
+                sample_weight = positive_weight if label else negative_weight
+                error = (probability - label) * sample_weight
+                for index, value in enumerate(vector):
+                    gradient[index] += error * value
+            for index in range(len(weights)):
+                penalty = 0.0 if index == 0 else regularization * weights[index]
+                weights[index] -= learning_rate * ((gradient[index] / len(rows)) + penalty)
+        return {
+            "family": "weighted_logistic_regression",
+            "target": "bad_entry_quality",
+            "feature_names": feature_names,
+            "categorical": categorical,
+            "numeric": numeric,
+            "categories": categories,
+            "means": means,
+            "scales": scales,
+            "weights": weights,
+            "regularization": regularization,
+            "iterations": 800,
+        }
+
+    @staticmethod
+    def _logistic_entry_quality_score(row: dict[str, Any], model: dict[str, Any]) -> float:
+        vector = [1.0]
+        vector.extend(
+            (float(row.get(name, 0.0) or 0.0) - model["means"][name]) / model["scales"][name]
+            for name in model["numeric"]
+        )
+        for name in model["categorical"]:
+            value = str(row.get(name, "missing"))
+            vector.extend(1.0 if value == category else 0.0 for category in model["categories"][name])
+        linear = sum(weight * value for weight, value in zip(model["weights"], vector))
+        return 1.0 / (1.0 + math.exp(-max(-35.0, min(35.0, linear))))
+
+    @staticmethod
+    def _scale_trade(trade: dict[str, Any], multiplier: float) -> dict[str, Any]:
+        scaled = dict(trade)
+        for name in (
+            "quantity",
+            "entry_notional",
+            "entry_exposure_pct",
+            "initial_risk_amount",
+            "initial_risk_pct",
+            "gross_pnl",
+            "net_pnl",
+            "mfe",
+            "mae",
+            "return_on_equity_pct",
+        ):
+            if isinstance(scaled.get(name), (int, float)):
+                scaled[name] = scaled[name] * multiplier
+        scaled["hybrid_risk_multiplier"] = multiplier
+        return scaled
 
     def _fit_entry_quality_scorecard(self, rows: list[dict[str, Any]]) -> dict[str, Any]:
         train_rows = [row for row in rows if row["split"] == "train"] or rows[: max(1, int(len(rows) * 0.6))]
@@ -3048,6 +3350,45 @@ class MutationLabService:
                 "## Interpretation",
                 "",
                 "This is an offline first hybrid experiment. It tests whether decision-time entry features can identify low-quality trades before entry. It does not yet mutate the live backtest engine, so a survivor here should become a live hybrid veto parameter set before promotion.",
+            ]
+        )
+
+    @staticmethod
+    def _hybrid_entry_sizing_report(payload: dict[str, Any]) -> str:
+        parent = payload["parent_metrics"]
+        hybrid = payload["hybrid_metrics"]
+        comparison = payload["comparison"]
+        acceptance = payload["acceptance"]
+        failed = [name for name, passed in acceptance.items() if not passed]
+        return "\n".join(
+            [
+                f"# Hybrid Entry-Quality Sizing Experiment {payload['experiment_id']}",
+                "",
+                f"- Parent run: `{payload['parent_run_id']}`",
+                f"- Mode: `{payload['mode']}`",
+                f"- Verdict: `{payload['verdict']}`",
+                f"- Risk multiplier: `{payload['risk_multiplier']}`",
+                f"- Reduced trades: `{payload['reduced_count']}` ({payload['reduced_actual_fraction'] * 100:.2f}%)",
+                "",
+                "## Parent vs Hybrid",
+                "",
+                "| Metric | Parent | Hybrid | Delta |",
+                "|---|---:|---:|---:|",
+                f"| Net PnL | {parent['net_pnl']} | {hybrid['net_pnl']} | {comparison['net_pnl_delta']} |",
+                f"| Profit Factor | {parent['profit_factor']} | {hybrid['profit_factor']} | {comparison['profit_factor_delta']} |",
+                f"| Max Drawdown % | {parent['max_equity_drawdown_pct']} | {hybrid['max_equity_drawdown_pct']} | {comparison['drawdown_pct_delta']} |",
+                f"| Daily Sharpe | {parent['daily_sharpe']} | {hybrid['daily_sharpe']} | {comparison['daily_sharpe_delta']} |",
+                f"| Daily Sortino | {parent['daily_sortino']} | {hybrid['daily_sortino']} | {comparison['daily_sortino_delta']} |",
+                f"| Calmar | {parent['calmar']} | {hybrid['calmar']} | {comparison['calmar_delta']} |",
+                f"| Trades | {parent['total_trades']} | {hybrid['total_trades']} | 0 |",
+                "",
+                "## Acceptance Contract",
+                "",
+                *[f"- {'PASS' if passed else 'FAIL'} `{name}`" for name, passed in acceptance.items()],
+                "",
+                "## Routing",
+                "",
+                "Proceed to live-engine proxy implementation." if not failed else f"Reject this offline branch. Failed gates: {', '.join(failed)}.",
             ]
         )
 

@@ -33,6 +33,9 @@ class Position:
     time_decay_confirmation_suppressed: int = 0
     reverse_confirmation_suppressed: int = 0
     gann_exit_confirmation_suppressed: int = 0
+    account_conversion_mode: str = "identity"
+    contract_size: float = 0.0
+    commission_per_lot_side: float = 0.0
 
 
 @dataclass(slots=True)
@@ -388,7 +391,14 @@ def mark_to_market_equity(realized_equity: float, position: Position | None, clo
         unrealized = (close_price - position.entry_price) * position.quantity
     else:
         unrealized = (position.entry_price - close_price) * position.quantity
-    exit_commission = close_price * position.quantity * commission_pct
+    if position.account_conversion_mode == "quote_divide_price" and close_price > 0:
+        unrealized /= close_price
+    lots = position.quantity / position.contract_size if position.contract_size > 0 else 0.0
+    exit_commission = (
+        lots * position.commission_per_lot_side
+        if position.commission_per_lot_side > 0
+        else close_price * position.quantity * commission_pct
+    )
     return realized_equity + unrealized - position.entry_commission - exit_commission
 
 
@@ -3450,7 +3460,20 @@ class BacktestEngine:
                         ),
                     }
                 )
-                position = self._open_position(direction, index, bar, fill, stop, quantity, commission_pct, equity, features)
+                position = self._open_position(
+                    direction,
+                    index,
+                    bar,
+                    fill,
+                    stop,
+                    quantity,
+                    commission_pct,
+                    equity,
+                    features,
+                    account_conversion_mode=str(parameters.get("account_conversion_mode", "identity")),
+                    contract_size=float(parameters.get("contract_size", 0.0)),
+                    commission_per_lot_side=float(parameters.get("commission_per_lot_side", 0.0)),
+                )
                 gann_exit_candidate_index = None
                 diagnostics["entries"] += 1
                 diagnostics["pending_order_fills"] += int(mt5_bar_proxy)
@@ -3610,7 +3633,27 @@ class BacktestEngine:
         }
 
     @staticmethod
-    def _open_position(direction: int, index: int, bar: Bar, fill: float, stop: float, quantity: float, commission_pct: float, equity: float, features: dict[str, Any]) -> Position:
+    def _open_position(
+        direction: int,
+        index: int,
+        bar: Bar,
+        fill: float,
+        stop: float,
+        quantity: float,
+        commission_pct: float,
+        equity: float,
+        features: dict[str, Any],
+        account_conversion_mode: str = "identity",
+        contract_size: float = 0.0,
+        commission_per_lot_side: float = 0.0,
+    ) -> Position:
+        lots = quantity / contract_size if contract_size > 0 else 0.0
+        entry_commission = (
+            lots * commission_per_lot_side
+            if commission_per_lot_side > 0
+            else fill * quantity * commission_pct
+        )
+        entry_notional = quantity if account_conversion_mode == "quote_divide_price" else fill * quantity
         return Position(
             direction=direction,
             entry_index=index,
@@ -3618,12 +3661,15 @@ class BacktestEngine:
             entry_price=fill,
             stop_price=stop,
             quantity=quantity,
-            entry_commission=fill * quantity * commission_pct,
+            entry_commission=entry_commission,
             entry_equity=equity,
-            entry_notional=fill * quantity,
+            entry_notional=entry_notional,
             initial_risk_per_unit=abs(fill - stop),
             stop_initialized_on_index=index,
             entry_features=features,
+            account_conversion_mode=account_conversion_mode,
+            contract_size=contract_size,
+            commission_per_lot_side=commission_per_lot_side,
         )
 
     @staticmethod
@@ -3654,8 +3700,13 @@ class BacktestEngine:
             if risk_per_unit <= 0 or contract_size <= 0 or lot_step <= 0 or max_lot <= 0:
                 return 0.0
             risk_pct = max(0.0, float(parameters.get("risk_pct", 0.005)))
-            risk_lots = (equity * risk_pct) / (risk_per_unit * contract_size)
-            leverage_lots = max_notional / (entry_price * contract_size)
+            quote_divide_price = parameters.get("account_conversion_mode") == "quote_divide_price"
+            risk_per_lot = risk_per_unit * contract_size
+            if quote_divide_price:
+                risk_per_lot /= entry_price
+            risk_lots = (equity * risk_pct) / risk_per_lot
+            notional_per_lot = contract_size if quote_divide_price else entry_price * contract_size
+            leverage_lots = max_notional / notional_per_lot
             raw_lots = min(risk_lots, leverage_lots, max_lot)
             stepped_lots = math.floor(raw_lots / lot_step) * lot_step
             if stepped_lots < min_lot:
@@ -3739,14 +3790,27 @@ class BacktestEngine:
         commission_pct: float,
         equity_before: float,
     ) -> dict[str, Any]:
-        exit_commission = price * position.quantity * commission_pct
+        lots = position.quantity / position.contract_size if position.contract_size > 0 else 0.0
+        exit_commission = (
+            lots * position.commission_per_lot_side
+            if position.commission_per_lot_side > 0
+            else price * position.quantity * commission_pct
+        )
         if position.direction == 1:
             gross_pnl = (price - position.entry_price) * position.quantity
         else:
             gross_pnl = (position.entry_price - price) * position.quantity
+        if position.account_conversion_mode == "quote_divide_price" and price > 0:
+            gross_pnl /= price
         net_pnl = gross_pnl - position.entry_commission - exit_commission
         initial_risk = position.initial_risk_per_unit
         initial_risk_amount = initial_risk * position.quantity
+        mfe_amount = position.max_favorable_excursion * position.quantity
+        mae_amount = position.max_adverse_excursion * position.quantity
+        if position.account_conversion_mode == "quote_divide_price" and position.entry_price > 0:
+            initial_risk_amount /= position.entry_price
+            mfe_amount /= position.entry_price
+            mae_amount /= position.entry_price
         return {
             "trade_id": f"tr_{uuid.uuid4().hex[:12]}",
             "direction": "long" if position.direction == 1 else "short",
@@ -3768,8 +3832,8 @@ class BacktestEngine:
             "net_pnl": round(net_pnl, 2),
             "bars_held": index - position.entry_index,
             "reason": reason,
-            "mfe": round(position.max_favorable_excursion * position.quantity, 2),
-            "mae": round(position.max_adverse_excursion * position.quantity, 2),
+            "mfe": round(mfe_amount, 2),
+            "mae": round(mae_amount, 2),
             "mfe_r": round(position.max_favorable_excursion / initial_risk, 4) if initial_risk else 0.0,
             "mae_r": round(position.max_adverse_excursion / initial_risk, 4) if initial_risk else 0.0,
             "return_on_equity_pct": round((net_pnl / equity_before) * 100, 4) if equity_before else 0.0,

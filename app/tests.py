@@ -1390,6 +1390,52 @@ class MutationLabTests(unittest.TestCase):
         self.assertGreater(result["diagnostics"]["mt5_invalid_lot_skips"], 0)
         self.assertEqual(result["diagnostics"]["entries"], 0)
 
+    def test_usdjpy_mt5_lot_sizing_and_quote_conversion_match_usd_account_economics(self) -> None:
+        parameters = {
+            "sizing_mode": "mt5_fixed_risk_lot",
+            "risk_pct": 0.01,
+            "max_leverage": 10.0,
+            "contract_size": 100000.0,
+            "min_lot": 0.01,
+            "lot_step": 0.01,
+            "max_lot": 100.0,
+            "skip_below_min_lot": True,
+            "account_conversion_mode": "quote_divide_price",
+        }
+        quantity = BacktestEngine._position_quantity(parameters, 5000.0, 150.0, 149.25)
+        self.assertEqual(quantity, 10000.0)  # 0.10 standard lots
+
+        bar = Bar(
+            ts=datetime(2026, 1, 1, tzinfo=UTC),
+            open=150.0,
+            high=150.8,
+            low=149.8,
+            close=150.75,
+            volume=1.0,
+            symbol="USDJPY",
+            timeframe="1h",
+        )
+        position = BacktestEngine._open_position(
+            1,
+            0,
+            bar,
+            150.0,
+            149.25,
+            quantity,
+            0.0,
+            5000.0,
+            {},
+            account_conversion_mode="quote_divide_price",
+            contract_size=100000.0,
+            commission_per_lot_side=3.5,
+        )
+        trade = BacktestEngine()._close_trade(position, bar, 1, 150.75, "test", 0.0, 5000.0)
+
+        self.assertAlmostEqual(position.entry_commission, 0.35, places=6)
+        self.assertAlmostEqual(trade["gross_pnl"], 49.75, places=2)
+        self.assertAlmostEqual(trade["net_pnl"], 49.05, places=2)
+        self.assertAlmostEqual(trade["initial_risk_amount"], 50.0, places=2)
+
     def test_time_decay_confirmation_suppresses_unconfirmed_exit(self) -> None:
         diagnostics = {
             "time_decay_confirmation_candidates": 0,
@@ -1825,6 +1871,78 @@ class MutationLabTests(unittest.TestCase):
         self.assertIn([5, 6], weekday_edge["alternatives"])
         self.assertIn([23], hour_edge["alternatives"])
         self.assertGreaterEqual(len(hour_edge["alternatives"]), 30)
+
+    def test_upgrade_preserves_broker_execution_constants(self) -> None:
+        version = self.repo.get_version("ver_btc_intraday_parent")
+        spec = json.loads(json.dumps(version["spec_json"]))
+        spec["engine_id"] = "ghl_dc_breakout_v1"
+        spec["parameters"].update(
+            {
+                "contract_size": 100000.0,
+                "min_lot": 0.01,
+                "lot_step": 0.01,
+                "max_lot": 100.0,
+                "skip_below_min_lot": True,
+            }
+        )
+        self.repo.put_version(
+            {
+                **version,
+                "version_id": "ver_usdjpy_execution_constants",
+                "spec_json": spec,
+            }
+        )
+
+        edges = self.lab.list_tuning_edges("ver_usdjpy_execution_constants")
+        upgraded = self.repo.get_version("ver_usdjpy_execution_constants")["spec_json"]
+        contract_edge = next(item for item in upgraded["mutation_space"] if item["lever"] == "contract_size")
+        skip_edge = next(item for item in upgraded["mutation_space"] if item["lever"] == "skip_below_min_lot")
+
+        self.assertEqual(contract_edge["values"], [100000.0])
+        self.assertFalse(contract_edge["optimizable"])
+        self.assertEqual(skip_edge["values"], [True])
+        self.assertFalse(skip_edge["optimizable"])
+        self.assertEqual(next(edge for edge in edges if edge["lever"] == "contract_size")["current_value"], 100000.0)
+
+    def test_ghl_dc_upgrade_exposes_gann_exit_confirmation_controls(self) -> None:
+        version = self.repo.get_version("ver_btc_intraday_parent")
+        spec = json.loads(json.dumps(version["spec_json"]))
+        spec["engine_id"] = "ghl_dc_breakout_v1"
+        self.repo.put_version(
+            {
+                **version,
+                "version_id": "ver_ghl_gann_confirmation_controls",
+                "spec_json": spec,
+            }
+        )
+
+        edges = self.lab.list_tuning_edges("ver_ghl_gann_confirmation_controls")
+        by_lever = {edge["lever"]: edge for edge in edges}
+
+        self.assertIn("gann_exit_confirmation_enabled", by_lever)
+        self.assertIn("gann_exit_confirm_bars", by_lever)
+        self.assertIn("gann_exit_confirm_allow_if_unrealized_r_lte", by_lever)
+        self.assertEqual(by_lever["gann_exit_confirm_bars"]["alternatives"], [1, 2, 3, 4])
+
+    def test_upgrade_preserves_asset_specific_time_risk_hour_candidates(self) -> None:
+        version = self.repo.get_version("ver_btc_intraday_parent")
+        spec = json.loads(json.dumps(version["spec_json"]))
+        spec["engine_id"] = "ghl_dc_breakout_v1"
+        spec["parameters"]["time_risk_block_utc_hours"] = [19, 20]
+        self.repo.put_version(
+            {
+                **version,
+                "version_id": "ver_ghl_asset_time_hours",
+                "spec_json": spec,
+            }
+        )
+
+        edges = self.lab.list_tuning_edges("ver_ghl_asset_time_hours")
+        hour_edge = next(edge for edge in edges if edge["lever"] == "time_risk_block_utc_hours")
+
+        self.assertIn([19], hour_edge["alternatives"])
+        self.assertIn([20], hour_edge["alternatives"])
+        self.assertIn([19, 20], hour_edge["alternatives"])
 
     def test_phase_three_upgrade_refreshes_existing_narrow_candidate_grids(self) -> None:
         version = self.repo.get_version("ver_btc_intraday_parent")
@@ -2350,6 +2468,38 @@ class MutationLabTests(unittest.TestCase):
             all(item["benchmark_findings"] == ["weak_vs_buy_hold_benchmark"] for item in stresses)
         )
 
+    def test_cost_stress_doubles_fixed_per_lot_commission(self) -> None:
+        spec = self.repo.get_version("ver_btc_intraday_parent")["spec_json"]
+        spec["parameters"]["commission_pct"] = 0.0
+        spec["parameters"]["commission_per_lot_side"] = 3.5
+
+        with patch.object(self.lab.engine, "run", return_value={"metrics": {
+            "net_pnl": 1000.0,
+            "return_pct": 20.0,
+            "profit_factor": 1.5,
+            "total_trades": 500,
+            "max_equity_drawdown_pct": 5.0,
+            "sharpe": 1.5,
+            "sortino": 1.5,
+            "daily_sharpe": 1.5,
+            "daily_sortino": 1.5,
+            "worst_daily_return_pct": -1.0,
+            "calmar": 4.0,
+            "outperformance_pct": 10.0,
+            "calmar_delta": 1.0,
+            "max_initial_risk_pct": 0.5,
+            "max_entry_exposure_pct": 90.0,
+            "avg_entry_exposure_pct": 50.0,
+            "percent_profitable": 50.0,
+            "expected_payoff": 2.0,
+        }}):
+            stresses = self.lab._cost_stress_runs(spec, build_fixture_bars())
+
+        by_name = {item["scenario"]: item for item in stresses}
+        self.assertEqual(by_name["commission_2x"]["commission_per_lot_side"], 7.0)
+        self.assertEqual(by_name["slippage_2x"]["commission_per_lot_side"], 3.5)
+        self.assertEqual(by_name["commission_2x_slippage_2x"]["commission_per_lot_side"], 7.0)
+
     def test_robustness_repair_mode_is_valid_and_execution_constants_are_not_optimized(self) -> None:
         self.assertEqual(self.lab._normalize_optimization_mode("robustness_repair"), "robustness_repair")
         version = self.repo.get_version("ver_btc_intraday_parent")
@@ -2619,6 +2769,47 @@ class MutationLabTests(unittest.TestCase):
         self.assertIn("bad_entry_quality_score", result["rows"][0])
         self.assertIn("entry_ts", result["rows"][0])
         self.assertIn("mfe_r", result["rows"][0])
+
+    def test_logistic_entry_quality_model_separates_bad_setups_and_scales_risk(self) -> None:
+        rows = []
+        for index in range(80):
+            bad = index >= 40
+            rows.append(
+                {
+                    "bad_entry_quality": bad,
+                    "side": "short" if bad else "long",
+                    "weekday": index % 5,
+                    "utc_hour": index % 24,
+                    "month": (index % 12) + 1,
+                    "gann_state": -1 if bad else 1,
+                    "gap_fill": bad,
+                    "gann_high_slope": -1.0 if bad else 1.0,
+                    "gann_low_slope": -1.0 if bad else 1.0,
+                    "normalized_ma_distance": -0.01 if bad else 0.01,
+                    "bars_since_gann_flip": 20 if bad else 2,
+                    "breakout_age_bars": 10 if bad else 1,
+                    "donchian_channel_width_pct": 0.01,
+                    "donchian_breakout_distance_atr": -1.0 if bad else 1.0,
+                    "atr_pct": 0.01,
+                    "recent_return_20": -0.02 if bad else 0.02,
+                    "recent_range_20": 0.03,
+                    "recent_volatility_20": 0.01,
+                    "recent_cross_count": 8 if bad else 1,
+                    "stop_distance_atr": 2.5,
+                    "stop_distance_pct": 0.01,
+                }
+            )
+        model = self.lab._fit_logistic_entry_quality(rows)
+        good_score = self.lab._logistic_entry_quality_score(rows[0], model)
+        bad_score = self.lab._logistic_entry_quality_score(rows[-1], model)
+        self.assertLess(good_score, bad_score)
+        scaled = self.lab._scale_trade(
+            {"quantity": 1.0, "net_pnl": -20.0, "return_on_equity_pct": -0.4, "bars_held": 3},
+            0.5,
+        )
+        self.assertEqual(scaled["quantity"], 0.5)
+        self.assertEqual(scaled["net_pnl"], -10.0)
+        self.assertEqual(scaled["bars_held"], 3)
 
     def test_hybrid_time_decay_triage_experiment_exports_snapshots(self) -> None:
         dataset = self.data_service.import_fixture_dataset(
