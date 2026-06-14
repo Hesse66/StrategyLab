@@ -23,6 +23,8 @@ LENGTH_OPTIMIZATION_MAX = 300
 MAX_NO_CROSS_OPTIMIZATION_MAX = 50
 FLOAT_OPTIMIZATION_MAX_CANDIDATES = 200
 ERROR_TRACEBACK_MAX_CHARS = 4000
+ROBUSTNESS_MIN_BARS = 40_000
+ROBUSTNESS_FINALIST_COUNT = 5
 
 PHASE_3_PARAMETERS = {
     "time_decay_exit_enabled": False,
@@ -448,6 +450,9 @@ GHL_DC_PHASE_3_PARAMETERS = {
     "breakeven_trigger_mfe_r": 0.75,
     "breakeven_lock_r": 0.0,
     "breakeven_min_bars": 0,
+    "gann_exit_confirmation_enabled": False,
+    "gann_exit_confirm_bars": 1,
+    "gann_exit_confirm_allow_if_unrealized_r_lte": -0.35,
     "failed_entry_triage_enabled": False,
     "failed_entry_triage_bars": 3,
     "failed_entry_triage_min_mfe_r": 0.25,
@@ -699,6 +704,7 @@ PORTFOLIO_PARAMETERS = {
 
 EXECUTION_PARAMETERS = {
     "execution_model": "mt5_bar_proxy",
+    "spread_ticks": 0,
 }
 
 OPERATOR_HIDDEN_LEVERS = {"execution_model", "sizing_mode", "notional_pct"}
@@ -1488,7 +1494,7 @@ class MutationLabService:
             raise HTTPException(status_code=404, detail="Version not found.")
         tuned_spec = self._apply_parameter_overrides(version["spec_json"], dict(parameter_overrides or {}))
         bars = self.data_service.load_bars(dataset_id)
-        if len(bars) < 40_000:
+        if len(bars) < ROBUSTNESS_MIN_BARS:
             raise HTTPException(status_code=400, detail="Robustness checks require at least 40000 bars.")
         base_result = self.engine.run(tuned_spec, bars)
         base_verdict = self._verdict(tuned_spec, base_result["metrics"], None)
@@ -1510,6 +1516,12 @@ class MutationLabService:
         }
 
     def _walk_forward_checks(self, spec: dict[str, Any], bars: list[Any]) -> list[dict[str, Any]]:
+        return [
+            {**item, "metrics": self._compact_metrics(item["metrics"])}
+            for item in self._walk_forward_runs(spec, bars)
+        ]
+
+    def _walk_forward_runs(self, spec: dict[str, Any], bars: list[Any]) -> list[dict[str, Any]]:
         folds: list[dict[str, Any]] = []
         fold_count = 4
         fold_size = len(bars) // fold_count
@@ -1529,7 +1541,7 @@ class MutationLabService:
                     "bars": len(fold_bars),
                     "passed": not failures,
                     "failures": failures,
-                    "metrics": self._compact_metrics(result["metrics"]),
+                    "metrics": result["metrics"],
                 }
             )
         return folds
@@ -1663,6 +1675,12 @@ class MutationLabService:
         return selected[:25]
 
     def _cost_stress_checks(self, spec: dict[str, Any], bars: list[Any]) -> list[dict[str, Any]]:
+        return [
+            {**item, "metrics": self._compact_metrics(item["metrics"])}
+            for item in self._cost_stress_runs(spec, bars)
+        ]
+
+    def _cost_stress_runs(self, spec: dict[str, Any], bars: list[Any]) -> list[dict[str, Any]]:
         parameters = spec.get("parameters", {})
         base_commission = float(parameters.get("commission_pct", 0.0))
         base_slippage = int(parameters.get("slippage_ticks", 0))
@@ -1677,9 +1695,13 @@ class MutationLabService:
             stressed.setdefault("parameters", {})["commission_pct"] = commission
             stressed["parameters"]["slippage_ticks"] = slippage
             result = self.engine.run(stressed, bars)
-            failures = self._core_gate_failures(stressed, result["metrics"]) + self._portfolio_gate_failures(
-                stressed, result["metrics"]
-            )
+            portfolio_failures = self._portfolio_gate_failures(stressed, result["metrics"])
+            benchmark_failures = [
+                failure for failure in portfolio_failures if failure == "weak_vs_buy_hold_benchmark"
+            ]
+            failures = self._core_gate_failures(stressed, result["metrics"]) + [
+                failure for failure in portfolio_failures if failure != "weak_vs_buy_hold_benchmark"
+            ]
             results.append(
                 {
                     "scenario": name,
@@ -1687,10 +1709,113 @@ class MutationLabService:
                     "slippage_ticks": slippage,
                     "passed": not failures,
                     "failures": failures,
-                    "metrics": self._compact_metrics(result["metrics"]),
+                    "benchmark_passed": not benchmark_failures,
+                    "benchmark_findings": benchmark_failures,
+                    "metrics": result["metrics"],
                 }
             )
         return results
+
+    def _robustness_screen_evidence(
+        self,
+        spec: dict[str, Any],
+        bars: list[Any],
+        base_metrics: dict[str, Any],
+    ) -> dict[str, Any]:
+        cost_stress = self._cost_stress_runs(spec, bars)
+        walk_forward = self._walk_forward_runs(spec, bars) if len(bars) >= ROBUSTNESS_MIN_BARS else []
+        scored_metrics = [base_metrics]
+        scored_metrics.extend(item["metrics"] for item in cost_stress)
+        scored_metrics.extend(item["metrics"] for item in walk_forward)
+        cost_passed = sum(1 for item in cost_stress if item["passed"])
+        walk_passed = sum(1 for item in walk_forward if item["passed"])
+        return {
+            "cost_stress": cost_stress,
+            "cost_stress_passed": cost_passed,
+            "cost_stress_total": len(cost_stress),
+            "all_cost_stress_passed": cost_passed == len(cost_stress),
+            "walk_forward": walk_forward,
+            "walk_forward_passed": walk_passed,
+            "walk_forward_total": len(walk_forward),
+            "all_walk_forward_passed": bool(walk_forward) and walk_passed == len(walk_forward),
+            "worst_case_score": min(self._optimization_score(spec, metrics) for metrics in scored_metrics),
+        }
+
+    def _full_robustness_evidence(
+        self,
+        version_id: str,
+        spec: dict[str, Any],
+        bars: list[Any],
+    ) -> dict[str, Any]:
+        base_result = self.engine.run(spec, bars)
+        base_verdict = self._verdict(spec, base_result["metrics"], None)
+        walk_forward = self._walk_forward_checks(spec, bars)
+        anchored = self._anchored_train_test_checks(version_id, spec, bars)
+        cost_stress = self._cost_stress_checks(spec, bars)
+        summary = self._robustness_summary(base_verdict, walk_forward, cost_stress, anchored)
+        return {
+            "base_verdict": base_verdict,
+            "base_metrics": base_result["metrics"],
+            "walk_forward": walk_forward,
+            "anchored_train_test": anchored,
+            "cost_stress": cost_stress,
+            "cost_stress_passed": summary["cost_stress_passed"],
+            "cost_stress_total": summary["cost_stress_total"],
+            "all_cost_stress_passed": summary["cost_stress_passed"] == summary["cost_stress_total"],
+            "walk_forward_passed": summary["walk_forward_passed"],
+            "walk_forward_total": summary["walk_forward_total"],
+            "anchored_train_test_passed": summary["anchored_train_test_passed"],
+            "anchored_train_test_total": summary["anchored_train_test_total"],
+            "summary": summary,
+        }
+
+    @staticmethod
+    def _robustness_screen_rank(candidate: dict[str, Any]) -> tuple[Any, ...]:
+        evidence = candidate["robustness_evidence"]
+        all_screened_passed = evidence["all_cost_stress_passed"] and (
+            not evidence["walk_forward_total"] or evidence["all_walk_forward_passed"]
+        )
+        return (
+            all_screened_passed,
+            evidence["walk_forward_passed"] + evidence["cost_stress_passed"],
+            evidence["walk_forward_passed"],
+            evidence["cost_stress_passed"],
+            evidence["worst_case_score"],
+            candidate["score"],
+        )
+
+    def _compact_robustness_evidence(self, evidence: dict[str, Any] | None) -> dict[str, Any] | None:
+        if not evidence:
+            return None
+        return {
+            **{key: value for key, value in evidence.items() if key not in {"cost_stress", "walk_forward"}},
+            "cost_stress": [
+                {**item, "metrics": self._compact_metrics(item["metrics"])}
+                for item in evidence.get("cost_stress", [])
+            ],
+            "walk_forward": [
+                {**item, "metrics": self._compact_metrics(item["metrics"])}
+                for item in evidence.get("walk_forward", [])
+            ],
+        }
+
+    @staticmethod
+    def _full_robustness_rank(candidate: dict[str, Any]) -> tuple[Any, ...]:
+        evidence = candidate["full_robustness"]
+        summary = evidence["summary"]
+        total_passed = (
+            summary["walk_forward_passed"]
+            + summary["anchored_train_test_passed"]
+            + summary["cost_stress_passed"]
+        )
+        return (
+            summary["passed"],
+            total_passed,
+            summary["anchored_train_test_passed"],
+            summary["walk_forward_passed"],
+            summary["cost_stress_passed"],
+            candidate["screen_rank"],
+        )
 
     @staticmethod
     def _compact_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
@@ -1784,7 +1909,7 @@ class MutationLabService:
             if _progress_context is not None:
                 progress = {
                     "active": True,
-                    "mode": "optimize_all",
+                    "mode": _progress_context.get("mode", "optimize_all"),
                     "pass": _progress_context.get("pass_index", 1),
                     "current_pass": _progress_context.get("pass_index", 1),
                     "passes": _progress_context.get("passes", 1),
@@ -1821,6 +1946,9 @@ class MutationLabService:
                 raise
             comparison = self._comparison(version_id, dataset_id, result["metrics"])
             verdict = self._verdict(tuned_spec, result["metrics"], comparison)
+            robustness_evidence = None
+            if optimization_mode == "robustness_repair":
+                robustness_evidence = self._robustness_screen_evidence(tuned_spec, bars, result["metrics"])
             candidates.append(
                 {
                     "lever": lever,
@@ -1832,6 +1960,7 @@ class MutationLabService:
                     "metrics": result["metrics"],
                     "comparison": comparison,
                     "parameter_overrides": overrides,
+                    "robustness_evidence": robustness_evidence,
                 }
             )
         if not candidates:
@@ -1842,7 +1971,16 @@ class MutationLabService:
                 )
             raise HTTPException(status_code=400, detail="No candidates generated for this lever.")
         eligible_candidates = [candidate for candidate in candidates if candidate["eligible"]]
-        if eligible_candidates:
+        if optimization_mode == "robustness_repair" and eligible_candidates:
+            best = max(eligible_candidates, key=self._robustness_screen_rank)
+            evidence = best["robustness_evidence"]
+            selection_mode = (
+                "robustness_chronology_and_cost_passed"
+                if evidence["all_cost_stress_passed"]
+                and (not evidence["walk_forward_total"] or evidence["all_walk_forward_passed"])
+                else "robustness_best_available"
+            )
+        elif eligible_candidates:
             best = max(eligible_candidates, key=lambda item: item["score"])
             selection_mode = "eligible_only"
         elif optimization_mode == "research":
@@ -1863,9 +2001,9 @@ class MutationLabService:
             "lever": lever,
             "optimization_mode": optimization_mode,
             "objective": (
-                "production mode first requires enough trade evidence, positive net PnL, profit factor, drawdown, "
-                "Sharpe/Sortino/Calmar, bounded trade risk, production sizing, and benchmark comparability; research mode "
-                "uses the same balanced score to climb from a weak phase-2 baseline without claiming production eligibility"
+                "robustness repair screens production-eligible candidates across doubled costs and four chronological folds, "
+                "then runs the expensive anchored OOS gate only on the strongest finalists; production mode requires the "
+                "normal evidence and portfolio gates; research mode uses the balanced score without claiming eligibility"
             ),
             "search": self._search_summary(edge, values),
             "skipped_count": len(skipped_candidates),
@@ -1897,8 +2035,9 @@ class MutationLabService:
         edges = [edge for edge in self.list_tuning_edges(version_id) if edge.get("optimizable", True)]
         candidate_counts = {edge["lever"]: len(self._candidate_values(edge)) for edge in edges}
         total_overall = max(1, sum(candidate_counts.values()) * passes)
+        progress_mode = "optimize_robustness_repair" if optimization_mode == "robustness_repair" else "optimize_all"
         self._start_optimization_progress(
-            mode="optimize_all",
+            mode=progress_mode,
             version_id=version_id,
             dataset_id=dataset_id,
             total_candidates=total_overall,
@@ -1906,12 +2045,14 @@ class MutationLabService:
             passes=passes,
         )
         progress_context: dict[str, Any] = {
+            "mode": progress_mode,
             "passes": passes,
             "total_levers": len(edges),
             "total_overall": total_overall,
             "overall_done": 0,
         }
         steps: list[dict[str, Any]] = []
+        robustness_checkpoints: list[dict[str, Any]] = []
         bars: list[Any] | None = None
         try:
             self._set_optimization_progress(message="Loading dataset once for memory-stable optimization...")
@@ -1940,20 +2081,85 @@ class MutationLabService:
                     if best_overrides != before:
                         improved = True
                         overrides = best_overrides
-                    steps.append(
-                        {
-                            "pass": pass_index,
-                            "lever": edge["lever"],
-                            "before": before.get(edge["lever"], edge["current_value"]),
-                            "after": overrides.get(edge["lever"], edge["current_value"]),
-                            "selection_mode": result["selection_mode"],
-                            "eligible_count": result["eligible_count"],
-                            "best_score": result["best"]["score"],
-                            "best_metrics": result["best"]["metrics"],
-                        }
-                    )
+                    best_evidence = result["best"].get("robustness_evidence")
+                    step = {
+                        "pass": pass_index,
+                        "lever": edge["lever"],
+                        "before": before.get(edge["lever"], edge["current_value"]),
+                        "after": overrides.get(edge["lever"], edge["current_value"]),
+                        "selection_mode": result["selection_mode"],
+                        "eligible_count": result["eligible_count"],
+                        "best_score": result["best"]["score"],
+                        "best_metrics": result["best"]["metrics"],
+                        "robustness_evidence": self._compact_robustness_evidence(best_evidence),
+                    }
+                    steps.append(step)
+                    if optimization_mode == "robustness_repair" and best_evidence:
+                        robustness_checkpoints.append(
+                            {
+                                "parameter_overrides": dict(overrides),
+                                "screen_rank": list(self._robustness_screen_rank(result["best"])),
+                                "source_pass": pass_index,
+                                "source_lever": edge["lever"],
+                                "robustness_evidence": step["robustness_evidence"],
+                            }
+                        )
                 if not improved:
                     break
+            robustness_evidence = None
+            if optimization_mode == "robustness_repair" and bars and len(bars) >= ROBUSTNESS_MIN_BARS:
+                unique_checkpoints: dict[str, dict[str, Any]] = {}
+                for checkpoint in robustness_checkpoints:
+                    token = json.dumps(checkpoint["parameter_overrides"], sort_keys=True)
+                    existing = unique_checkpoints.get(token)
+                    if not existing or tuple(checkpoint["screen_rank"]) > tuple(existing["screen_rank"]):
+                        unique_checkpoints[token] = checkpoint
+                finalists = sorted(
+                    unique_checkpoints.values(),
+                    key=lambda item: tuple(item["screen_rank"]),
+                    reverse=True,
+                )[:ROBUSTNESS_FINALIST_COUNT]
+                evaluated_finalists: list[dict[str, Any]] = []
+                for finalist_index, finalist in enumerate(finalists, start=1):
+                    message = (
+                        f"Full robustness finalist {finalist_index}/{len(finalists)}: "
+                        "walk-forward, anchored OOS, and cost stress"
+                    )
+                    self._set_optimization_progress(
+                        message=message,
+                        stage="full_robustness_finalists",
+                        finalist_index=finalist_index,
+                        finalist_total=len(finalists),
+                    )
+                    if progress_callback:
+                        progress_callback(self.optimization_progress())
+                    finalist_spec = self._apply_parameter_overrides(
+                        version["spec_json"], finalist["parameter_overrides"]
+                    )
+                    evaluated_finalists.append(
+                        {
+                            **finalist,
+                            "full_robustness": self._full_robustness_evidence(version_id, finalist_spec, bars),
+                        }
+                    )
+                if evaluated_finalists:
+                    selected_finalist = max(evaluated_finalists, key=self._full_robustness_rank)
+                    overrides = dict(selected_finalist["parameter_overrides"])
+                    robustness_evidence = {
+                        **selected_finalist["full_robustness"],
+                        "finalists_evaluated": len(evaluated_finalists),
+                        "selected_source_pass": selected_finalist["source_pass"],
+                        "selected_source_lever": selected_finalist["source_lever"],
+                        "finalist_summaries": [
+                            {
+                                "source_pass": item["source_pass"],
+                                "source_lever": item["source_lever"],
+                                "parameter_overrides": item["parameter_overrides"],
+                                "summary": item["full_robustness"]["summary"],
+                            }
+                            for item in evaluated_finalists
+                        ],
+                    }
             self._set_optimization_progress(message="Building optimized preview...")
             candidate_overrides = dict(overrides)
             preview = self.preview_tuned_version(version_id, dataset_id, candidate_overrides)
@@ -1964,6 +2170,15 @@ class MutationLabService:
                 rejection_reason = "optimized_candidate_failed_production_gates"
                 overrides = starting_overrides
                 preview = self.preview_tuned_version(version_id, dataset_id, overrides)
+            if optimization_mode == "robustness_repair" and robustness_evidence is None:
+                final_spec = self._apply_parameter_overrides(version["spec_json"], overrides)
+                cost_stress = self._cost_stress_checks(final_spec, bars)
+                robustness_evidence = {
+                    "cost_stress": cost_stress,
+                    "cost_stress_passed": sum(1 for item in cost_stress if item["passed"]),
+                    "cost_stress_total": len(cost_stress),
+                    "all_cost_stress_passed": all(item["passed"] for item in cost_stress),
+                }
             result = {
                 "mode": "optimize_all",
                 "base_version_id": version_id,
@@ -1974,8 +2189,19 @@ class MutationLabService:
                 "final_candidate_rejected": final_candidate_rejected,
                 "rejection_reason": rejection_reason,
                 "steps": steps,
-                "eligible_steps": sum(1 for step in steps if step["selection_mode"] == "eligible_only"),
+                "eligible_steps": sum(
+                    1
+                    for step in steps
+                    if step["selection_mode"]
+                    in {
+                        "eligible_only",
+                        "robustness_chronology_and_cost_passed",
+                        "robustness_best_available",
+                    }
+                ),
                 "research_fallback_steps": sum(1 for step in steps if step["selection_mode"] == "research_score_fallback"),
+                "optimization_mode": optimization_mode,
+                "robustness_evidence": robustness_evidence,
                 "preview": preview,
             }
             self._store_optimization_result(result)
@@ -1993,8 +2219,11 @@ class MutationLabService:
     @staticmethod
     def _normalize_optimization_mode(optimization_mode: str) -> str:
         mode = str(optimization_mode or "production").strip().lower()
-        if mode not in {"production", "research"}:
-            raise HTTPException(status_code=400, detail="optimization_mode must be `production` or `research`.")
+        if mode not in {"production", "research", "robustness_repair"}:
+            raise HTTPException(
+                status_code=400,
+                detail="optimization_mode must be `production`, `research`, or `robustness_repair`.",
+            )
         return mode
 
     @staticmethod
@@ -3434,12 +3663,21 @@ class MutationLabService:
                 f"- MT5 stop modify rejects: `{payload['diagnostics'].get('mt5_stop_modify_rejects', 0)}`",
                 f"- Failed-entry triage exits: `{payload['diagnostics'].get('failed_entry_triage_exits', 0)}`",
                 f"- Failed-entry triage candidates: `{payload['diagnostics'].get('failed_entry_triage_candidates', 0)}`",
+                f"- Gann exit confirmation candidates: `{payload['diagnostics'].get('gann_exit_confirmation_candidates', 0)}`",
+                f"- Gann exit confirmation suppressed: `{payload['diagnostics'].get('gann_exit_confirmation_suppressed', 0)}`",
+                f"- Gann exit confirmation confirmed: `{payload['diagnostics'].get('gann_exit_confirmation_confirmed', 0)}`",
+                f"- Gann exit confirmation adverse escapes: `{payload['diagnostics'].get('gann_exit_confirmation_adverse_escapes', 0)}`",
+                f"- Gann exit confirmation recovered: `{payload['diagnostics'].get('gann_exit_confirmation_recovered', 0)}`",
+                f"- Gann exit confirmation suppressed Net PnL: `{payload['diagnostics'].get('gann_exit_confirmation_suppressed_net_pnl', 0.0)}`",
                 f"- Time risk filter blocks: `{payload['diagnostics'].get('time_risk_filter_blocks', 0)}`",
                 f"- Entry exposure gate blocks: `{payload['diagnostics'].get('entry_exposure_gate_blocks', 0)}`",
                 f"- Entry exposure gate long blocks: `{payload['diagnostics'].get('entry_exposure_gate_long_blocks', 0)}`",
                 f"- Entry exposure gate short blocks: `{payload['diagnostics'].get('entry_exposure_gate_short_blocks', 0)}`",
                 f"- MT5 invalid lot skips: `{payload['diagnostics'].get('mt5_invalid_lot_skips', 0)}`",
+                f"- Execution semantics: `{payload['diagnostics'].get('execution_semantics', '')}`",
+                f"- Spread ticks: `{payload['diagnostics'].get('spread_ticks', 0)}`",
                 f"- Stop exits: `{payload['diagnostics']['stop_exits']}`",
+                f"- Gap stop fills: `{payload['diagnostics'].get('gap_stop_fills', 0)}`",
                 f"- Reverse exits: `{payload['diagnostics']['reverse_exits']}`",
                 f"- Reverse confirmation candidates: `{payload['diagnostics'].get('reverse_confirmation_candidates', 0)}`",
                 f"- Reverse confirmation exits allowed: `{payload['diagnostics'].get('reverse_confirmation_exits_allowed', 0)}`",
@@ -3454,6 +3692,9 @@ class MutationLabService:
                 f"- Time exits: `{payload['diagnostics']['time_exits']}`",
                 f"- Pending entry orders: `{payload['diagnostics'].get('pending_entry_orders', 0)}`",
                 f"- Pending order fills: `{payload['diagnostics'].get('pending_order_fills', 0)}`",
+                f"- Pending order gap fills: `{payload['diagnostics'].get('pending_order_gap_fills', 0)}`",
+                f"- Pending Gann exits: `{payload['diagnostics'].get('pending_gann_exits', 0)}`",
+                f"- Gann exits filled next open: `{payload['diagnostics'].get('gann_exit_next_open_fills', 0)}`",
                 f"- Dropped pending orders at end of data: `{payload['diagnostics'].get('dropped_pending_orders_eod', 0)}`",
                 "",
                 "## Side Decomposition",

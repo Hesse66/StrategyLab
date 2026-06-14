@@ -28,6 +28,9 @@
     "breakeven_trigger_mfe_r": 0.75,
     "breakeven_lock_r": 0.0,
     "breakeven_min_bars": 0,
+    "gann_exit_confirmation_enabled": false,
+    "gann_exit_confirm_bars": 1,
+    "gann_exit_confirm_allow_if_unrealized_r_lte": -0.35,
     "failed_entry_triage_enabled": false,
     "failed_entry_triage_bars": 3,
     "failed_entry_triage_min_mfe_r": 0.25,
@@ -39,6 +42,7 @@
     "initial_capital": 100000.0,
     "commission_pct": 0.0035,
     "slippage_ticks": 10,
+    "spread_ticks": 5,
     "tick_size": 0.01,
     "sizing_mode": "fixed_risk_pct",
     "notional_pct": 0.25,
@@ -72,6 +76,17 @@
     "benchmark_policy": "outperform_return_or_calmar"
   },
   "mutation_space": [
+    {
+      "kind": "execution",
+      "lever": "spread_ticks",
+      "path": "parameters.spread_ticks",
+      "values": [
+        5
+      ],
+      "search_mode": "values_only",
+      "optimizable": false,
+      "rationale": "Fixed XAUUSD bid/ask spread proxy used by causal MT5-style fills. Treat it as a broker execution assumption, not an alpha lever."
+    },
     {
       "kind": "white_box",
       "lever": "gann_high_period",
@@ -422,7 +437,7 @@
     ],
     "transparent_approximations": [
       "ATR initial stop is added because the Pine source had no hard stop and StrategyLab needs bounded risk for fixed-risk sizing.",
-      "Backtest fills use close plus configured slippage, matching the lab's bar-close research convention rather than claiming tick-perfect Pine equivalence."
+      "MT5 proxy execution arms stop orders only after a completed Gann setup bar, fills from the following bar using bid OHLC plus explicit spread and gap-aware prices, activates the initial stop only after entry, and executes Gann market exits at the following bar open."
     ],
     "first_test_dataset": "XAUUSD_M30_201711020700_202605011900",
     "routing": "proceed_to_first_executable_translation"
