@@ -8,6 +8,8 @@ const state = {
   previewRequestToken: 0,
   optimizationProgressJobId: null,
   optimizationProgressHighWater: 0,
+  tgSnapshots: [],
+  tgExperiments: [],
 };
 
 const outputBox = document.getElementById("outputBox");
@@ -29,6 +31,8 @@ const proposalsTable = document.getElementById("proposalsTable");
 const runsTable = document.getElementById("runsTable");
 const versionsTable = document.getElementById("versionsTable");
 const promptsList = document.getElementById("promptsList");
+const tgSnapshotSelect = document.getElementById("tgSnapshotSelect");
+const tgExperimentsTable = document.getElementById("tgExperimentsTable");
 let previewTimer = null;
 let optimizationProgressTimer = null;
 const MIN_DATASET_BARS = 40000;
@@ -987,14 +991,18 @@ function collectOverrides() {
 async function refreshAll() {
   const familyId = selectedFamilyId();
   const preferredVersionId = versionSelect.value;
-  const [families, datasets, prompts] = await Promise.all([
+  const [families, datasets, prompts, tgSnapshots, tgExperiments] = await Promise.all([
     fetchJson("/api/families"),
     fetchJson("/api/datasets"),
     fetchJson("/api/prompts"),
+    fetchJson("/api/tg-management/snapshots"),
+    fetchJson("/api/tg-management/experiments"),
   ]);
   state.families = families;
   state.datasets = datasets;
   state.prompts = prompts;
+  state.tgSnapshots = tgSnapshots;
+  state.tgExperiments = tgExperiments;
   renderFamilySelect();
   renderDatasets();
   const targetFamilyId = state.families.some((family) => family.family_id === familyId)
@@ -1019,6 +1027,49 @@ async function refreshAll() {
   renderRuns();
   renderVersions();
   renderPrompts();
+  renderTgLab();
+}
+
+function renderTgLab() {
+  const previous = tgSnapshotSelect.value;
+  tgSnapshotSelect.innerHTML = state.tgSnapshots.length
+    ? state.tgSnapshots.map((item) => `<option value="${item.snapshot_id}">${item.snapshot_id} | ${item.broker_profile} | ${item.cohort_id}</option>`).join("")
+    : `<option value="">No offline snapshots imported</option>`;
+  if (state.tgSnapshots.some((item) => item.snapshot_id === previous)) tgSnapshotSelect.value = previous;
+  tgExperimentsTable.innerHTML = state.tgExperiments.length
+    ? state.tgExperiments.map((item) => {
+        const result = item.result_json || {};
+        const evidence = `${result.included_execution_ids?.length || 0} included / ${Object.keys(result.excluded_executions || {}).length} excluded`;
+        return `<tr><td><strong>${item.experiment_id}</strong><div>${item.snapshot_id}</div></td><td>${item.broker_profile}<div>${item.cohort_id}</div></td><td>${item.asset}</td><td><span class="badge ${item.status === "PROMOTION_CANDIDATE" ? "" : "bad"}">${item.status}</span></td><td>${evidence}</td><td><div class="artifact-links"><a href="/api/tg-management/experiments/${item.experiment_id}/download/json">JSON</a><a href="/api/tg-management/experiments/${item.experiment_id}/download/csv">CSV</a><a href="/api/tg-management/experiments/${item.experiment_id}/download/markdown">MD</a></div></td></tr>`;
+      }).join("")
+    : `<tr><td colspan="6" class="empty-state">No offline TgSignalSniper experiments yet.</td></tr>`;
+}
+
+async function importTgSnapshot() {
+  const packagePath = document.getElementById("tgPackagePath").value.trim();
+  if (!packagePath) return setStatus("tgStatus", "Enter the path of a finalized offline package.", "error");
+  setStatus("tgStatus", "Verifying source integrity and importing read-only…", "");
+  try {
+    const result = await fetchJson("/api/tg-management/snapshots/import", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({package_path: packagePath})});
+    showOutput(result); await refreshAll(); tgSnapshotSelect.value = result.snapshot_id;
+    setStatus("tgStatus", `Imported immutable snapshot ${result.snapshot_id}.`, "success");
+  } catch (error) { setStatus("tgStatus", error.message, "error"); showOutput({error: error.message}); }
+}
+
+async function tgAction(kind) {
+  const snapshotId = tgSnapshotSelect.value;
+  const asset = document.getElementById("tgAssetSelect").value;
+  if (!snapshotId) return setStatus("tgStatus", "Import and select an offline snapshot first.", "error");
+  try {
+    if (kind === "coverage") {
+      const result = await fetchJson(`/api/tg-management/snapshots/${snapshotId}/coverage`); showOutput(result);
+      return setStatus("tgStatus", `Coverage loaded for ${snapshotId}.`, "success");
+    }
+    setStatus("tgStatus", kind === "baseline" ? `Replaying ${asset} baseline…` : `Optimizing ${asset} offline…`, "");
+    const endpoint = kind === "baseline" ? "/api/tg-management/baseline" : "/api/tg-management/optimize";
+    const result = await fetchJson(endpoint, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({snapshot_id: snapshotId, asset, seed: 0})});
+    showOutput(result); await refreshAll(); setStatus("tgStatus", `${asset}: ${result.status}.`, result.status === "PROMOTION_CANDIDATE" ? "success" : "");
+  } catch (error) { setStatus("tgStatus", error.message, "error"); showOutput({error: error.message}); }
 }
 
 async function refreshFamilyDetail() {
@@ -1715,6 +1766,10 @@ optimizeResearchButton.addEventListener("click", () => optimizeAll("research"));
 optimizeAllButton.addEventListener("click", () => optimizeAll("production"));
 optimizeRobustnessButton.addEventListener("click", () => optimizeAll("robustness_repair"));
 bindClick("registerButton", registerBaseline);
+bindClick("tgImportButton", importTgSnapshot);
+bindClick("tgCoverageButton", () => tgAction("coverage"));
+bindClick("tgBaselineButton", () => tgAction("baseline"));
+bindClick("tgOptimizeButton", () => tgAction("optimize"));
 familySelect.addEventListener("change", refreshFamilyDetail);
 versionSelect.addEventListener("change", refreshSelectedVersion);
 datasetSelect.addEventListener("change", () => schedulePreview(true));

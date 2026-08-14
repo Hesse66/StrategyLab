@@ -39,6 +39,11 @@ python -m venv .venv
 .venv\Scripts\python -m uvicorn app.main:app --reload
 ```
 
+The UI also includes an offline TgSignalSniper post-fill management lab. Its
+snapshot contract and commands are documented in
+[`docs/tg_signal_management_lab.md`](docs/tg_signal_management_lab.md). It has no
+MT5, Telegram, AutoKraken, demo, or live connector.
+
 ## Test
 
 ```powershell
@@ -51,3 +56,5 @@ Generated runtime artifacts are written to:
 - `artifacts/data`
 - `artifacts/runs`
 - `artifacts/reports`
+- `artifacts/tg_snapshots` (immutable imported execution/tick packages)
+- `artifacts/tg_experiments` (JSON, CSV, and Markdown management evidence)

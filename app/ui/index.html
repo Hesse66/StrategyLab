@@ -60,6 +60,7 @@
             <path d="M11 15v4" />
           </svg>
         </a>
+        <a href="#tg-management" aria-label="Offline TgSignalSniper lab">TG</a>
         <a href="#versions" aria-label="Version tree">
           <svg class="rail-svg" viewBox="0 0 24 24" aria-hidden="true">
             <rect x="4" y="4" width="5" height="5" />
@@ -253,6 +254,43 @@
           </div>
         </section>
 
+        <section id="tg-management" class="panel tg-panel">
+          <div class="section-head">
+            <div>
+              <span class="eyebrow">Offline Execution Research</span>
+              <strong>TgSignalSniper Management</strong>
+            </div>
+            <span>No MT5, Telegram, AutoKraken, or live publishing connections</span>
+          </div>
+          <div class="tg-controls">
+            <label class="tg-package-field">
+              <span>Finalized snapshot package path</span>
+              <input id="tgPackagePath" placeholder="D:\offline-snapshots\axi-demo-pro-close" />
+            </label>
+            <button id="tgImportButton" class="outline-action" type="button">Import Offline Snapshot</button>
+            <label>
+              <span>Snapshot</span>
+              <select id="tgSnapshotSelect"></select>
+            </label>
+            <label>
+              <span>Asset</span>
+              <select id="tgAssetSelect">
+                <option>XAUUSD</option><option>EURUSD</option><option>BTCUSD</option><option>NASDAQ</option><option>US30</option>
+              </select>
+            </label>
+            <button id="tgCoverageButton" class="ghost-action" type="button">Review Coverage</button>
+            <button id="tgBaselineButton" class="ghost-action" type="button">Run Baseline</button>
+            <button id="tgOptimizeButton" class="commit-action" type="button">Optimize Asset Offline</button>
+          </div>
+          <p id="tgStatus" class="status">Import a finalized, WAL-free snapshot package to begin.</p>
+          <div class="table-wrap tg-table-wrap">
+            <table>
+              <thead><tr><th>Snapshot / experiment</th><th>Broker / cohort</th><th>Asset</th><th>Status</th><th>Evidence</th><th>Artifacts</th></tr></thead>
+              <tbody id="tgExperimentsTable"></tbody>
+            </table>
+          </div>
+        </section>
+
         <section id="advanced" class="advanced-grid">
           <details class="panel prompt-panel">
             <summary><span>Prompt Core</span></summary>
@@ -300,6 +338,6 @@
       </div>
     </footer>
 
-    <script src="/ui/app.js?v=20260614-phase42-list-controls" defer></script>
+    <script src="/ui/app.js?v=20260814-tg-management-lab" defer></script>
   </body>
 </html>

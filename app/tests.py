@@ -19,6 +19,7 @@ from app.data import Bar, DataService
 from app.lab import MutationLabService
 from app.main import DatasetDownloadRequest
 from app.storage import Repository
+from app.tg_management_tests import TgManagementTests  # noqa: F401
 
 
 def build_fixture_bars(count: int = 3200) -> list[Bar]:
