@@ -74,6 +74,7 @@ class TgManagementLabService:
         snapshot = self._snapshot(snapshot_id)
         snapshot_db = Path(snapshot["path"]) / "snapshot.sqlite3"
         all_operations = self._load_operations(snapshot_db, asset)
+        evidence_tiers = self._evidence_tiers(snapshot_db, all_operations)
         version_sets = sorted({(
             item["statistics_schema_version"], item["signal_version"], item["parser_version"],
             item["execution_policy_version"], item["management_policy_version"], item["config_fingerprint"],
@@ -97,16 +98,28 @@ class TgManagementLabService:
             )
             if grouped else None
         )
-        operations = list(grouped.get(selected_version_set, []))
-        baseline_versions = sorted({item["management_policy_version"] for item in operations})
-        incompatible = len(baseline_versions) != 1
-        baseline_policy = self.replay_engine.policy_from_snapshot(snapshot_db, baseline_versions[0]) if len(baseline_versions) == 1 else None
+        # Every closed operation in the declared cohort is mandatory evidence.
+        # Version sets are diagnostic strata, never an exclusion filter.
+        operations = list(all_operations)
+        latest_operations = list(grouped.get(selected_version_set, []))
+        baseline_versions = sorted({
+            item["management_policy_version"] for item in latest_operations
+            if item.get("management_policy_version")
+        })
+        baseline_policy = None
+        for version in reversed(baseline_versions):
+            baseline_policy = self.replay_engine.policy_from_snapshot(
+                snapshot_db, version,
+            )
+            if baseline_policy is not None:
+                break
         config = {
             "snapshot_id": snapshot_id,
             "asset": asset,
-            "comparable_version_set": (
+            "reference_version_set": (
                 list(selected_version_set) if selected_version_set else None
             ),
+            "version_sets_are_strata_not_filters": True,
             "observed_version_sets": [list(item) for item in version_sets],
             "seed": seed,
             "optimize": optimize,
@@ -122,37 +135,26 @@ class TgManagementLabService:
         experiment_hash = hashlib.sha256(canonical_json({"snapshot": snapshot["checksum"], "config": config, "code": code_hash}).encode()).hexdigest()
         experiment_id = f"tgexp_{experiment_hash[:16]}"
 
-        exclusions: dict[str, list[str]] = {
-            item["execution_id"]: ["VERSION_SET_MISMATCH"]
-            for item in all_operations
-            if selected_version_set is not None
-            and version_key(item) != selected_version_set
-        }
+        exclusions: dict[str, list[str]] = {}
         baseline_results: dict[str, dict[str, Any]] = {}
         parity_diagnostics: list[dict[str, Any]] = []
-        parity_failed = incompatible or baseline_policy is None
+        parity_failed = baseline_policy is None
         aggregate_actual = 0.0
         aggregate_replay = 0.0
         aggregate_abs_actual = 0.0
         for operation in operations:
             reasons: list[str] = []
-            if operation.get("manual_intervention"):
-                reasons.append("MANUAL_INTERVENTION")
-            if operation.get("anomalous_state"):
-                reasons.append("ANOMALOUS_STATE")
-            if not operation.get("costs_complete"):
-                reasons.append("MISSING_COSTS")
-            if not operation.get("policy_resolved"):
-                reasons.append("UNRESOLVED_MANAGEMENT_POLICY")
-            if not operation.get("symbol_spec_resolved"):
-                reasons.append("MISSING_SYMBOL_SPEC")
             if not baseline_policy:
                 reasons.append("INCOMPATIBLE_OR_MISSING_BASELINE_POLICY")
             if reasons:
                 exclusions[operation["execution_id"]] = reasons
                 continue
-            _, ticks, coverage = self.replay_engine.load_operation(snapshot_db, operation["execution_id"])
-            replay = self.replay_engine.replay(operation, ticks, coverage, baseline_policy)
+            # The immutable broker-deal baseline does not require a replay path.
+            broker_operation = dict(operation)
+            broker_operation["_use_broker_actual_baseline"] = True
+            replay = self.replay_engine.replay(
+                broker_operation, [], {}, baseline_policy,
+            )
             replay_payload = replay.to_dict()
             baseline_results[operation["execution_id"]] = replay_payload
             if not replay.comparable or replay.net_pnl is None:
@@ -199,6 +201,11 @@ class TgManagementLabService:
                 candidate_results = self._replay_many(snapshot_db, comparable, candidate_policy)
                 sections = self._sections(comparable, candidate_results, split)
                 same_comparable_set = all(candidate_results[item["execution_id"]].get("comparable") for item in comparable)
+                exact_promotion_set = all(
+                    candidate_results[item["execution_id"]]
+                    .get("diagnostics", {}).get("promotion_eligible", False)
+                    for item in comparable
+                )
                 wf_pass = dual_promotion_improvement(sections["walk_forward_oos"], baseline_sections["walk_forward_oos"])
                 holdout_pass = dual_promotion_improvement(sections["holdout"], baseline_sections["holdout"])
                 stress_scenarios = []
@@ -235,7 +242,8 @@ class TgManagementLabService:
                     "stress_scenarios": stress_scenarios,
                     "stress_gate": stress_gate,
                     "same_comparable_operation_set": same_comparable_set,
-                    "promotion_gate": same_comparable_set and wf_pass and holdout_pass and stress_gate and len(comparable) >= 40,
+                    "exact_promotion_set": exact_promotion_set,
+                    "promotion_gate": same_comparable_set and exact_promotion_set and wf_pass and holdout_pass and stress_gate and len(comparable) >= 40,
                     "complexity": self._complexity(baseline_policy, candidate_policy),
                     "results": candidate_results,
                 }
@@ -264,8 +272,26 @@ class TgManagementLabService:
             "baseline_policy": baseline_policy.to_dict() if baseline_policy else None,
             "baseline_parity": parity,
             "coverage": snapshot["coverage_json"].get("assets", {}).get(asset, {}),
+            "cohort_execution_ids": [item["execution_id"] for item in operations],
             "included_execution_ids": [item["execution_id"] for item in comparable],
             "excluded_executions": exclusions,
+            "version_strata": {
+                "|".join(key): [item["execution_id"] for item in values]
+                for key, values in grouped.items()
+            },
+            "quality_flags": {
+                item["execution_id"]: [
+                    flag for flag, present in (
+                        ("MANUAL_INTERVENTION", item.get("manual_intervention")),
+                        ("ANOMALOUS_STATE", item.get("anomalous_state")),
+                        ("MISSING_COST_BREAKDOWN", not item.get("costs_complete")),
+                        ("UNRESOLVED_HISTORICAL_POLICY", not item.get("policy_resolved")),
+                        ("MISSING_SYMBOL_SPEC", not item.get("symbol_spec_resolved")),
+                    ) if present
+                ]
+                for item in operations
+            },
+            "evidence_tiers": evidence_tiers,
             "chronology": {
                 "development_ids": list(split.development_ids),
                 "holdout_ids": list(split.holdout_ids),
@@ -309,6 +335,50 @@ class TgManagementLabService:
         connection = sqlite3.connect(snapshot_db)
         try:
             return [json.loads(row[0]) for row in connection.execute("SELECT payload_json FROM operations WHERE asset = ? ORDER BY opened_at, execution_id", (asset,))]
+        finally:
+            connection.close()
+
+    @staticmethod
+    def _evidence_tiers(
+        snapshot_db: Path, operations: list[dict[str, Any]],
+    ) -> dict[str, str]:
+        connection = sqlite3.connect(snapshot_db)
+        try:
+            tables = {
+                str(row[0]) for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )
+            }
+            exact_ids: set[str] = set()
+            if "tick_coverage" in tables:
+                for execution_id, payload_json in connection.execute(
+                    "SELECT execution_id,payload_json FROM tick_coverage"
+                ):
+                    payload = json.loads(payload_json)
+                    if (
+                        str(payload.get("status")) == "COMPLETE"
+                        and int(
+                            payload.get("coverage_gap_count")
+                            or payload.get("gap_count") or 0
+                        ) == 0
+                    ):
+                        exact_ids.add(str(execution_id))
+            mark_ids = (
+                {
+                    str(row[0]) for row in connection.execute(
+                        "SELECT DISTINCT execution_id FROM one_second_marks"
+                    )
+                }
+                if "one_second_marks" in tables else set()
+            )
+            return {
+                item["execution_id"]: (
+                    "EXACT_TICK" if item["execution_id"] in exact_ids
+                    else "APPROXIMATE_1S"
+                    if item["execution_id"] in mark_ids else "MISSING"
+                )
+                for item in operations
+            }
         finally:
             connection.close()
 
@@ -439,7 +509,7 @@ class TgManagementLabService:
         markdown_path = root / f"{experiment_id}.md"
         json_path.write_text(json.dumps(result, indent=2, allow_nan=False), encoding="utf-8")
         with csv_path.open("w", encoding="utf-8", newline="") as handle:
-            writer = csv.DictWriter(handle, fieldnames=["execution_id", "included", "exclusion_reasons", "baseline_net_pnl", "candidate_net_pnl"])
+            writer = csv.DictWriter(handle, fieldnames=["execution_id", "included", "evidence_tier", "quality_flags", "exclusion_reasons", "baseline_net_pnl", "candidate_net_pnl", "candidate_status"])
             writer.writeheader()
             selected_results = (result.get("selected_candidate") or {}).get("results", {})
             ids = sorted(set(result["included_execution_ids"]) | set(result["excluded_executions"]))
@@ -447,9 +517,12 @@ class TgManagementLabService:
                 writer.writerow({
                     "execution_id": execution_id,
                     "included": execution_id in result["included_execution_ids"],
+                    "evidence_tier": result.get("evidence_tiers", {}).get(execution_id),
+                    "quality_flags": "|".join(result.get("quality_flags", {}).get(execution_id, [])),
                     "exclusion_reasons": "|".join(result["excluded_executions"].get(execution_id, [])),
                     "baseline_net_pnl": result["baseline_results"].get(execution_id, {}).get("net_pnl"),
                     "candidate_net_pnl": selected_results.get(execution_id, {}).get("net_pnl"),
+                    "candidate_status": selected_results.get(execution_id, {}).get("status"),
                 })
         markdown_path.write_text(self._markdown_report(result), encoding="utf-8")
         return {"json": json_path, "csv": csv_path, "markdown": markdown_path}
@@ -466,6 +539,9 @@ class TgManagementLabService:
             "## Evidence", "",
             f"- Included operations: {len(result['included_execution_ids'])}",
             f"- Excluded/censored operations: {len(result['excluded_executions'])}",
+            f"- Exact tick paths: {sum(value == 'EXACT_TICK' for value in result.get('evidence_tiers', {}).values())}",
+            f"- One-second research paths: {sum(value == 'APPROXIMATE_1S' for value in result.get('evidence_tiers', {}).values())}",
+            f"- Observed immutable version strata: {len(result.get('version_strata', {}))} (used as diagnostics, never as exclusions)",
             f"- Baseline parity: {result['baseline_parity']['status']}", "",
             "## Baseline sections", "",
             "| Section | Operations | Gross profit net | Gross loss net | Net P&L |", "|---|---:|---:|---:|---:|",

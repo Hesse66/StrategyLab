@@ -132,7 +132,12 @@ class TgSnapshotImporter:
         for role, expected in manifest.get("source_checksums", {}).items():
             if role not in file_hashes or file_hashes[role].lower() != str(expected).lower():
                 raise HTTPException(400, f"Snapshot source checksum mismatch: {role}")
-        fingerprint = sha256_bytes(canonical_json({"manifest": manifest, "files": file_hashes}).encode())
+        fingerprint = sha256_bytes(canonical_json({
+            "manifest": manifest,
+            "files": file_hashes,
+            "importer_version": IMPORTER_VERSION,
+            "model_version": MODEL_VERSION,
+        }).encode())
         snapshot_id = f"tgsnap_{fingerprint[:16]}"
         existing = self.repository.get_tg_snapshot(snapshot_id)
         if existing:
@@ -141,7 +146,10 @@ class TgSnapshotImporter:
         policies = self._load_json_mapping(source_paths.get("policy_registry"))
         symbol_specs = self._load_json_mapping(source_paths.get("symbol_specs"))
         deals = self._load_deals(source_paths.get("deals_csv"))
-        operations, external_events = self._read_operations(source_paths["operational_sqlite"], manifest, policies, symbol_specs, deals)
+        operations, external_events, one_second_marks = self._read_operations(
+            source_paths["operational_sqlite"], manifest, policies,
+            symbol_specs, deals,
+        )
         archive = self._verify_tick_archive(source_paths["tick_sqlite"])
         for operation in operations:
             record = archive.get(operation["execution_id"])
@@ -169,7 +177,11 @@ class TgSnapshotImporter:
         temp_target.mkdir(parents=True)
         try:
             canonical_path = temp_target / "snapshot.sqlite3"
-            self._write_canonical(canonical_path, manifest, operations, external_events, source_paths["tick_sqlite"], policies, symbol_specs, deals)
+            self._write_canonical(
+                canonical_path, manifest, operations, external_events,
+                one_second_marks, source_paths["tick_sqlite"], policies,
+                symbol_specs, deals,
+            )
             supporting = temp_target / "supporting_sources"
             for role in ("trades_csv", "shadow_csv"):
                 if role in source_paths:
@@ -249,7 +261,7 @@ class TgSnapshotImporter:
         policies: dict[str, Any],
         symbol_specs: dict[str, Any],
         deals: dict[str, list[dict[str, Any]]],
-    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
         with readonly_sqlite(path) as connection:
             tables = _table_names(connection)
             required = {"sentinel_executions", "sentinel_execution_legs"}
@@ -268,8 +280,21 @@ class TgSnapshotImporter:
             if "sentinel_execution_events" in tables:
                 event_rows = [_row_dict(row) for row in connection.execute("SELECT * FROM sentinel_execution_events ORDER BY execution_id, id")]
             mark_counts: dict[str, int] = {}
+            one_second_marks: list[dict[str, Any]] = []
             if "sentinel_execution_marks" in tables:
                 mark_counts = {str(row[0]): int(row[1]) for row in connection.execute("SELECT execution_id, COUNT(*) FROM sentinel_execution_marks GROUP BY execution_id")}
+                mark_columns = {
+                    str(row[1]) for row in connection.execute(
+                        "PRAGMA table_info(sentinel_execution_marks)"
+                    )
+                }
+                if "price" in mark_columns:
+                    one_second_marks = [
+                        _row_dict(row) for row in connection.execute(
+                            "SELECT * FROM sentinel_execution_marks "
+                            "ORDER BY execution_id, sampled_at, id"
+                        )
+                    ]
             signals = {}
             if "sentinel_signals" in tables:
                 signals = {str(row["id"]): _row_dict(row) for row in connection.execute("SELECT * FROM sentinel_signals")}
@@ -404,7 +429,13 @@ class TgSnapshotImporter:
             if execution_id not in seen:
                 seen[execution_id] = row_hash
                 operations.append(payload)
-        return operations, external_events
+        operation_ids = {item["execution_id"] for item in operations}
+        one_second_marks = [
+            item for item in one_second_marks
+            if str(item.get("execution_id")) in operation_ids
+            and item.get("price") not in (None, "")
+        ]
+        return operations, external_events, one_second_marks
 
     def _verify_tick_archive(self, path: Path) -> dict[str, dict[str, Any]]:
         with readonly_sqlite(path) as connection:
@@ -481,6 +512,7 @@ class TgSnapshotImporter:
         manifest: dict[str, Any],
         operations: list[dict[str, Any]],
         external_events: list[dict[str, Any]],
+        one_second_marks: list[dict[str, Any]],
         tick_source: Path,
         policies: dict[str, Any],
         symbol_specs: dict[str, Any],
@@ -495,6 +527,7 @@ class TgSnapshotImporter:
                 CREATE TABLE external_events (event_id TEXT PRIMARY KEY, event_type TEXT NOT NULL, execution_id TEXT, signal_id TEXT, published_at TEXT NOT NULL, asset TEXT NOT NULL, payload_json TEXT NOT NULL, content_hash TEXT NOT NULL);
                 CREATE TABLE tick_coverage (execution_id TEXT PRIMARY KEY, payload_json TEXT NOT NULL);
                 CREATE TABLE tick_chunks (id INTEGER PRIMARY KEY, execution_id TEXT NOT NULL, range_start_msc INTEGER NOT NULL, range_end_msc INTEGER NOT NULL, tick_count INTEGER NOT NULL, codec TEXT NOT NULL, checksum TEXT NOT NULL, payload BLOB NOT NULL);
+                CREATE TABLE one_second_marks (execution_id TEXT NOT NULL, sampled_at TEXT NOT NULL, price REAL NOT NULL, floating_pnl REAL, risk_amount REAL, pnl_r REAL, volume REAL, status TEXT, source_ordinal INTEGER NOT NULL, PRIMARY KEY(execution_id, sampled_at, source_ordinal));
                 CREATE TABLE policies (version TEXT PRIMARY KEY, payload_json TEXT NOT NULL);
                 CREATE TABLE symbol_specs (symbol TEXT PRIMARY KEY, payload_json TEXT NOT NULL);
                 CREATE TABLE deals (execution_id TEXT NOT NULL, ordinal INTEGER NOT NULL, payload_json TEXT NOT NULL, PRIMARY KEY(execution_id, ordinal));
@@ -506,6 +539,17 @@ class TgSnapshotImporter:
                 connection.execute("INSERT INTO operations VALUES (?, ?, ?, ?, ?)", (operation["execution_id"], operation["provider_symbol"], operation["opened_at"], encoded, sha256_bytes(encoded.encode())))
             for event in external_events:
                 connection.execute("INSERT INTO external_events VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (event["event_id"], event["event_type"], event["execution_id"], event["signal_id"], event["published_at"], event["asset"], canonical_json(event["payload"]), event["content_hash"]))
+            for ordinal, mark in enumerate(one_second_marks, start=1):
+                connection.execute(
+                    "INSERT INTO one_second_marks VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        str(mark["execution_id"]), str(mark["sampled_at"]),
+                        float(mark["price"]), _number(mark.get("floating_pnl")),
+                        _number(mark.get("risk_amount")), _number(mark.get("pnl_r")),
+                        _number(mark.get("volume")), str(mark.get("status") or ""),
+                        ordinal,
+                    ),
+                )
             with readonly_sqlite(tick_source) as source:
                 for row in source.execute("SELECT * FROM archived_executions"):
                     connection.execute("INSERT OR REPLACE INTO tick_coverage VALUES (?, ?)", (str(row["execution_id"]), canonical_json(_row_dict(row))))

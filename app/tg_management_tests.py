@@ -423,6 +423,67 @@ class TgManagementTests(unittest.TestCase):
         self.assertEqual(evidence["status"], "RESEARCH_ONLY")
         self.assertEqual(evidence["result_json"]["coverage"]["exclusion_reasons"], {"ONE_SECOND_MARKS_ONLY": 20})
 
+    def test_one_second_prices_are_imported_for_research_replay(self) -> None:
+        root = self.root / "priced-marks"
+        root.mkdir()
+        package = build_tg_package(root)
+        connection = sqlite3.connect(package / "operational.sqlite3")
+        connection.execute(
+            "CREATE TABLE sentinel_execution_marks ("
+            "id INTEGER PRIMARY KEY, execution_id TEXT, sampled_at TEXT, "
+            "price REAL, floating_pnl REAL, risk_amount REAL, pnl_r REAL, "
+            "volume REAL, status TEXT)"
+        )
+        for ordinal, price in enumerate((100.0, 101.0, 102.0, 103.0)):
+            connection.execute(
+                "INSERT INTO sentinel_execution_marks VALUES (?,?,?,?,?,?,?,?,?)",
+                (
+                    ordinal + 1, "exec-000",
+                    f"2026-08-10T05:01:0{ordinal}+00:00", price,
+                    0.0, 10.0, 0.0, 1.0, "OPEN",
+                ),
+            )
+        connection.commit(); connection.close()
+        connection = sqlite3.connect(package / "ticks.sqlite3")
+        connection.execute("DELETE FROM tick_chunks")
+        connection.execute("DELETE FROM archived_executions")
+        connection.commit(); connection.close()
+        snapshot = self.importer.import_package(package)
+        snapshot_db = Path(snapshot["path"]) / "snapshot.sqlite3"
+        operation, ticks, coverage = TgSignalReplayEngine().load_operation(
+            snapshot_db, "exec-000",
+        )
+        self.assertEqual(len(ticks), 4)
+        self.assertEqual(coverage["evidence_tier"], "APPROXIMATE_1S")
+        candidate = replace(
+            baseline_policy(), policy_id="candidate",
+            parent_policy_id="baseline-management-v1",
+        )
+        replay = TgSignalReplayEngine().replay(
+            operation, ticks, coverage, candidate,
+        )
+        self.assertEqual(replay.status, "COMPLETE_APPROXIMATE")
+        self.assertFalse(replay.diagnostics["promotion_eligible"])
+
+    def test_version_sets_are_strata_and_never_exclude_cohort_trades(self) -> None:
+        root = self.root / "version-strata"
+        root.mkdir()
+        package = build_tg_package(root, count=4)
+        connection = sqlite3.connect(package / "operational.sqlite3")
+        connection.execute(
+            "UPDATE sentinel_executions SET signal_version='signal-v0' "
+            "WHERE id IN ('exec-000','exec-001')"
+        )
+        connection.commit(); connection.close()
+        snapshot = self.importer.import_package(package)
+        result = TgManagementLabService(self.repo).run_baseline(
+            snapshot["snapshot_id"], "XAUUSD",
+        )["result_json"]
+        self.assertEqual(len(result["cohort_execution_ids"]), 4)
+        self.assertEqual(len(result["included_execution_ids"]), 4)
+        self.assertEqual(result["excluded_executions"], {})
+        self.assertEqual(len(result["version_strata"]), 2)
+
     def test_chronological_split_has_no_leakage_and_groups_by_operation(self) -> None:
         operations = [{"execution_id": str(index), "opened_at": f"2026-08-{10 + index:02d}T00:00:00+00:00"} for index in range(8)]
         split = chronological_split(operations)
@@ -466,7 +527,7 @@ class TgManagementTests(unittest.TestCase):
         groups = result["result_json"]["timeframe_lane_diagnostics"]
         self.assertEqual({(item["timeframe"], item["lane"]) for item in groups}, {("M15", "FAST"), ("H1", "CORE")})
 
-    def test_manual_anomalous_and_missing_cost_operations_are_explicitly_excluded(self) -> None:
+    def test_all_cohort_operations_are_retained_with_quality_flags(self) -> None:
         package = build_tg_package(self.root, count=20)
         connection = sqlite3.connect(package / "operational.sqlite3")
         connection.execute("UPDATE sentinel_executions SET manual_intervention = 1 WHERE id = 'exec-000'")
@@ -474,8 +535,10 @@ class TgManagementTests(unittest.TestCase):
         connection.commit(); connection.close()
         snapshot = self.importer.import_package(package)
         result = TgManagementLabService(self.repo).run_baseline(snapshot["snapshot_id"], "XAUUSD")["result_json"]
-        self.assertEqual(result["excluded_executions"]["exec-000"], ["MANUAL_INTERVENTION"])
-        self.assertEqual(result["excluded_executions"]["exec-001"], ["ANOMALOUS_STATE"])
+        self.assertIn("exec-000", result["included_execution_ids"])
+        self.assertIn("exec-001", result["included_execution_ids"])
+        self.assertIn("MANUAL_INTERVENTION", result["quality_flags"]["exec-000"])
+        self.assertIn("ANOMALOUS_STATE", result["quality_flags"]["exec-001"])
 
         missing_root = self.root / "missing-costs"
         missing_root.mkdir()
@@ -486,7 +549,8 @@ class TgManagementTests(unittest.TestCase):
         manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
         snapshot = self.importer.import_package(package)
         result = TgManagementLabService(self.repo).run_baseline(snapshot["snapshot_id"], "XAUUSD")["result_json"]
-        self.assertIn("MISSING_COSTS", result["excluded_executions"]["exec-000"])
+        self.assertIn("exec-000", result["included_execution_ids"])
+        self.assertIn("MISSING_COST_BREAKDOWN", result["quality_flags"]["exec-000"])
 
     def test_forty_operations_evaluate_candidates_but_do_not_false_promote(self) -> None:
         package = build_tg_package(self.root, count=40)

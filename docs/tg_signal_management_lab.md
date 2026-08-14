@@ -107,8 +107,11 @@ it increases `gross_profit_net` and decreases `gross_loss_net` in both aggregate
 walk-forward OOS and final holdout. This status is statistical advice only.
 
 When a snapshot contains several immutable statistical/configuration versions,
-each asset is evaluated only on the version set attached to its most recently
-published execution. Older sets remain visible as `VERSION_SET_MISMATCH`
+every closed cohort trade from the declared publication boundary is evaluated.
+Immutable version sets remain visible as diagnostic strata and never become
+`VERSION_SET_MISMATCH` exclusions. Actual broker performance uses every trade;
+exact BID/ASK paths are promotion-grade, while imported one-second position-price
+paths remain explicitly approximate research evidence
 exclusions instead of being mixed or rewritten. A missing exact policy registry
 entry fails baseline parity for that selected set.
 

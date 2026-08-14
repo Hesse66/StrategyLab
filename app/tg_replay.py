@@ -50,6 +50,42 @@ class TgSignalReplayEngine:
                 ticks.extend(decoded)
                 source_ordinal += len(decoded)
             ticks.sort(key=lambda tick: (tick.time_msc, tick.source_ordinal))
+            if not ticks:
+                tables = {
+                    str(item[0]) for item in connection.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'"
+                    )
+                }
+                if "one_second_marks" in tables:
+                    marks = connection.execute(
+                        "SELECT sampled_at,price,source_ordinal "
+                        "FROM one_second_marks WHERE execution_id=? "
+                        "ORDER BY sampled_at,source_ordinal",
+                        (execution_id,),
+                    ).fetchall()
+                    ticks = [
+                        Tick(
+                            utc_milliseconds(str(mark["sampled_at"])),
+                            float(mark["price"]), float(mark["price"]), 0,
+                            int(mark["source_ordinal"]),
+                        )
+                        for mark in marks
+                    ]
+                    if ticks:
+                        coverage = {
+                            "status": "APPROXIMATE_1S",
+                            "coverage_start_at": str(marks[0]["sampled_at"]),
+                            "coverage_end_at": str(marks[-1]["sampled_at"]),
+                            "coverage_gap_count": 0,
+                            "horizon_complete": False,
+                            "evidence_tier": "APPROXIMATE_1S",
+                            "sample_resolution_seconds": 1,
+                        }
+            coverage.setdefault(
+                "evidence_tier",
+                "EXACT_TICK" if ticks and str(coverage.get("status")) == "COMPLETE"
+                else "MISSING",
+            )
             return operation, ticks, coverage
         finally:
             connection.close()
@@ -70,12 +106,18 @@ class TgSignalReplayEngine:
         return ManagementPolicy.from_dict(payload)
 
     def replay(self, operation: dict[str, Any], ticks: list[Tick], coverage: dict[str, Any], policy: ManagementPolicy) -> ReplayResult:
+        if policy.parent_policy_id is None and (
+            operation.get("deals")
+            or operation.get("_use_broker_actual_baseline")
+        ):
+            result = self._broker_actual_baseline(operation, policy)
+            diagnostics = dict(result.diagnostics)
+            diagnostics["evidence_tier"] = "BROKER_DEALS"
+            return replace(result, diagnostics=diagnostics)
+
         exclusions = self._preflight(operation, ticks, coverage)
         if exclusions:
             return ReplayResult(operation["execution_id"], policy.policy_id, "CENSORED", False, tuple(exclusions), None, None, (), (), float(operation.get("filled_volume") or 0), {"engine_version": self.engine_version})
-
-        if policy.parent_policy_id is None and operation.get("deals"):
-            return self._broker_actual_baseline(operation, policy)
 
         side = str(operation["side"]).upper()
         direction = 1.0 if side == "BUY" else -1.0
@@ -238,9 +280,12 @@ class TgSignalReplayEngine:
         net = sum(fill.net_pnl for fill in fills)
         result_r = net / float(operation["risk_amount"]) if float(operation.get("risk_amount") or 0) > 0 else None
         comparable = bool(operation.get("costs_complete"))
-        status = "COMPLETE" if comparable else "NON_COMPARABLE"
+        approximate = coverage.get("evidence_tier") == "APPROXIMATE_1S"
+        status = "COMPLETE_APPROXIMATE" if comparable and approximate else (
+            "COMPLETE" if comparable else "NON_COMPARABLE"
+        )
         missing = () if comparable else ("MISSING_NET_COSTS",)
-        return ReplayResult(operation["execution_id"], policy.policy_id, status, comparable, missing, net, result_r, tuple(fills), tuple(milestones), 0.0, {"engine_version": self.engine_version, "max_favorable_r": max_favorable})
+        return ReplayResult(operation["execution_id"], policy.policy_id, status, comparable, missing, net, result_r, tuple(fills), tuple(milestones), 0.0, {"engine_version": self.engine_version, "max_favorable_r": max_favorable, "evidence_tier": coverage.get("evidence_tier", "EXACT_TICK"), "promotion_eligible": not approximate})
 
     def _broker_actual_baseline(
         self, operation: dict[str, Any], policy: ManagementPolicy,
@@ -271,6 +316,26 @@ class TgSignalReplayEngine:
             )
         exits = [deal for deal in deals if int(deal.get("entry") or 0) != 0]
         if not exits:
+            actual = operation.get("broker_realized_net_pnl")
+            if actual is not None:
+                net = float(actual)
+                risk = float(operation.get("risk_amount") or 0)
+                fill = ExitFill(
+                    "broker:execution-aggregate", "BROKER_ACTUAL",
+                    utc_milliseconds(str(operation["closed_at"])),
+                    float(operation.get("actual_exit") or 0),
+                    float(operation.get("filled_volume") or 0), net, net,
+                )
+                return ReplayResult(
+                    operation["execution_id"], policy.policy_id, "COMPLETE",
+                    True, (), net, (net / risk if risk > EPSILON else None),
+                    (fill,), (), 0.0,
+                    {
+                        "engine_version": self.engine_version,
+                        "baseline_source": "BROKER_EXECUTION_AGGREGATE",
+                        "quality_flags": ["DEAL_BREAKDOWN_UNAVAILABLE"],
+                    },
+                )
             return ReplayResult(
                 operation["execution_id"], policy.policy_id, "NON_COMPARABLE",
                 False, ("MISSING_BROKER_EXIT_DEALS",), None, None, (), (),
@@ -321,7 +386,7 @@ class TgSignalReplayEngine:
         if not ticks or not coverage:
             reasons.append("MISSING_TICK_ARCHIVE")
             return reasons
-        if str(coverage.get("status")) != "COMPLETE":
+        if str(coverage.get("status")) not in {"COMPLETE", "APPROXIMATE_1S"}:
             reasons.append("ARCHIVE_NOT_COMPLETE")
         if int(
             coverage.get("coverage_gap_count")
@@ -331,7 +396,7 @@ class TgSignalReplayEngine:
             reasons.append("ARCHIVE_GAPS")
         if not coverage.get("coverage_start_at") or (operation.get("opened_at") and utc_milliseconds(str(coverage["coverage_start_at"])) > utc_milliseconds(operation["opened_at"])):
             reasons.append("ENTRY_OUTSIDE_COVERAGE")
-        if operation.get("closed_at") and (not coverage.get("coverage_end_at") or utc_milliseconds(str(coverage["coverage_end_at"])) < utc_milliseconds(operation["closed_at"])):
+        if operation.get("closed_at") and (not coverage.get("coverage_end_at") or utc_milliseconds(str(coverage["coverage_end_at"])) + (1000 if coverage.get("evidence_tier") == "APPROXIMATE_1S" else 0) < utc_milliseconds(operation["closed_at"])):
             reasons.append("CLOSE_OUTSIDE_COVERAGE")
         return reasons
 

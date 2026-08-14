@@ -5,8 +5,8 @@ from typing import Any, Literal
 
 
 ENGINE_VERSION = "tg_signal_management_v1"
-IMPORTER_VERSION = "tg_snapshot_import_v1"
-MODEL_VERSION = "tg_external_execution_v1"
+IMPORTER_VERSION = "tg_snapshot_import_v2"
+MODEL_VERSION = "tg_external_execution_v2"
 SUPPORTED_ASSETS = ("XAUUSD", "EURUSD", "BTCUSD", "NASDAQ", "US30")
 PROMOTION_STATES = {
     "INSUFFICIENT_EXACT_COVERAGE",
