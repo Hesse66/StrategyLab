@@ -575,6 +575,11 @@ function syncWorkingParameters() {
   for (const [key, value] of Object.entries(parameters)) {
     next[key] = state.workingParameters[key] ?? value;
   }
+  for (const edge of tuningEdges()) {
+    if (!(edge.lever in next)) {
+      next[edge.lever] = state.workingParameters[edge.lever] ?? edge.current_value;
+    }
+  }
   state.workingParameters = next;
 }
 
@@ -732,7 +737,7 @@ function renderTuningEdges() {
             ${choices
               .map((value) => {
                 const token = valueToken(value);
-                return `<option value="${token}" ${valueToken(working) === token ? "selected" : ""}>${displayValue(value)}</option>`;
+                return `<option value="${escapeAttribute(token)}" ${valueToken(working) === token ? "selected" : ""}>${escapeHtml(displayValue(value))}</option>`;
               })
               .join("")}
           </select>
@@ -760,7 +765,7 @@ function renderTuningEdges() {
           <td>
             <div class="table-actions">
               ${optimizeControl}
-              <button class="ghost" data-action="reset-edge" data-key="${edge.lever}" data-value="${valueToken(current)}">Reset</button>
+              <button class="ghost" data-action="reset-edge" data-key="${edge.lever}" data-value="${escapeAttribute(valueToken(current))}">Reset</button>
             </div>
           </td>
         </tr>
@@ -1684,11 +1689,12 @@ function handleWorkingInput(event) {
     return;
   }
   const key = control.dataset.workingKey;
-  const current = currentVersion()?.spec_json?.parameters?.[key];
+  const edge = edgeForKey(key);
+  const storedCurrent = currentVersion()?.spec_json?.parameters?.[key];
+  const current = storedCurrent === undefined ? edge?.current_value : storedCurrent;
   if (current === undefined) {
     return;
   }
-  const edge = edgeForKey(key);
   const nextValue = clampToEdge(castValue(control.value, current), edge);
   state.workingParameters[key] = nextValue;
   if (typeof nextValue === "number" && String(nextValue) !== control.value) {
