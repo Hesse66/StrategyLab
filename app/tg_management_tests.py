@@ -179,7 +179,13 @@ def baseline_policy() -> ManagementPolicy:
 
 
 def complete_coverage() -> dict:
-    return {"status": "COMPLETE", "gap_count": 0, "coverage_start_at": "2026-08-10T05:00:00+00:00", "coverage_end_at": "2026-08-10T05:00:03+00:00"}
+    return {
+        "status": "COMPLETE", "gap_count": 0,
+        "coverage_start_at": "2026-08-10T05:00:00+00:00",
+        "coverage_end_at": "2026-08-10T05:00:03+00:00",
+        "horizon_end_at": "2026-08-10T05:00:03+00:00",
+        "horizon_reason": "ORIGINAL_TP3", "horizon_complete": True,
+    }
 
 
 class TgManagementTests(unittest.TestCase):
@@ -302,6 +308,98 @@ class TgManagementTests(unittest.TestCase):
         self.assertEqual(result.fills[0].reason, "SL")
         self.assertLess(result.net_pnl, sum(fill.gross_pnl for fill in result.fills))
 
+    def test_candidate_replay_can_continue_after_actual_close(self) -> None:
+        engine = TgSignalReplayEngine()
+        operation = direct_operation()
+        operation["closed_at"] = "2026-08-10T05:00:01+00:00"
+        ticks = [
+            Tick(1786338000000, 100, 100.1, 0, 0),
+            Tick(1786338001000, 100.5, 100.6, 0, 1),
+            Tick(1786338002000, 101, 101.1, 0, 2),
+            Tick(1786338003000, 102, 102.1, 0, 3),
+            Tick(1786338004000, 103, 103.1, 0, 4),
+        ]
+        coverage = dict(
+            complete_coverage(),
+            coverage_end_at="2026-08-10T05:00:04+00:00",
+            horizon_end_at="2026-08-10T05:00:04+00:00",
+        )
+        result = engine.replay(operation, ticks, coverage, baseline_policy())
+        self.assertEqual(result.status, "COMPLETE")
+        self.assertEqual([fill.reason for fill in result.fills], ["TP1", "TP2", "TP3"])
+
+    def test_forced_close_terminalizes_remaining_volume_at_horizon(self) -> None:
+        engine = TgSignalReplayEngine()
+        operation = direct_operation()
+        operation["closed_at"] = "2026-08-10T05:00:01+00:00"
+        ticks = [
+            Tick(1786338000000, 100, 100.1, 0, 0),
+            Tick(1786338001000, 100.5, 100.6, 0, 1),
+            Tick(1786338002000, 100.6, 100.7, 0, 2),
+        ]
+        coverage = dict(
+            complete_coverage(),
+            coverage_end_at="2026-08-10T05:00:02+00:00",
+            horizon_end_at="2026-08-10T05:00:02+00:00",
+            horizon_reason="DAILY_FORCED_CLOSE",
+        )
+        result = engine.replay(operation, ticks, coverage, baseline_policy())
+        self.assertEqual(result.status, "COMPLETE")
+        self.assertTrue(result.fills)
+        self.assertTrue(all(
+            fill.reason == "DAILY_FORCED_CLOSE" for fill in result.fills
+        ))
+
+    def test_forced_close_uses_broker_actual_exit_when_available(self) -> None:
+        engine = TgSignalReplayEngine()
+        operation = direct_operation()
+        operation.update(
+            closed_at="2026-08-10T05:00:02+00:00",
+            close_reason="DAILY_PAUSE",
+            actual_exit=100.25,
+        )
+        ticks = [
+            Tick(1786338000000, 100, 100.1, 0, 0),
+            Tick(1786338002000, 99.5, 99.6, 0, 1),
+        ]
+        coverage = dict(
+            complete_coverage(),
+            coverage_end_at="2026-08-10T05:00:02+00:00",
+            horizon_end_at="2026-08-10T05:00:02+00:00",
+            horizon_reason="DAILY_FORCED_CLOSE",
+        )
+        result = engine.replay(operation, ticks, coverage, baseline_policy())
+        self.assertEqual({fill.price for fill in result.fills}, {100.25})
+
+    def test_native_tp_uses_requested_level_not_later_tick_overshoot(self) -> None:
+        engine = TgSignalReplayEngine()
+        ticks = [
+            Tick(1786338000000, 100, 100.1, 0, 0),
+            Tick(1786338001000, 101.5, 101.6, 0, 1),
+            Tick(1786338002000, 102.5, 102.6, 0, 2),
+            Tick(1786338003000, 103.5, 103.6, 0, 3),
+        ]
+        result = engine.replay(
+            direct_operation(), ticks, complete_coverage(), baseline_policy(),
+        )
+        self.assertEqual([fill.price for fill in result.fills], [101.0, 102.0, 103.0])
+
+    def test_baseline_uses_exact_broker_deals_including_entry_costs(self) -> None:
+        operation = direct_operation()
+        operation["deals"] = [
+            {"ticket": 1, "entry": 0, "volume": 1.0, "price": 100.0, "profit": 0, "commission": -0.4, "swap": 0, "fee": 0, "time_msc": 1786338000000},
+            {"ticket": 2, "entry": 1, "volume": 1.0, "price": 101.0, "profit": 10.0, "commission": -0.4, "swap": -0.1, "fee": 0, "time_msc": 1786338001000},
+        ]
+        result = TgSignalReplayEngine().replay(
+            operation,
+            [Tick(1786338000000, 100, 100.1, 0, 0)],
+            complete_coverage(),
+            baseline_policy(),
+        )
+        self.assertEqual(result.status, "COMPLETE")
+        self.assertAlmostEqual(result.net_pnl, 9.1)
+        self.assertEqual(result.diagnostics["baseline_source"], "BROKER_DEALS")
+
     def test_gap_censors_and_one_second_marks_never_promote(self) -> None:
         operation = direct_operation()
         ticks = [Tick(1786338000000, 100, 100.1, 0, 0)]
@@ -351,7 +449,11 @@ class TgManagementTests(unittest.TestCase):
 
         other_root = self.root / "bad-parity"
         other_root.mkdir()
-        bad = build_tg_package(other_root, count=20, actual_pnl=99.0)
+        bad = build_tg_package(other_root, count=20)
+        connection = sqlite3.connect(bad / "operational.sqlite3")
+        connection.execute("UPDATE sentinel_executions SET realized_pnl=99.0")
+        connection.commit()
+        connection.close()
         bad_snapshot = self.importer.import_package(bad)
         failed = service.run_baseline(bad_snapshot["snapshot_id"], "XAUUSD")
         self.assertEqual(failed["status"], "BASELINE_PARITY_FAILED")

@@ -73,18 +73,40 @@ class TgManagementLabService:
             raise HTTPException(400, f"Unsupported initial cohort asset: {asset}")
         snapshot = self._snapshot(snapshot_id)
         snapshot_db = Path(snapshot["path"]) / "snapshot.sqlite3"
-        operations = self._load_operations(snapshot_db, asset)
-        baseline_versions = sorted({item["management_policy_version"] for item in operations})
+        all_operations = self._load_operations(snapshot_db, asset)
         version_sets = sorted({(
             item["statistics_schema_version"], item["signal_version"], item["parser_version"],
             item["execution_policy_version"], item["management_policy_version"], item["config_fingerprint"],
-        ) for item in operations})
-        incompatible = len(baseline_versions) != 1 or len(version_sets) != 1
+        ) for item in all_operations})
+        def version_key(item: dict[str, Any]) -> tuple[str, str, str, str, str, str]:
+            return (
+                item["statistics_schema_version"], item["signal_version"],
+                item["parser_version"], item["execution_policy_version"],
+                item["management_policy_version"], item["config_fingerprint"],
+            )
+        grouped: dict[tuple[str, str, str, str, str, str], list[dict[str, Any]]] = {}
+        for operation in all_operations:
+            grouped.setdefault(version_key(operation), []).append(operation)
+        selected_version_set = (
+            max(
+                grouped,
+                key=lambda key: (
+                    max(str(item.get("published_at") or "") for item in grouped[key]),
+                    len(grouped[key]), key,
+                ),
+            )
+            if grouped else None
+        )
+        operations = list(grouped.get(selected_version_set, []))
+        baseline_versions = sorted({item["management_policy_version"] for item in operations})
+        incompatible = len(baseline_versions) != 1
         baseline_policy = self.replay_engine.policy_from_snapshot(snapshot_db, baseline_versions[0]) if len(baseline_versions) == 1 else None
         config = {
             "snapshot_id": snapshot_id,
             "asset": asset,
-            "comparable_version_set": list(version_sets[0]) if len(version_sets) == 1 else None,
+            "comparable_version_set": (
+                list(selected_version_set) if selected_version_set else None
+            ),
             "observed_version_sets": [list(item) for item in version_sets],
             "seed": seed,
             "optimize": optimize,
@@ -100,7 +122,12 @@ class TgManagementLabService:
         experiment_hash = hashlib.sha256(canonical_json({"snapshot": snapshot["checksum"], "config": config, "code": code_hash}).encode()).hexdigest()
         experiment_id = f"tgexp_{experiment_hash[:16]}"
 
-        exclusions: dict[str, list[str]] = {}
+        exclusions: dict[str, list[str]] = {
+            item["execution_id"]: ["VERSION_SET_MISMATCH"]
+            for item in all_operations
+            if selected_version_set is not None
+            and version_key(item) != selected_version_set
+        }
         baseline_results: dict[str, dict[str, Any]] = {}
         parity_diagnostics: list[dict[str, Any]] = []
         parity_failed = incompatible or baseline_policy is None
@@ -181,6 +208,7 @@ class TgManagementLabService:
                     baseline_stress_policy = replace(
                         baseline_policy,
                         policy_id=f"{baseline_policy.policy_id}_{name}",
+                        parent_policy_id=baseline_policy.policy_id,
                         latency_msc=int(profile.get("latency_msc") or 0),
                         exit_slippage_price=float(profile.get("slippage_price") or 0),
                         stress_same_millisecond_stop_first=bool(profile.get("same_millisecond_stop_first", False)),

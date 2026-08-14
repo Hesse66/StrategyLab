@@ -149,7 +149,15 @@ class TgSnapshotImporter:
                 "coverage_status": str(record.get("status")) if record else "MISSING",
                 "coverage_start_at": record.get("coverage_start_at") if record else None,
                 "coverage_end_at": record.get("coverage_end_at") if record else None,
-                "coverage_gap_count": int(record.get("gap_count") or 0) if record else 0,
+                "coverage_gap_count": int(
+                    record.get("coverage_gap_count")
+                    or record.get("gap_count")
+                    or 0
+                ) if record else 0,
+                "horizon_end_at": record.get("horizon_end_at") if record else None,
+                "horizon_reason": record.get("horizon_reason") if record else None,
+                "horizon_complete": bool(record.get("horizon_complete")) if record else False,
+                "horizon_version": record.get("horizon_version") if record else None,
                 "checksum_status": "VALID" if record and int(record.get("tick_count") or 0) > 0 else "MISSING",
             })
         coverage = self._coverage_report(operations, archive)
@@ -355,6 +363,7 @@ class TgSnapshotImporter:
                 "config_fingerprint": str(row.get("config_fingerprint") or ""),
                 "provider_entry": _number(signal.get("entry_price") or signal.get("entry") or row.get("entry_price") or row.get("entry_requested"), 0.0),
                 "actual_fill": _number(row.get("entry_actual"), 0.0),
+                "actual_exit": _number(row.get("exit_actual")),
                 "entry_bid": _number(row.get("entry_bid")),
                 "entry_ask": _number(row.get("entry_ask")),
                 "spread": _number(row.get("entry_spread_price")),
@@ -438,7 +447,11 @@ class TgSnapshotImporter:
                     reason = "NO_EXACT_TICKS"
                 elif str(record.get("status")) != "COMPLETE":
                     reason = "ARCHIVE_NOT_COMPLETE"
-                elif int(record.get("gap_count") or 0) != 0:
+                elif int(
+                    record.get("coverage_gap_count")
+                    or record.get("gap_count")
+                    or 0
+                ) != 0:
                     reason = "ARCHIVE_GAPS"
                 elif not record.get("coverage_start_at") or (operation.get("opened_at") and utc_datetime(str(record["coverage_start_at"])) > utc_datetime(operation["opened_at"])):
                     reason = "ENTRY_OUTSIDE_COVERAGE"

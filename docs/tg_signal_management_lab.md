@@ -86,8 +86,18 @@ outcome-changing ordering ambiguity censor the execution. One-second marks can
 guide research but never establish exact promotional evidence.
 
 Baseline parity excludes manual/anomalous, censored, and cost-incomplete executions.
+For the unmodified parent policy, exact broker deals are the authoritative source
+of realized baseline P&L, including entry/exit commission, swap, and fees. Tick
+replay remains authoritative for counterfactual candidates and stress variants.
 Its individual tolerance is `max(USD 0.01, 0.01 × initial_risk_amount)` and its
 aggregate tolerance is `max(USD 1, 0.0025 × sum(abs(actual_net_pnl)))`.
+
+Candidate replay may continue beyond the real broker close only when the archive
+declares a complete post-close horizon. The terminal event is the first original
+TP3, original SL, applicable daily/weekly forced close, or 48 accumulated market
+hours. An incomplete/future horizon or a candidate still open at the completed
+horizon is censored, never marked to market as a completed advantage. Native TP
+fills use their requested broker level rather than a later tick overshoot.
 
 Operations are sorted chronologically. The first 75% is development data with
 expanding walk-forward windows; the final 25% is untouched holdout. Fewer than 20
@@ -95,6 +105,12 @@ complete comparable operations yields `INSUFFICIENT_TRADES`; 20–39 yields
 `RESEARCH_ONLY`. At 40 or more, a policy can become `PROMOTION_CANDIDATE` only if
 it increases `gross_profit_net` and decreases `gross_loss_net` in both aggregated
 walk-forward OOS and final holdout. This status is statistical advice only.
+
+When a snapshot contains several immutable statistical/configuration versions,
+each asset is evaluated only on the version set attached to its most recently
+published execution. Older sets remain visible as `VERSION_SET_MISMATCH`
+exclusions instead of being mixed or rewritten. A missing exact policy registry
+entry fails baseline parity for that selected set.
 
 ## Artifacts and backfill diagnosis
 

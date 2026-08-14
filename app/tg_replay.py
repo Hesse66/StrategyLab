@@ -74,6 +74,9 @@ class TgSignalReplayEngine:
         if exclusions:
             return ReplayResult(operation["execution_id"], policy.policy_id, "CENSORED", False, tuple(exclusions), None, None, (), (), float(operation.get("filled_volume") or 0), {"engine_version": self.engine_version})
 
+        if policy.parent_policy_id is None and operation.get("deals"):
+            return self._broker_actual_baseline(operation, policy)
+
         side = str(operation["side"]).upper()
         direction = 1.0 if side == "BUY" else -1.0
         entry = float(operation["actual_fill"])
@@ -102,7 +105,12 @@ class TgSignalReplayEngine:
         milestones: list[dict[str, Any]] = []
         open_legs = {leg["leg_id"]: leg for leg in legs}
         opened_msc = utc_milliseconds(operation["opened_at"])
-        original_close_msc = utc_milliseconds(operation["closed_at"]) if operation.get("closed_at") else None
+        horizon_msc = (
+            utc_milliseconds(str(coverage["horizon_end_at"]))
+            if coverage.get("horizon_end_at") else None
+        )
+        horizon_reason = str(coverage.get("horizon_reason") or "")
+        last_tick: Tick | None = None
 
         replay_ticks = ticks
         if policy.stress_same_millisecond_stop_first:
@@ -114,6 +122,9 @@ class TgSignalReplayEngine:
         for tick in replay_ticks:
             if tick.time_msc < opened_msc:
                 continue
+            if horizon_msc is not None and tick.time_msc > horizon_msc:
+                break
+            last_tick = tick
             if pending_stop and tick.time_msc >= pending_stop[0]:
                 candidate_stop = pending_stop[1]
                 if self._more_protective(side, candidate_stop, current_stop):
@@ -181,8 +192,46 @@ class TgSignalReplayEngine:
                     fills.append(self._fill(operation, leg, "TIME_STOP", tick, close_price, contract_size, policy))
                 open_legs.clear()
                 break
-            if original_close_msc is not None and tick.time_msc > original_close_msc and open_legs:
-                break
+        if (
+            open_legs
+            and last_tick is not None
+            and bool(coverage.get("horizon_complete"))
+            and horizon_reason in {"DAILY_FORCED_CLOSE", "WEEKLY_FORCED_CLOSE"}
+        ):
+            actual_exit = operation.get("actual_exit")
+            use_actual_exit = (
+                actual_exit is not None
+                and str(operation.get("close_reason") or "") in {
+                    "DAILY_PAUSE", "WEEKEND_CLOSE",
+                }
+            )
+            forced_bid = (
+                float(actual_exit)
+                if use_actual_exit and side == "BUY" else last_tick.bid
+            )
+            forced_ask = (
+                float(actual_exit)
+                if use_actual_exit and side == "SELL" else last_tick.ask
+            )
+            forced_tick = Tick(
+                horizon_msc or last_tick.time_msc,
+                forced_bid,
+                forced_ask,
+                last_tick.flags,
+                last_tick.source_ordinal,
+            )
+            close_price = forced_tick.bid if side == "BUY" else forced_tick.ask
+            for leg in sorted(open_legs.values(), key=lambda item: item["ordinal"]):
+                fills.append(self._fill(
+                    operation, leg, horizon_reason, forced_tick,
+                    close_price, contract_size, policy,
+                ))
+            open_legs.clear()
+            milestones.append({
+                "event": horizon_reason,
+                "time_msc": forced_tick.time_msc,
+                "price": close_price,
+            })
 
         if open_legs:
             return ReplayResult(operation["execution_id"], policy.policy_id, "CENSORED", False, ("TRAJECTORY_ENDED_WITH_OPEN_VOLUME",), None, None, tuple(fills), tuple(milestones), sum(item["volume"] for item in open_legs.values()), {"engine_version": self.engine_version, "max_favorable_r": max_favorable})
@@ -193,6 +242,79 @@ class TgSignalReplayEngine:
         missing = () if comparable else ("MISSING_NET_COSTS",)
         return ReplayResult(operation["execution_id"], policy.policy_id, status, comparable, missing, net, result_r, tuple(fills), tuple(milestones), 0.0, {"engine_version": self.engine_version, "max_favorable_r": max_favorable})
 
+    def _broker_actual_baseline(
+        self, operation: dict[str, Any], policy: ManagementPolicy,
+    ) -> ReplayResult:
+        deals = list(operation.get("deals") or [])
+        if deals and all(deal.get("entry") in (None, "") for deal in deals):
+            net = sum(
+                float(deal.get("profit") or 0)
+                + float(deal.get("commission") or 0)
+                + float(deal.get("swap") or 0)
+                + float(deal.get("fee") or deal.get("fees") or 0)
+                for deal in deals
+            )
+            risk = float(operation.get("risk_amount") or 0)
+            fill = ExitFill(
+                "broker:aggregate", "BROKER_ACTUAL",
+                utc_milliseconds(str(operation["closed_at"])),
+                float(operation.get("actual_exit") or 0),
+                float(operation.get("filled_volume") or 0), net, net,
+            )
+            return ReplayResult(
+                operation["execution_id"], policy.policy_id, "COMPLETE", True,
+                (), net, (net / risk if risk > EPSILON else None), (fill,), (),
+                0.0, {
+                    "engine_version": self.engine_version,
+                    "baseline_source": "BROKER_DEALS_AGGREGATE",
+                },
+            )
+        exits = [deal for deal in deals if int(deal.get("entry") or 0) != 0]
+        if not exits:
+            return ReplayResult(
+                operation["execution_id"], policy.policy_id, "NON_COMPARABLE",
+                False, ("MISSING_BROKER_EXIT_DEALS",), None, None, (), (),
+                float(operation.get("filled_volume") or 0),
+                {"engine_version": self.engine_version},
+            )
+        entry_costs = sum(
+            float(deal.get("commission") or 0)
+            + float(deal.get("swap") or 0)
+            + float(deal.get("fee") or deal.get("fees") or 0)
+            for deal in deals if int(deal.get("entry") or 0) == 0
+        )
+        total_exit_volume = sum(float(deal.get("volume") or 0) for deal in exits)
+        fills: list[ExitFill] = []
+        for ordinal, deal in enumerate(exits):
+            volume = float(deal.get("volume") or 0)
+            profit = float(deal.get("profit") or 0)
+            own_costs = (
+                float(deal.get("commission") or 0)
+                + float(deal.get("swap") or 0)
+                + float(deal.get("fee") or deal.get("fees") or 0)
+            )
+            allocated_entry_cost = (
+                entry_costs * volume / total_exit_volume
+                if total_exit_volume > EPSILON else 0.0
+            )
+            fills.append(ExitFill(
+                str(deal.get("ticket") or f"broker:{ordinal}"),
+                "BROKER_ACTUAL",
+                int(deal.get("time_msc") or int(deal.get("time") or 0) * 1000),
+                float(deal.get("price") or 0), volume, profit,
+                profit + own_costs + allocated_entry_cost,
+            ))
+        net = sum(fill.net_pnl for fill in fills)
+        risk = float(operation.get("risk_amount") or 0)
+        return ReplayResult(
+            operation["execution_id"], policy.policy_id, "COMPLETE", True, (),
+            net, (net / risk if risk > EPSILON else None), tuple(fills), (), 0.0,
+            {
+                "engine_version": self.engine_version,
+                "baseline_source": "BROKER_DEALS",
+            },
+        )
+
     @staticmethod
     def _preflight(operation: dict[str, Any], ticks: list[Tick], coverage: dict[str, Any]) -> list[str]:
         reasons: list[str] = []
@@ -201,7 +323,11 @@ class TgSignalReplayEngine:
             return reasons
         if str(coverage.get("status")) != "COMPLETE":
             reasons.append("ARCHIVE_NOT_COMPLETE")
-        if int(coverage.get("gap_count") or 0) != 0:
+        if int(
+            coverage.get("coverage_gap_count")
+            or coverage.get("gap_count")
+            or 0
+        ) != 0:
             reasons.append("ARCHIVE_GAPS")
         if not coverage.get("coverage_start_at") or (operation.get("opened_at") and utc_milliseconds(str(coverage["coverage_start_at"])) > utc_milliseconds(operation["opened_at"])):
             reasons.append("ENTRY_OUTSIDE_COVERAGE")
@@ -273,7 +399,7 @@ class TgSignalReplayEngine:
         if reason == "SL":
             price = min(executable, requested_price) if direction > 0 else max(executable, requested_price)
         elif reason.startswith("TP"):
-            price = max(executable, requested_price) if direction > 0 else min(executable, requested_price)
+            price = requested_price
         else:
             price = executable
         price += adverse
