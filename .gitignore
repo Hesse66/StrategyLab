@@ -33,10 +33,7 @@ Thumbs.db
 issues.txt
 
 
-#Bridge
-
-AGENTS.md
-bridgecode/
+# Bridgecode is repo-local and must travel with the project.
 context4.txt
 mergefull1.txt
 issues.txt
