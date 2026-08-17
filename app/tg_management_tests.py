@@ -19,9 +19,9 @@ from app.config import Settings
 from app.storage import Repository
 from app.tg_import import TICK_CODEC, TgSnapshotImporter, decode_tick_payload, sha256_file
 from app.tg_lab import TgManagementLabService
-from app.tg_models import ManagementPolicy, Tick
+from app.tg_models import ManagementPolicy, TargetGeometryPolicy, Tick
 from app.tg_replay import TgSignalReplayEngine
-from app.tg_validation import chronological_split, dual_promotion_improvement
+from app.tg_validation import chronological_split, dual_promotion_improvement, full_promotion_improvement, paired_block_bootstrap_equivalence
 
 
 TICK_STRUCT = struct.Struct("<qddI")
@@ -135,7 +135,7 @@ def build_tg_package(root: Path, count: int = 1, *, schema: int = 19, actual_pnl
         }
     }
     (package / "policies.json").write_text(json.dumps(policies), encoding="utf-8")
-    (package / "symbol_specs.json").write_text(json.dumps({"XAUUSD": {"contract_size": 10, "volume_min": 0.1, "volume_step": 0.1, "point_size": 0.01, "source": "broker_snapshot"}}), encoding="utf-8")
+    (package / "symbol_specs.json").write_text(json.dumps({"XAUUSD": {"contract_size": 10, "volume_min": 0.1, "volume_step": 0.1, "point_size": 0.01, "trade_tick_size": 0.01, "digits": 2, "source": "broker_snapshot"}}), encoding="utf-8")
     with (package / "deals.csv").open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=["execution_id", "profit", "commission", "swap", "fee"])
         writer.writeheader()
@@ -156,14 +156,14 @@ def build_tg_package(root: Path, count: int = 1, *, schema: int = 19, actual_pnl
 
 def direct_operation(side: str = "BUY") -> dict:
     return {
-        "execution_id": "direct", "side": side, "actual_fill": 100.0,
+        "execution_id": "direct", "side": side, "provider_entry": 100.0, "actual_fill": 100.0,
         "initial_provider_sl": 99.0 if side == "BUY" else 101.0,
         "tp1": 101.0 if side == "BUY" else 99.0,
         "tp2": 102.0 if side == "BUY" else 98.0,
         "tp3": 103.0 if side == "BUY" else 97.0,
         "filled_volume": 1.0, "requested_volume": 1.0, "volume_min": 0.1,
         "volume_step": 0.1, "symbol_spec_resolved": True,
-        "symbol_spec": {"contract_size": 10}, "costs_complete": True,
+        "symbol_spec": {"contract_size": 10, "trade_tick_size": 0.01, "digits": 2}, "costs_complete": True,
         "commission": 0.0, "swap": 0.0, "fees": 0.0, "risk_amount": 10.0,
         "opened_at": "2026-08-10T05:00:00+00:00", "closed_at": "2026-08-10T05:00:03+00:00",
         "legs": [
@@ -522,8 +522,12 @@ class TgManagementTests(unittest.TestCase):
     def test_research_threshold_and_timeframe_lane_diagnostics(self) -> None:
         package = build_tg_package(self.root, count=20)
         snapshot = self.importer.import_package(package)
-        result = TgManagementLabService(self.repo).optimize_asset(snapshot["snapshot_id"], "XAUUSD")
+        service = TgManagementLabService(self.repo)
+        result = service.optimize_asset(snapshot["snapshot_id"], "XAUUSD")
+        repeated = service.optimize_asset(snapshot["snapshot_id"], "XAUUSD")
         self.assertEqual(result["status"], "RESEARCH_ONLY")
+        self.assertEqual(result["experiment_id"], repeated["experiment_id"])
+        self.assertEqual(result["result_json"], repeated["result_json"])
         groups = result["result_json"]["timeframe_lane_diagnostics"]
         self.assertEqual({(item["timeframe"], item["lane"]) for item in groups}, {("M15", "FAST"), ("H1", "CORE")})
 
@@ -555,10 +559,97 @@ class TgManagementTests(unittest.TestCase):
     def test_forty_operations_evaluate_candidates_but_do_not_false_promote(self) -> None:
         package = build_tg_package(self.root, count=40)
         snapshot = self.importer.import_package(package)
-        result = TgManagementLabService(self.repo).optimize_asset(snapshot["snapshot_id"], "XAUUSD")
+        progress: list[dict] = []
+        result = TgManagementLabService(self.repo).optimize_asset(
+            snapshot["snapshot_id"], "XAUUSD", progress_callback=progress.append,
+        )
         self.assertEqual(result["status"], "REJECTED")
-        self.assertGreater(result["result_json"]["candidates_tested"], 0)
-        self.assertEqual(len(result["result_json"]["chronology"]["holdout_ids"]), 10)
+        payload = result["result_json"]
+        self.assertEqual(payload["candidates_tested"], 158)
+        self.assertEqual(len(payload["chronology"]["holdout_ids"]), 10)
+        self.assertEqual(payload["chronology"]["holdout_candidate_evaluation_count"], 1)
+        self.assertEqual(payload["chronology"]["holdout_evaluated_candidate_ids"], [payload["selected_candidate"]["candidate_id"]])
+        self.assertTrue(payload["chronology"]["holdout_excluded_from_search_ranking_and_ties"])
+        self.assertEqual(sum(item["candidate_family"] == "JOINT_TARGETS_AND_MANAGEMENT" for item in payload["candidates"]), 39)
+        self.assertEqual(sum(len(item["results"]) == 40 for item in payload["candidates"]), 1)
+        self.assertTrue(all(
+            item["target_geometry"]["candidate_family"] == "JOINT_TARGETS_AND_MANAGEMENT"
+            for item in payload["candidates"]
+            if item["candidate_family"] == "JOINT_TARGETS_AND_MANAGEMENT"
+        ))
+        self.assertTrue({"asset", "family", "completed", "total", "percent", "elapsed_seconds", "eta_seconds", "stage"} <= set(progress[-1]))
+
+    def test_fixed_r_geometry_buy_sell_normalization_and_native_volumes(self) -> None:
+        engine = TgSignalReplayEngine()
+        geometry = TargetGeometryPolicy(
+            "fixed", "provider_original", mode="FIXED_R",
+            candidate_family="TARGET_GEOMETRY_ONLY",
+            tp1_r=0.5, tp2_r=1.5, tp3_r=2.5,
+        )
+        opened_msc = int(datetime(2026, 8, 10, 5, tzinfo=UTC).timestamp() * 1000)
+        for side, prices in (("BUY", (100.5, 101.5, 102.5)), ("SELL", (99.5, 98.5, 97.5))):
+            operation = direct_operation(side)
+            ticks = [
+                Tick(opened_msc + index * 1000, price, price, 0, index)
+                for index, price in enumerate((100.0, *prices))
+            ]
+            result = engine.replay(operation, ticks, complete_coverage(), baseline_policy(), geometry)
+            self.assertTrue(result.comparable)
+            self.assertEqual(tuple(fill.price for fill in result.fills), prices)
+            self.assertEqual(tuple(fill.volume for fill in result.fills), (0.5, 0.3, 0.2))
+            self.assertEqual(result.diagnostics["resolved_targets"], dict(zip(("TP1", "TP2", "TP3"), prices)))
+
+    def test_fixed_r_invalid_at_fill_and_target_horizon_are_non_promotional(self) -> None:
+        engine = TgSignalReplayEngine()
+        invalid_operation = dict(direct_operation(), actual_fill=100.75)
+        geometry = TargetGeometryPolicy(
+            "fixed", "provider_original", mode="FIXED_R",
+            tp1_r=0.5, tp2_r=2.0, tp3_r=6.0,
+        )
+        invalid = engine.replay(
+            invalid_operation, [Tick(int(datetime(2026, 8, 10, 5, tzinfo=UTC).timestamp() * 1000), 100.75, 100.8, 0, 0)],
+            complete_coverage(), baseline_policy(), geometry,
+        )
+        self.assertIn("INVALID_TARGET_AT_FILL", invalid.exclusions)
+        self.assertFalse(invalid.comparable)
+        operation = direct_operation()
+        opened_msc = int(datetime(2026, 8, 10, 5, tzinfo=UTC).timestamp() * 1000)
+        ticks = [Tick(opened_msc + index * 1000, price, price + 0.01, 0, index) for index, price in enumerate((100.0, 100.5, 102.0, 103.0))]
+        censored = engine.replay(operation, ticks, complete_coverage(), baseline_policy(), geometry)
+        self.assertIn("CENSORED_TARGET_HORIZON", censored.exclusions)
+        self.assertTrue(censored.diagnostics["requires_future_capture"])
+        self.assertFalse(censored.diagnostics["promotion_eligible"])
+
+    def test_target_grid_bootstrap_and_full_gate_contracts(self) -> None:
+        service = TgManagementLabService(self.repo)
+        geometries = service._target_geometries()
+        self.assertEqual(len(geometries), 106)
+        self.assertTrue(all(item.tp1_r < item.tp2_r < item.tp3_r for item in geometries))
+        ids = [f"e{index}" for index in range(12)]
+        left = {item: {"net_pnl": float(index % 3)} for index, item in enumerate(ids)}
+        right = {item: {"net_pnl": float(index % 3)} for index, item in enumerate(ids)}
+        first = paired_block_bootstrap_equivalence(left, right, ids, seed=7, samples=200, block_length=3)
+        second = paired_block_bootstrap_equivalence(left, right, ids, seed=7, samples=200, block_length=3)
+        self.assertEqual(first, second)
+        self.assertTrue(first["equivalent"])
+        baseline = {"gross_profit_net": 10, "gross_loss_net": 5, "net_pnl": 5, "profit_factor": 2, "max_drawdown_money": 3}
+        passing = {"gross_profit_net": 11, "gross_loss_net": 4, "net_pnl": 7, "profit_factor": 2.75, "max_drawdown_money": 2}
+        one_only = dict(passing, gross_loss_net=6, net_pnl=5)
+        self.assertTrue(full_promotion_improvement(passing, baseline))
+        self.assertFalse(full_promotion_improvement(one_only, baseline))
+
+    def test_selection_score_cannot_observe_holdout(self) -> None:
+        baseline = {
+            "walk_forward_oos": {"gross_profit_net": 10, "gross_loss_net": 5},
+            "holdout": {"gross_profit_net": 1, "gross_loss_net": 99},
+        }
+        candidate = {"sections": {
+            "walk_forward_oos": {"gross_profit_net": 12, "gross_loss_net": 4},
+            "holdout": {"gross_profit_net": 9999, "gross_loss_net": 0},
+        }}
+        score = TgManagementLabService._selection_score(candidate, baseline)
+        candidate["sections"]["holdout"] = {"gross_profit_net": 0, "gross_loss_net": 999999}
+        self.assertEqual(score, TgManagementLabService._selection_score(candidate, baseline))
 
     def test_modules_have_no_mt5_telegram_or_network_dependency(self) -> None:
         import app.tg_import as importer_module

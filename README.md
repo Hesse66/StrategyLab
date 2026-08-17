@@ -39,7 +39,7 @@ python -m venv .venv
 .venv\Scripts\python -m uvicorn app.main:app --reload
 ```
 
-The UI also includes an offline TgSignalSniper post-fill management lab. Its
+The UI also includes an offline TgSignalSniper target-geometry and post-fill management lab. Its
 snapshot contract and commands are documented in
 [`docs/tg_signal_management_lab.md`](docs/tg_signal_management_lab.md). It has no
 MT5, Telegram, AutoKraken, demo, or live connector.

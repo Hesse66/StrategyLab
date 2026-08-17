@@ -5,11 +5,12 @@ import itertools
 import math
 import sqlite3
 from dataclasses import replace
+from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 from typing import Any
 
 from app.tg_import import decode_tick_payload
-from app.tg_models import ExitFill, ManagementPolicy, ReplayResult, Tick, utc_milliseconds
+from app.tg_models import ENGINE_VERSION, ExitFill, ManagementPolicy, ReplayResult, TargetGeometryPolicy, Tick, utc_milliseconds
 
 
 EPSILON = 1e-9
@@ -28,7 +29,7 @@ def _target_label(leg: dict[str, Any], ordinal: int) -> str:
 
 
 class TgSignalReplayEngine:
-    engine_version = "tg_signal_management_v1"
+    engine_version = ENGINE_VERSION
 
     def load_operation(self, snapshot_db: Path, execution_id: str) -> tuple[dict[str, Any], list[Tick], dict[str, Any]]:
         connection = sqlite3.connect(snapshot_db)
@@ -105,8 +106,14 @@ class TgSignalReplayEngine:
         payload.setdefault("parent_policy_id", None)
         return ManagementPolicy.from_dict(payload)
 
-    def replay(self, operation: dict[str, Any], ticks: list[Tick], coverage: dict[str, Any], policy: ManagementPolicy) -> ReplayResult:
-        if policy.parent_policy_id is None and (
+    def replay(
+        self, operation: dict[str, Any], ticks: list[Tick],
+        coverage: dict[str, Any], policy: ManagementPolicy,
+        target_geometry: TargetGeometryPolicy | None = None,
+        counterfactual: bool = False,
+    ) -> ReplayResult:
+        geometry = target_geometry or TargetGeometryPolicy.provider_original()
+        if geometry.mode == "PROVIDER_ORIGINAL" and policy.parent_policy_id is None and not counterfactual and (
             operation.get("deals")
             or operation.get("_use_broker_actual_baseline")
         ):
@@ -134,7 +141,21 @@ class TgSignalReplayEngine:
         volume_step = float(operation.get("volume_step") or 0)
         if not operation.get("symbol_spec_resolved") or contract_size <= 0 or volume_min <= 0 or volume_step <= 0:
             return ReplayResult(operation["execution_id"], policy.policy_id, "NON_COMPARABLE", False, ("MISSING_SYMBOL_ECONOMICS",), None, None, (), (), total_volume, {"engine_version": self.engine_version})
-        legs, representable = self._build_legs(operation, policy, total_volume, volume_min, volume_step)
+        target_prices, target_error = self._resolve_targets(operation, geometry, symbol_spec)
+        if target_error:
+            return ReplayResult(
+                operation["execution_id"], self._policy_identity(policy, geometry),
+                "NON_COMPARABLE", False, (target_error,), None, None, (), (),
+                total_volume, {
+                    "engine_version": self.engine_version,
+                    "target_geometry": geometry.to_dict(),
+                    "promotion_eligible": False,
+                },
+            )
+        legs, representable = self._build_legs(
+            operation, policy, total_volume, volume_min, volume_step,
+            target_prices,
+        )
         if not representable:
             return ReplayResult(operation["execution_id"], policy.policy_id, "NON_COMPARABLE", False, ("UNREPRESENTABLE_VOLUME",), None, None, (), (), total_volume, {"engine_version": self.engine_version})
 
@@ -216,8 +237,8 @@ class TgSignalReplayEngine:
                         offset = policy.breakeven_offset_points * point_size
                     requested = entry + direction * offset
                     event_name = "BREAKEVEN_AFTER_TP1"
-                elif label == "TP2" and policy.tp2_action == "stop_to_tp1" and operation.get("tp1") is not None:
-                    requested = float(operation["tp1"])
+                elif label == "TP2" and policy.tp2_action == "stop_to_tp1" and target_prices.get("TP1") is not None:
+                    requested = float(target_prices["TP1"])
                     event_name = "STOP_TO_TP1_AFTER_TP2"
                 if requested is not None and self._more_protective(side, requested, current_stop):
                     activation = tick.time_msc + max(0, policy.latency_msc)
@@ -276,7 +297,21 @@ class TgSignalReplayEngine:
             })
 
         if open_legs:
-            return ReplayResult(operation["execution_id"], policy.policy_id, "CENSORED", False, ("TRAJECTORY_ENDED_WITH_OPEN_VOLUME",), None, None, tuple(fills), tuple(milestones), sum(item["volume"] for item in open_legs.values()), {"engine_version": self.engine_version, "max_favorable_r": max_favorable})
+            reason = (
+                "CENSORED_TARGET_HORIZON"
+                if geometry.mode == "FIXED_R"
+                else "TRAJECTORY_ENDED_WITH_OPEN_VOLUME"
+            )
+            pending_targets = [
+                {
+                    "leg_id": leg["leg_id"],
+                    "target": leg["target_label"],
+                    "price": leg.get("target_price"),
+                    "r": getattr(geometry, f"{leg['target_label'].lower()}_r", None),
+                }
+                for leg in open_legs.values()
+            ]
+            return ReplayResult(operation["execution_id"], self._policy_identity(policy, geometry), "CENSORED", False, (reason,), None, None, tuple(fills), tuple(milestones), sum(item["volume"] for item in open_legs.values()), {"engine_version": self.engine_version, "max_favorable_r": max_favorable, "target_geometry": geometry.to_dict(), "pending_targets": pending_targets, "requires_future_capture": geometry.mode == "FIXED_R", "promotion_eligible": False})
         net = sum(fill.net_pnl for fill in fills)
         result_r = net / float(operation["risk_amount"]) if float(operation.get("risk_amount") or 0) > 0 else None
         comparable = bool(operation.get("costs_complete"))
@@ -285,7 +320,7 @@ class TgSignalReplayEngine:
             "COMPLETE" if comparable else "NON_COMPARABLE"
         )
         missing = () if comparable else ("MISSING_NET_COSTS",)
-        return ReplayResult(operation["execution_id"], policy.policy_id, status, comparable, missing, net, result_r, tuple(fills), tuple(milestones), 0.0, {"engine_version": self.engine_version, "max_favorable_r": max_favorable, "evidence_tier": coverage.get("evidence_tier", "EXACT_TICK"), "promotion_eligible": not approximate})
+        return ReplayResult(operation["execution_id"], self._policy_identity(policy, geometry), status, comparable, missing, net, result_r, tuple(fills), tuple(milestones), 0.0, {"engine_version": self.engine_version, "max_favorable_r": max_favorable, "evidence_tier": coverage.get("evidence_tier", "EXACT_TICK"), "promotion_eligible": not approximate, "target_geometry": geometry.to_dict(), "resolved_targets": target_prices})
 
     def _broker_actual_baseline(
         self, operation: dict[str, Any], policy: ManagementPolicy,
@@ -401,7 +436,11 @@ class TgSignalReplayEngine:
         return reasons
 
     @staticmethod
-    def _build_legs(operation: dict[str, Any], policy: ManagementPolicy, total: float, volume_min: float, volume_step: float) -> tuple[list[dict[str, Any]], bool]:
+    def _build_legs(operation: dict[str, Any], policy: ManagementPolicy, total: float, volume_min: float, volume_step: float, target_prices: dict[str, float | None] | None = None) -> tuple[list[dict[str, Any]], bool]:
+        target_prices = target_prices or {
+            "TP1": operation.get("tp1"), "TP2": operation.get("tp2"),
+            "TP3": operation.get("tp3"),
+        }
         native = operation.get("legs") or []
         baseline_native = policy.parent_policy_id is None and native
         legs: list[dict[str, Any]] = []
@@ -409,7 +448,7 @@ class TgSignalReplayEngine:
             for ordinal, leg in enumerate(native):
                 volume = _float(leg, "filled_volume", "volume", "requested_volume")
                 label = _target_label(leg, ordinal)
-                target = _float(leg, "target_price", "native_target_price", "take_profit", default=float(operation.get(label.lower()) or 0))
+                target = target_prices.get(label)
                 legs.append({"leg_id": str(leg.get("id") or leg.get("leg_id") or f"{operation['execution_id']}:{ordinal}"), "ordinal": int(leg.get("leg_index") or ordinal), "volume": volume, "target_label": label, "target_price": target or None, "order_ticket": leg.get("order_ticket")})
             return legs, abs(sum(item["volume"] for item in legs) - total) <= max(EPSILON, volume_step / 2)
         raw = [total * fraction for fraction in policy.partials]
@@ -423,8 +462,71 @@ class TgSignalReplayEngine:
             return [], False
         for ordinal, volume in enumerate(volumes):
             label = f"TP{min(ordinal + 1, 3)}"
-            legs.append({"leg_id": f"{operation['execution_id']}:{ordinal}", "ordinal": ordinal, "volume": volume, "target_label": label, "target_price": operation.get(label.lower()), "order_ticket": None})
+            legs.append({"leg_id": f"{operation['execution_id']}:{ordinal}", "ordinal": ordinal, "volume": volume, "target_label": label, "target_price": target_prices.get(label), "order_ticket": None})
         return legs, True
+
+    @staticmethod
+    def _policy_identity(policy: ManagementPolicy, geometry: TargetGeometryPolicy) -> str:
+        return (
+            policy.policy_id if geometry.mode == "PROVIDER_ORIGINAL"
+            else f"{policy.policy_id}+{geometry.geometry_id}"
+        )
+
+    @staticmethod
+    def _resolve_targets(
+        operation: dict[str, Any], geometry: TargetGeometryPolicy,
+        symbol_spec: dict[str, Any],
+    ) -> tuple[dict[str, float | None], str | None]:
+        if geometry.mode == "PROVIDER_ORIGINAL":
+            return {
+                "TP1": operation.get("tp1"), "TP2": operation.get("tp2"),
+                "TP3": operation.get("tp3"),
+            }, None
+        if geometry.mode != "FIXED_R":
+            return {}, "UNKNOWN_TARGET_GEOMETRY_MODE"
+        provider_entry = float(operation.get("provider_entry") or 0)
+        provider_sl = float(operation.get("initial_provider_sl") or 0)
+        side = str(operation.get("side") or "").upper()
+        direction = Decimal("1") if side == "BUY" else Decimal("-1")
+        provider_r = abs(Decimal(str(provider_entry)) - Decimal(str(provider_sl)))
+        if provider_r <= 0 or (
+            side == "BUY" and provider_sl >= provider_entry
+        ) or (
+            side == "SELL" and provider_sl <= provider_entry
+        ):
+            return {}, "INVALID_PROVIDER_R"
+        values = (geometry.tp1_r, geometry.tp2_r, geometry.tp3_r)
+        if any(value is None for value in values):
+            return {}, "INCOMPLETE_TARGET_GEOMETRY"
+        rs = tuple(float(value) for value in values if value is not None)
+        if not (0 < rs[0] < rs[1] < rs[2]):
+            return {}, "INVALID_TARGET_R_ORDER"
+        tick_size = symbol_spec.get("trade_tick_size") or symbol_spec.get("tick_size")
+        digits = symbol_spec.get("digits")
+        if tick_size in (None, "", 0) or digits in (None, ""):
+            return {}, "MISSING_TARGET_NORMALIZATION_SPEC"
+        quantum = Decimal(str(tick_size))
+        digit_quantum = Decimal(1).scaleb(-int(digits))
+        entry_dec = Decimal(str(provider_entry))
+        targets: list[float] = []
+        for r_value in rs:
+            raw = entry_dec + direction * provider_r * Decimal(str(r_value))
+            normalized = (raw / quantum).quantize(Decimal("1"), rounding=ROUND_HALF_UP) * quantum
+            normalized = normalized.quantize(digit_quantum, rounding=ROUND_HALF_UP)
+            targets.append(float(normalized))
+        correct = (
+            targets[0] > provider_entry and targets[0] < targets[1] < targets[2]
+            if side == "BUY" else
+            targets[0] < provider_entry and targets[0] > targets[1] > targets[2]
+        )
+        if not correct:
+            return {}, "INVALID_NORMALIZED_TARGET_ORDER"
+        actual_fill = float(operation.get("actual_fill") or 0)
+        if (side == "BUY" and any(target <= actual_fill for target in targets)) or (
+            side == "SELL" and any(target >= actual_fill for target in targets)
+        ):
+            return {}, "INVALID_TARGET_AT_FILL"
+        return dict(zip(("TP1", "TP2", "TP3"), targets)), None
 
     @staticmethod
     def _dynamic_stop(policy: ManagementPolicy, side: str, entry: float, risk: float, mfe_r: float, favorable_r: float, last_anchor: float, point_size: float = 0.0, achieved_targets: set[str] | None = None) -> float | None:

@@ -4,9 +4,9 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Literal
 
 
-ENGINE_VERSION = "tg_signal_management_v1"
+ENGINE_VERSION = "tg_signal_management_v2"
 IMPORTER_VERSION = "tg_snapshot_import_v2"
-MODEL_VERSION = "tg_external_execution_v2"
+MODEL_VERSION = "tg_external_execution_v3"
 SUPPORTED_ASSETS = ("XAUUSD", "EURUSD", "BTCUSD", "NASDAQ", "US30")
 PROMOTION_STATES = {
     "INSUFFICIENT_EXACT_COVERAGE",
@@ -134,6 +134,29 @@ class ManagementPolicy:
         payload = asdict(self)
         payload["partials"] = list(self.partials)
         return payload
+
+
+@dataclass(frozen=True, slots=True)
+class TargetGeometryPolicy:
+    geometry_id: str
+    parent_geometry_id: str | None
+    contract_version: str = "tg_target_geometry_v1"
+    mode: Literal["PROVIDER_ORIGINAL", "FIXED_R"] = "PROVIDER_ORIGINAL"
+    candidate_family: str = "BASELINE"
+    tp1_r: float | None = None
+    tp2_r: float | None = None
+    tp3_r: float | None = None
+
+    @classmethod
+    def provider_original(cls) -> "TargetGeometryPolicy":
+        return cls("provider_original", None)
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "TargetGeometryPolicy":
+        return cls(**payload)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
 
 
 @dataclass(frozen=True, slots=True)

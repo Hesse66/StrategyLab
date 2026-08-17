@@ -1066,10 +1066,30 @@ async function tgAction(kind) {
       return setStatus("tgStatus", `Coverage loaded for ${snapshotId}.`, "success");
     }
     setStatus("tgStatus", kind === "baseline" ? `Replaying ${asset} baseline…` : `Optimizing ${asset} offline…`, "");
-    const endpoint = kind === "baseline" ? "/api/tg-management/baseline" : "/api/tg-management/optimize";
-    const result = await fetchJson(endpoint, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({snapshot_id: snapshotId, asset, seed: 0})});
+    if (kind === "optimize") {
+      const candidateFamily = document.getElementById("tgCandidateFamily").value;
+      const job = await fetchJson("/api/tg-management/optimization-jobs", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({snapshot_id: snapshotId, asset, seed: 0, candidate_family: candidateFamily})});
+      return await pollTgOptimization(job.job_id, asset);
+    }
+    const result = await fetchJson("/api/tg-management/baseline", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({snapshot_id: snapshotId, asset, seed: 0})});
     showOutput(result); await refreshAll(); setStatus("tgStatus", `${asset}: ${result.status}.`, result.status === "PROMOTION_CANDIDATE" ? "success" : "");
   } catch (error) { setStatus("tgStatus", error.message, "error"); showOutput({error: error.message}); }
+}
+
+async function pollTgOptimization(jobId, asset) {
+  for (;;) {
+    const job = await fetchJson(`/api/tg-management/optimization-jobs/${jobId}`);
+    const progress = job.progress || {};
+    const eta = progress.eta_seconds == null ? "estimating ETA" : `ETA ${Math.round(progress.eta_seconds)}s`;
+    setStatus("tgProgress", `${progress.stage || job.status}: ${progress.family || "all"} ${progress.completed || 0}/${progress.total || "?"} (${progress.percent || 0}%) · ${eta}`, "");
+    if (job.status === "completed") {
+      showOutput(job.result); await refreshAll();
+      setStatus("tgStatus", `${asset}: ${job.result.status} · ${job.result.result_json?.recommendation || "review report"}.`, job.result.status === "PROMOTION_CANDIDATE" ? "success" : "");
+      return;
+    }
+    if (job.status === "failed") throw new Error(job.error || "Offline optimization failed");
+    await new Promise((resolve) => setTimeout(resolve, 750));
+  }
 }
 
 async function refreshFamilyDetail() {

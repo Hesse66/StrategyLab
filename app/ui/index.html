@@ -278,11 +278,21 @@
                 <option>XAUUSD</option><option>EURUSD</option><option>BTCUSD</option><option>NASDAQ</option><option>US30</option>
               </select>
             </label>
+            <label>
+              <span>Candidate family</span>
+              <select id="tgCandidateFamily">
+                <option value="all">All families</option>
+                <option value="management">Management only</option>
+                <option value="targets">Target geometry only</option>
+                <option value="joint">Joint targets + management</option>
+              </select>
+            </label>
             <button id="tgCoverageButton" class="ghost-action" type="button">Review Coverage</button>
             <button id="tgBaselineButton" class="ghost-action" type="button">Run Baseline</button>
             <button id="tgOptimizeButton" class="commit-action" type="button">Optimize Asset Offline</button>
           </div>
           <p id="tgStatus" class="status">Import a finalized, WAL-free snapshot package to begin.</p>
+          <p id="tgProgress" class="status" aria-live="polite"></p>
           <div class="table-wrap tg-table-wrap">
             <table>
               <thead><tr><th>Snapshot / experiment</th><th>Broker / cohort</th><th>Asset</th><th>Status</th><th>Evidence</th><th>Artifacts</th></tr></thead>
@@ -338,6 +348,6 @@
       </div>
     </footer>
 
-    <script src="/ui/app.js?v=20260814-tg-management-lab" defer></script>
+    <script src="/ui/app.js?v=20260816-tg-target-management-lab" defer></script>
   </body>
 </html>

@@ -1,6 +1,7 @@
 # Offline TgSignalSniper management lab
 
-This subsystem evaluates post-fill management policies for real TgSignalSniper
+This subsystem evaluates provider targets, post-fill management policies, and
+bounded joint target/management policies for real TgSignalSniper
 executions. It is deliberately disconnected from AutoKraken, MetaTrader, Telegram,
 and every live or demo account. A package must be generated and finalized outside
 StrategyLab before import.
@@ -46,7 +47,8 @@ Minimal manifest:
 may carry the frozen configuration fingerprint and must declare only post-fill
 management. `symbol_specs` is keyed by MT5 symbol and must be captured from the
 broker snapshot; at minimum it supplies `contract_size`, `volume_min`, and
-`volume_step`. Deals identify `execution_id` and expose profit, commission, swap,
+`volume_step`. FIXED_R research additionally requires broker-captured `digits`
+and `trade_tick_size`; StrategyLab never infers them. Deals identify `execution_id` and expose profit, commission, swap,
 and fee. Missing policy, broker economics, lot constraints, or costs makes the
 evidence research-only/non-comparable.
 
@@ -66,26 +68,32 @@ absence closes the promotion gate. Tick archives must use schema 2 and codec
 
 .venv\Scripts\python -m app.cli tg-run-baseline --snapshot-id tgsnap_<checksum> --asset XAUUSD
 
-.venv\Scripts\python -m app.cli tg-optimize --snapshot-id tgsnap_<checksum> --asset XAUUSD --seed 0
+.venv\Scripts\python -m app.cli tg-optimize --snapshot-id tgsnap_<checksum> --asset XAUUSD --seed 0 --candidate-family all
 
 .venv\Scripts\python -m app.cli tg-report --experiment-id tgexp_<checksum>
 ```
 
 The same operations are available under `/api/tg-management`. The browser UI has
-an “Offline Execution Research” panel. There is intentionally no publish, sync,
+an “Offline Execution Research” panel for import, coverage, baseline, family
+selection, asynchronous progress, comparison, and artifact downloads. There is intentionally no publish, sync,
 MT5, Telegram, or AutoKraken action.
 
 ## Replay and evidence
 
-`tg_signal_management_v1` freezes the real entry, direction, initial volume,
-provider stop and targets. BUY exits use BID and SELL exits use ASK. Tick order is
+`tg_signal_management_v2` freezes the real entry, direction, initial volume and
+provider stop. `PROVIDER_ORIGINAL` freezes targets too. `FIXED_R` changes only
+TP1/TP2/TP3 from `abs(provider_entry - initial_provider_sl)`, normalizes them with
+the captured broker tick contract, and never moves the actual fill or SL. BUY exits use BID and SELL exits use ASK. Tick order is
 `time_msc`, preserved decoded `source_ordinal`, ticket, then leg. Natural periods
 without ticks are valid when the archive declares complete coverage and zero gaps.
 Invalid checksums, broken coverage, an event outside coverage, or an
-outcome-changing ordering ambiguity censor the execution. One-second marks can
+outcome-changing ordering ambiguity censor the execution. A target at or behind
+the actual fill is `INVALID_TARGET_AT_FILL`. One-second marks can
 guide research but never establish exact promotional evidence.
 
-Baseline parity excludes manual/anomalous, censored, and cost-incomplete executions.
+Baseline evidence retains manual/anomalous operations as explicit quality flags;
+it never silently improves a metric by dropping them. Censored or cost-incomplete
+operations remain listed and cannot enter a promotional comparable set.
 For the unmodified parent policy, exact broker deals are the authoritative source
 of realized baseline P&L, including entry/exit commission, swap, and fees. Tick
 replay remains authoritative for counterfactual candidates and stress variants.
@@ -96,15 +104,30 @@ Candidate replay may continue beyond the real broker close only when the archive
 declares a complete post-close horizon. The terminal event is the first original
 TP3, original SL, applicable daily/weekly forced close, or 48 accumulated market
 hours. An incomplete/future horizon or a candidate still open at the completed
-horizon is censored, never marked to market as a completed advantage. Native TP
+horizon is `CENSORED_TARGET_HORIZON`, with pending targets and execution IDs for
+backfill; it is never marked to market as a completed advantage. Native TP
 fills use their requested broker level rather than a later tick overshoot.
 
+The versioned target grid contains the 106 strict combinations of TP1
+`{0.5,.75,1,1.25,1.5,2}`, TP2 `{1,1.5,2,2.5,3,4}`, and TP3
+`{1.5,2,3,4,5,6}` R. Management-only evaluates the bounded 13-policy mutation
+set. Joint search takes the three best target geometries selected using WF only
+and combines each with those 13 management policies, for at most 39 candidates.
+
 Operations are sorted chronologically. The first 75% is development data with
-expanding walk-forward windows; the final 25% is untouched holdout. Fewer than 20
+expanding walk-forward windows; the final 25% is untouched holdout. Search,
+ranking, family selection, bootstrap equivalence, and parameter changes cannot
+read holdout. One global finalist is selected by WF and evaluates holdout exactly
+once; stress then runs only baseline and that finalist. The paired chronological
+95% block bootstrap is deterministic and only resolves equivalence in favor of
+lower complexity. Its seed, resamples, and block length are persisted; it never
+replaces mandatory gates. Fewer than 20
 complete comparable operations yields `INSUFFICIENT_TRADES`; 20–39 yields
 `RESEARCH_ONLY`. At 40 or more, a policy can become `PROMOTION_CANDIDATE` only if
-it increases `gross_profit_net` and decreases `gross_loss_net` in both aggregated
-walk-forward OOS and final holdout. This status is statistical advice only.
+it increases `gross_profit_net` and net P&L, decreases `gross_loss_net`, does not
+lower PF or raise drawdown in both aggregated WF OOS and holdout, preserves the
+exact operation set, and passes every declared stress. Any invalid target, new
+censoring, or exclusion rejects promotion. This status is statistical advice only.
 
 When a snapshot contains several immutable statistical/configuration versions,
 every closed cohort trade from the declared publication boundary is evaluated.

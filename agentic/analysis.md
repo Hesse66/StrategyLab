@@ -11,11 +11,15 @@ tick replay. Post-close candidates may continue only through the archive's
 declared terminal horizon. Missing coverage, unresolved ordering, incomplete
 horizons, or open volume at the horizon are censored.
 
-Each asset selects the immutable version set attached to its most recently
-published execution; older sets remain explicit `VERSION_SET_MISMATCH`
-exclusions. Chronological 75/25 validation and the 20/40-operation research and
-promotion gates remain unchanged.
+Every closed operation in the cohort participates regardless of its historical
+version. Immutable policy/configuration versions are diagnostic strata, never
+`VERSION_SET_MISMATCH` filters or a way to improve metrics by removing trades.
+Chronological 75/25 validation reserves holdout for exactly one final candidate;
+all search, family selection, equivalence bootstrap, and parameter decisions use
+development and walk-forward OOS only.
 
-The Axi Demo Pro finalized package imported successfully. Baseline parity passed
-for each latest exact-covered asset set, but the current cohorts are still too
-small for management promotion. No production policy is approved.
+The replay supports provider-original targets, fixed-R target geometry, and
+bounded joint target/management candidates. Any invalid target at fill, new
+censoring, missing broker target-normalization contract, or change in the
+comparable operation set closes promotion. No production policy is approved or
+published by StrategyLab.

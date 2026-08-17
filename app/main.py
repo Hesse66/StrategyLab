@@ -106,6 +106,7 @@ class TgExperimentRequest(BaseModel):
     snapshot_id: str
     asset: str
     seed: int = 0
+    candidate_family: str = "all"
 
 
 settings.ensure_dirs()
@@ -455,7 +456,7 @@ def run_tg_baseline(request: TgExperimentRequest) -> dict:
 
 @app.post("/api/tg-management/optimize")
 def run_tg_optimization(request: TgExperimentRequest) -> dict:
-    return tg_lab.optimize_asset(request.snapshot_id, request.asset, request.seed)
+    return tg_lab.optimize_asset(request.snapshot_id, request.asset, request.seed, request.candidate_family)
 
 
 @app.post("/api/tg-management/optimization-jobs")
@@ -463,22 +464,25 @@ def start_tg_optimization(request: TgExperimentRequest) -> dict:
     job_id = f"tgopt_{uuid4().hex[:12]}"
     now = datetime.now(UTC).isoformat()
     with optimization_jobs_lock:
-        tg_jobs[job_id] = {"job_id": job_id, "status": "queued", "progress": 0, "result": None, "error": None, "created_at": now, "updated_at": now}
-    optimization_executor.submit(_run_tg_job, job_id, request.snapshot_id, request.asset, request.seed)
+        tg_jobs[job_id] = {"job_id": job_id, "status": "queued", "progress": {"percent": 0, "stage": "queued"}, "result": None, "error": None, "created_at": now, "updated_at": now}
+    optimization_executor.submit(_run_tg_job, job_id, request.snapshot_id, request.asset, request.seed, request.candidate_family)
     return _tg_job(job_id)
 
 
-def _run_tg_job(job_id: str, snapshot_id: str, asset: str, seed: int) -> None:
+def _run_tg_job(job_id: str, snapshot_id: str, asset: str, seed: int, candidate_family: str) -> None:
     with optimization_jobs_lock:
-        tg_jobs[job_id].update(status="running", progress=10, updated_at=datetime.now(UTC).isoformat())
+        tg_jobs[job_id].update(status="running", progress={"percent": 0, "stage": "search"}, updated_at=datetime.now(UTC).isoformat())
+    def update_progress(progress: dict) -> None:
+        with optimization_jobs_lock:
+            tg_jobs[job_id].update(progress=progress, updated_at=datetime.now(UTC).isoformat())
     try:
-        result = tg_lab.optimize_asset(snapshot_id, asset, seed)
+        result = tg_lab.optimize_asset(snapshot_id, asset, seed, candidate_family, update_progress)
     except Exception as exc:  # pragma: no cover - defensive API job boundary
         with optimization_jobs_lock:
             tg_jobs[job_id].update(status="failed", error=f"{type(exc).__name__}: {exc}", updated_at=datetime.now(UTC).isoformat())
     else:
         with optimization_jobs_lock:
-            tg_jobs[job_id].update(status="completed", progress=100, result=result, updated_at=datetime.now(UTC).isoformat())
+            tg_jobs[job_id].update(status="completed", progress={"percent": 100, "stage": "completed"}, result=result, updated_at=datetime.now(UTC).isoformat())
 
 
 def _tg_job(job_id: str) -> dict:
