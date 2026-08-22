@@ -17,7 +17,7 @@ from fastapi import HTTPException
 
 from app.config import Settings
 from app.storage import Repository
-from app.tg_import import TICK_CODEC, TgSnapshotImporter, decode_tick_payload, sha256_file
+from app.tg_import import SUPPORTED_OPERATIONAL_MIGRATIONS, TICK_CODEC, TgSnapshotImporter, decode_tick_payload, sha256_file
 from app.tg_lab import TgManagementLabService
 from app.tg_models import ManagementPolicy, TargetGeometryPolicy, Tick
 from app.tg_replay import TgSignalReplayEngine
@@ -94,6 +94,40 @@ def build_tg_package(root: Path, count: int = 1, *, schema: int = 19, actual_pnl
         for leg_index, (fraction, target) in enumerate(((0.5, 101.0), (0.3, 102.0), (0.2, 103.0)), start=1):
             connection.execute("INSERT INTO sentinel_execution_legs VALUES (?,?,?,?,?,?,?,?,?,?,?)", (f"{execution_id}-leg-{leg_index}", execution_id, leg_index, f"TP{leg_index}", fraction, fraction, target, "CLOSED", str(1000 + index * 10 + leg_index), str(2000 + index * 10 + leg_index), None))
         execution_times[execution_id] = (opened.isoformat(), closed.isoformat(), int(opened.timestamp() * 1000))
+    if schema == 20:
+        migration_20_columns = (
+            ("execution_venue", "TEXT"), ("provider_entry_price", "REAL"),
+            ("provider_stop_loss", "REAL"), ("provider_tp1", "REAL"),
+            ("provider_tp2", "REAL"), ("provider_tp3", "REAL"),
+            ("venue_price_delta", "REAL"), ("reference_quote_bid", "REAL"),
+            ("reference_quote_ask", "REAL"), ("destination_quote_bid", "REAL"),
+            ("destination_quote_ask", "REAL"), ("quote_skew_seconds", "REAL"),
+            ("quote_acquisition_seconds", "REAL"), ("venue_order_id", "TEXT"),
+            ("venue_position_key", "TEXT"),
+        )
+        for name, column_type in migration_20_columns:
+            connection.execute(
+                f"ALTER TABLE sentinel_executions ADD COLUMN {name} {column_type}"
+            )
+        connection.execute(
+            "ALTER TABLE sentinel_execution_legs ADD COLUMN venue_order_id TEXT"
+        )
+        connection.execute(
+            """
+            UPDATE sentinel_executions SET
+              execution_venue='AXI_DEMO_PRO', provider_entry_price=100.25,
+              provider_stop_loss=99.25, provider_tp1=101.25,
+              provider_tp2=102.25, provider_tp3=103.25,
+              venue_price_delta=0.25, reference_quote_bid=100.20,
+              reference_quote_ask=100.21, destination_quote_bid=100.24,
+              destination_quote_ask=100.25, quote_skew_seconds=0.2,
+              quote_acquisition_seconds=0.05, venue_order_id='venue-order',
+              venue_position_key='venue-position'
+            """
+        )
+        connection.execute(
+            "UPDATE sentinel_execution_legs SET venue_order_id='venue-leg-' || id"
+        )
     connection.commit()
     connection.close()
 
@@ -212,6 +246,94 @@ class TgManagementTests(unittest.TestCase):
         connection = sqlite3.connect(canonical)
         self.assertEqual(connection.execute("SELECT COUNT(*) FROM external_events").fetchone()[0], 6)
         connection.close()
+
+    def test_operational_migrations_16_through_20_are_explicitly_supported(self) -> None:
+        self.assertEqual(SUPPORTED_OPERATIONAL_MIGRATIONS, {16, 17, 18, 19, 20})
+        for migration in range(16, 21):
+            migration_root = self.root / f"migration-{migration}"
+            migration_root.mkdir()
+            package = build_tg_package(migration_root, schema=migration)
+            snapshot = self.importer.import_package(package)
+            self.assertEqual(
+                snapshot["versions_json"]["operational_migration"], migration
+            )
+
+    def test_migration_20_imports_venue_metadata_and_frozen_provider_geometry(self) -> None:
+        package = build_tg_package(self.root, schema=20)
+        source_hash = sha256_file(package / "operational.sqlite3")
+        snapshot = self.importer.import_package(package)
+        self.assertEqual(source_hash, sha256_file(package / "operational.sqlite3"))
+        canonical = Path(snapshot["path"]) / "snapshot.sqlite3"
+        connection = sqlite3.connect(canonical)
+        operation = json.loads(connection.execute(
+            "SELECT payload_json FROM operations WHERE execution_id='exec-000'"
+        ).fetchone()[0])
+        connection.close()
+        self.assertEqual(operation["actual_fill"], 100.0)
+        self.assertEqual(operation["provider_entry"], 100.25)
+        self.assertEqual(operation["initial_provider_sl"], 99.25)
+        self.assertEqual(
+            (operation["tp1"], operation["tp2"], operation["tp3"]),
+            (101.25, 102.25, 103.25),
+        )
+        metadata = operation["venue_translation"]
+        self.assertEqual(metadata["operational_migration"], 20)
+        self.assertEqual(
+            metadata["provider_geometry_source"],
+            "MIGRATION_20_PROVIDER_FIELDS",
+        )
+        self.assertEqual(metadata["execution_venue"], "AXI_DEMO_PRO")
+        self.assertEqual(metadata["venue_price_delta"], 0.25)
+        self.assertEqual(metadata["reference_quote_bid"], 100.20)
+        self.assertEqual(metadata["destination_quote_ask"], 100.25)
+        self.assertEqual(metadata["quote_skew_seconds"], 0.2)
+        self.assertEqual(metadata["quote_acquisition_seconds"], 0.05)
+        self.assertEqual(metadata["venue_order_id"], "venue-order")
+        self.assertEqual(metadata["venue_position_key"], "venue-position")
+        self.assertTrue(all(leg["venue_order_id"] for leg in operation["legs"]))
+
+    def test_migration_20_rejects_incomplete_columns_and_manifest_mismatch(self) -> None:
+        incomplete_root = self.root / "incomplete-20"
+        incomplete_root.mkdir()
+        incomplete = build_tg_package(incomplete_root, schema=19)
+        connection = sqlite3.connect(incomplete / "operational.sqlite3")
+        connection.execute("UPDATE schema_migrations SET version=20")
+        connection.commit(); connection.close()
+        manifest_path = incomplete / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["versions"]["operational_migration"] = 20
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        with self.assertRaisesRegex(HTTPException, "migration 20 contract is incomplete"):
+            self.importer.import_package(incomplete)
+
+        mismatch_root = self.root / "mismatch-20"
+        mismatch_root.mkdir()
+        mismatch = build_tg_package(mismatch_root, schema=20)
+        mismatch_manifest_path = mismatch / "manifest.json"
+        mismatch_manifest = json.loads(
+            mismatch_manifest_path.read_text(encoding="utf-8")
+        )
+        mismatch_manifest["versions"]["operational_migration"] = 19
+        mismatch_manifest_path.write_text(
+            json.dumps(mismatch_manifest), encoding="utf-8"
+        )
+        with self.assertRaisesRegex(HTTPException, "migration mismatch"):
+            self.importer.import_package(mismatch)
+
+    def test_legacy_provider_geometry_is_not_reinterpreted(self) -> None:
+        package = build_tg_package(self.root, schema=19)
+        snapshot = self.importer.import_package(package)
+        connection = sqlite3.connect(Path(snapshot["path"]) / "snapshot.sqlite3")
+        operation = json.loads(connection.execute(
+            "SELECT payload_json FROM operations WHERE execution_id='exec-000'"
+        ).fetchone()[0])
+        connection.close()
+        self.assertEqual(operation["provider_entry"], 100.0)
+        self.assertEqual(operation["initial_provider_sl"], 99.0)
+        self.assertEqual(
+            operation["venue_translation"]["provider_geometry_source"],
+            "LEGACY_FROZEN_FIELDS",
+        )
 
     def test_import_rejects_unconsolidated_wal_and_unknown_schema(self) -> None:
         package = build_tg_package(self.root, schema=15)

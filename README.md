@@ -42,7 +42,8 @@ python -m venv .venv
 The UI also includes an offline TgSignalSniper target-geometry and post-fill management lab. Its
 snapshot contract and commands are documented in
 [`docs/tg_signal_management_lab.md`](docs/tg_signal_management_lab.md). It has no
-MT5, Telegram, AutoKraken, demo, or live connector.
+MT5, Telegram, AutoKraken, demo, or live connector. Finalized AutoKraken
+operational migrations 16–20 are imported through an explicit versioned contract.
 
 ## Test
 

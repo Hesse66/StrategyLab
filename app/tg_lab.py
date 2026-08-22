@@ -399,6 +399,10 @@ class TgManagementLabService:
                     "strategy_lane": item.get("strategy_lane"),
                 } for item in operations
             },
+            "venue_translation_diagnostics": {
+                item["execution_id"]: item.get("venue_translation", {})
+                for item in operations
+            },
             "candidates_tested": len(candidates),
             "search_space": [{"candidate_id": item["candidate_id"], "family": item["candidate_family"], "policy": item["policy"], "target_geometry": item["target_geometry"]} for item in candidates],
             "search_space_hash": hashlib.sha256(canonical_json([{"candidate_id": item["candidate_id"], "family": item["candidate_family"]} for item in candidates]).encode()).hexdigest(),
@@ -815,6 +819,12 @@ class TgManagementLabService:
                 "provider_tp1", "provider_tp2", "provider_tp3",
                 "proposed_tp1", "proposed_tp2", "proposed_tp3",
                 "timeframe", "strategy_lane", "candidate_family",
+                "operational_migration", "provider_geometry_source",
+                "execution_venue", "provider_entry_price", "provider_stop_loss",
+                "venue_price_delta", "reference_quote_bid", "reference_quote_ask",
+                "destination_quote_bid", "destination_quote_ask",
+                "quote_skew_seconds", "quote_acquisition_seconds",
+                "venue_order_id", "venue_position_key",
             ])
             writer.writeheader()
             selected_results = (result.get("selected_candidate") or {}).get("results", {})
@@ -823,6 +833,13 @@ class TgManagementLabService:
                 contract = result.get("operation_contracts", {}).get(execution_id, {})
                 candidate_result = selected_results.get(execution_id, {})
                 targets = candidate_result.get("diagnostics", {}).get("resolved_targets", {})
+                venue = result.get("venue_translation_diagnostics", {}).get(
+                    execution_id, {}
+                )
+                venue_csv = {
+                    key: value for key, value in venue.items()
+                    if key not in {"provider_tp1", "provider_tp2", "provider_tp3"}
+                }
                 writer.writerow({
                     "execution_id": execution_id,
                     "included": execution_id in result["included_execution_ids"],
@@ -837,6 +854,7 @@ class TgManagementLabService:
                     "proposed_tp2": targets.get("TP2"),
                     "proposed_tp3": targets.get("TP3"),
                     "candidate_family": (result.get("selected_candidate") or {}).get("candidate_family"),
+                    **venue_csv,
                 })
         markdown_path.write_text(self._markdown_report(result), encoding="utf-8")
         return {"json": json_path, "csv": csv_path, "markdown": markdown_path}
@@ -866,6 +884,27 @@ class TgManagementLabService:
         for key in ("development", "walk_forward_oos", "holdout", "global"):
             metrics = baseline[key]
             lines.append(f"| {key} | {metrics['operations']} | {metrics['gross_profit_net']:.2f} | {metrics['gross_loss_net']:.2f} | {metrics['net_pnl']:.2f} | {metrics['profit_factor']:.4f} | {metrics['max_drawdown_money']:.2f} |")
+        venue_diagnostics = result.get("venue_translation_diagnostics", {})
+        migrations = sorted({
+            str(item.get("operational_migration"))
+            for item in venue_diagnostics.values()
+            if item.get("operational_migration") is not None
+        })
+        venues = sorted({
+            str(item.get("execution_venue"))
+            for item in venue_diagnostics.values() if item.get("execution_venue")
+        })
+        migrated_geometry = sum(
+            item.get("provider_geometry_source") == "MIGRATION_20_PROVIDER_FIELDS"
+            for item in venue_diagnostics.values()
+        )
+        lines.extend([
+            "", "## Venue and translation diagnostics", "",
+            f"- Operational migrations: {', '.join(migrations) if migrations else 'not declared'}.",
+            f"- Execution venues: {', '.join(venues) if venues else 'not recorded'}.",
+            f"- Operations using migration-20 provider geometry: {migrated_geometry}.",
+            "- Actual broker fill remains the replay entry; venue/provider fields are immutable diagnostics.",
+        ])
         lines.extend(["", "## Coverage and backfill", ""])
         missing = result.get("coverage", {}).get("requires_backfill_execution_ids", [])
         lines.append(f"Executions requiring tick backfill: {', '.join(missing) if missing else 'none declared' }.")

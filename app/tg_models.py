@@ -5,8 +5,8 @@ from typing import Any, Literal
 
 
 ENGINE_VERSION = "tg_signal_management_v2"
-IMPORTER_VERSION = "tg_snapshot_import_v2"
-MODEL_VERSION = "tg_external_execution_v3"
+IMPORTER_VERSION = "tg_snapshot_import_v3"
+MODEL_VERSION = "tg_external_execution_v4"
 SUPPORTED_ASSETS = ("XAUUSD", "EURUSD", "BTCUSD", "NASDAQ", "US30")
 PROMOTION_STATES = {
     "INSUFFICIENT_EXACT_COVERAGE",
@@ -28,6 +28,27 @@ class Tick:
 
 
 @dataclass(frozen=True, slots=True)
+class VenueTranslationMetadata:
+    operational_migration: int
+    provider_geometry_source: str
+    execution_venue: str | None
+    provider_entry_price: float | None
+    provider_stop_loss: float | None
+    provider_tp1: float | None
+    provider_tp2: float | None
+    provider_tp3: float | None
+    venue_price_delta: float | None
+    reference_quote_bid: float | None
+    reference_quote_ask: float | None
+    destination_quote_bid: float | None
+    destination_quote_ask: float | None
+    quote_skew_seconds: float | None
+    quote_acquisition_seconds: float | None
+    venue_order_id: str | None
+    venue_position_key: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class Leg:
     leg_id: str
     execution_id: str
@@ -40,6 +61,7 @@ class Leg:
     order_ticket: str | None = None
     position_ticket: str | None = None
     actual_net_pnl: float | None = None
+    venue_order_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,6 +116,7 @@ class ExternalOperation:
     costs_complete: bool
     policy_resolved: bool
     symbol_spec_resolved: bool
+    venue_translation: VenueTranslationMetadata
     legs: tuple[Leg, ...] = field(default_factory=tuple)
 
 

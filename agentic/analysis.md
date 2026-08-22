@@ -11,6 +11,12 @@ tick replay. Post-close candidates may continue only through the archive's
 declared terminal horizon. Missing coverage, unresolved ordering, incomplete
 horizons, or open volume at the horizon are censored.
 
+The versioned importer accepts AutoKraken operational migrations 16–20.
+Migration 20 preserves venue, quote, translation, venue order/position identity,
+and provider geometry as diagnostics. Populated migration-20 provider geometry is
+canonical for targets and initial provider stop, while `entry_actual` remains the
+replay entry; migrations 16–19 retain their legacy frozen interpretation.
+
 Every closed operation in the cohort participates regardless of its historical
 version. Immutable policy/configuration versions are diagnostic strata, never
 `VERSION_SET_MISMATCH` filters or a way to improve metrics by removing trades.

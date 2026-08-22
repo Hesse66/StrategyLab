@@ -28,7 +28,7 @@ Minimal manifest:
     "assets": ["XAUUSD", "EURUSD", "BTCUSD", "NASDAQ", "US30"]
   },
   "versions": {
-    "operational_migration": 19,
+    "operational_migration": 20,
     "tick_archive_schema": 2
   },
   "files": {
@@ -52,10 +52,27 @@ and `trade_tick_size`; StrategyLab never infers them. Deals identify `execution_
 and fee. Missing policy, broker economics, lot constraints, or costs makes the
 evidence research-only/non-comparable.
 
-The importer supports operational migrations 16–19 for structural research.
+The importer supports operational migrations 16–20 through an explicit allowlist.
 Fields introduced by later migrations are not inferred for older packages; their
 absence closes the promotion gate. Tick archives must use schema 2 and codec
 `zlib-struct-qddI-v1`, with SHA-256 over every compressed chunk.
+
+Operational migration 20 must contain these columns in `sentinel_executions`:
+`execution_venue`, `provider_entry_price`, `provider_stop_loss`, `provider_tp1`,
+`provider_tp2`, `provider_tp3`, `venue_price_delta`, `reference_quote_bid`,
+`reference_quote_ask`, `destination_quote_bid`, `destination_quote_ask`,
+`quote_skew_seconds`, `quote_acquisition_seconds`, `venue_order_id`, and
+`venue_position_key`. `sentinel_execution_legs` must contain `venue_order_id`.
+StrategyLab rejects a migration-20 database missing any of these columns and
+rejects disagreement between the manifest and SQLite migration number.
+
+These values are preserved under each operation's immutable
+`venue_translation` metadata and exported in experiment JSON/CSV diagnostics.
+When the migration-20 provider entry, stop, and targets are populated, they form
+the frozen provider geometry. Historical migration 16–19 operations continue to
+use their legacy frozen signal/execution fields without reinterpretation. In all
+versions, `entry_actual` remains the economic replay entry; venue prices and
+quotes never replace the broker fill.
 
 ## Commands
 

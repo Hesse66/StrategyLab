@@ -22,7 +22,15 @@ ARCHIVE_SCHEMA_VERSION = 2
 TICK_CODEC = "zlib-struct-qddI-v1"
 TICK_STRUCT = struct.Struct("<qddI")
 SNAPSHOT_MANIFEST_VERSION = 1
-SUPPORTED_OPERATIONAL_MIGRATIONS = set(range(16, 20))
+SUPPORTED_OPERATIONAL_MIGRATIONS = set(range(16, 21))
+MIGRATION_20_EXECUTION_COLUMNS = {
+    "execution_venue", "provider_entry_price", "provider_stop_loss",
+    "provider_tp1", "provider_tp2", "provider_tp3", "venue_price_delta",
+    "reference_quote_bid", "reference_quote_ask", "destination_quote_bid",
+    "destination_quote_ask", "quote_skew_seconds", "quote_acquisition_seconds",
+    "venue_order_id", "venue_position_key",
+}
+MIGRATION_20_LEG_COLUMNS = {"venue_order_id"}
 
 
 def canonical_json(payload: Any) -> str:
@@ -102,6 +110,10 @@ def _number(value: Any, default: float | None = None) -> float | None:
     if value in (None, ""):
         return default
     return float(value)
+
+
+def _first_present(*values: Any) -> Any:
+    return next((value for value in values if value not in (None, "")), None)
 
 
 class TgSnapshotImporter:
@@ -274,6 +286,38 @@ class TgSnapshotImporter:
                 migration = int(connection.execute(f"SELECT COALESCE(MAX({key}), 0) FROM schema_migrations").fetchone()[0])
             if migration not in SUPPORTED_OPERATIONAL_MIGRATIONS:
                 raise HTTPException(400, f"Unsupported operational schema migration: {migration}")
+            declared_migration = manifest.get("versions", {}).get("operational_migration")
+            if declared_migration is not None and int(declared_migration) != migration:
+                raise HTTPException(
+                    400,
+                    "Operational migration mismatch: "
+                    f"manifest={declared_migration}, sqlite={migration}",
+                )
+            if migration == 20:
+                execution_columns = {
+                    str(row[1]) for row in connection.execute(
+                        "PRAGMA table_info(sentinel_executions)"
+                    )
+                }
+                leg_columns = {
+                    str(row[1]) for row in connection.execute(
+                        "PRAGMA table_info(sentinel_execution_legs)"
+                    )
+                }
+                missing_execution = sorted(
+                    MIGRATION_20_EXECUTION_COLUMNS - execution_columns
+                )
+                missing_legs = sorted(MIGRATION_20_LEG_COLUMNS - leg_columns)
+                if missing_execution or missing_legs:
+                    missing = [
+                        *(f"sentinel_executions.{item}" for item in missing_execution),
+                        *(f"sentinel_execution_legs.{item}" for item in missing_legs),
+                    ]
+                    raise HTTPException(
+                        400,
+                        "Operational migration 20 contract is incomplete: "
+                        + ", ".join(missing),
+                    )
             execution_rows = [_row_dict(row) for row in connection.execute("SELECT * FROM sentinel_executions ORDER BY id")]
             leg_rows = [_row_dict(row) for row in connection.execute("SELECT * FROM sentinel_execution_legs ORDER BY execution_id, id")]
             event_rows = []
@@ -367,6 +411,55 @@ class TgSnapshotImporter:
             fees = sum(float(item.get("fee") or item.get("fees") or 0) for item in execution_deals) if execution_deals else None
             execution_events = grouped_events.get(execution_id, [])
             event_text = canonical_json(execution_events).lower()
+            migration_20_geometry = migration == 20 and row.get(
+                "provider_entry_price"
+            ) not in (None, "")
+            provider_entry = _number(
+                row.get("provider_entry_price")
+                if migration_20_geometry else _first_present(
+                    signal.get("entry_price"), signal.get("entry"),
+                    row.get("entry_price"), row.get("entry_requested"),
+                ),
+                0.0,
+            )
+            provider_stop = _number(
+                row.get("provider_stop_loss")
+                if migration_20_geometry else _first_present(
+                    row.get("stop_loss"), signal.get("stop_loss"),
+                ),
+                0.0,
+            )
+            provider_targets = {
+                label: _number(
+                    row.get(f"provider_{label}")
+                    if migration_20_geometry else _first_present(
+                        row.get(label), signal.get(label),
+                    )
+                )
+                for label in ("tp1", "tp2", "tp3")
+            }
+            venue_translation = {
+                "operational_migration": migration,
+                "provider_geometry_source": (
+                    "MIGRATION_20_PROVIDER_FIELDS"
+                    if migration_20_geometry else "LEGACY_FROZEN_FIELDS"
+                ),
+                "execution_venue": str(row.get("execution_venue") or "") or None,
+                "provider_entry_price": _number(row.get("provider_entry_price")),
+                "provider_stop_loss": _number(row.get("provider_stop_loss")),
+                "provider_tp1": _number(row.get("provider_tp1")),
+                "provider_tp2": _number(row.get("provider_tp2")),
+                "provider_tp3": _number(row.get("provider_tp3")),
+                "venue_price_delta": _number(row.get("venue_price_delta")),
+                "reference_quote_bid": _number(row.get("reference_quote_bid")),
+                "reference_quote_ask": _number(row.get("reference_quote_ask")),
+                "destination_quote_bid": _number(row.get("destination_quote_bid")),
+                "destination_quote_ask": _number(row.get("destination_quote_ask")),
+                "quote_skew_seconds": _number(row.get("quote_skew_seconds")),
+                "quote_acquisition_seconds": _number(row.get("quote_acquisition_seconds")),
+                "venue_order_id": str(row.get("venue_order_id") or "") or None,
+                "venue_position_key": str(row.get("venue_position_key") or "") or None,
+            }
             payload = {
                 "execution_id": execution_id,
                 "signal_id": signal_id,
@@ -386,16 +479,16 @@ class TgSnapshotImporter:
                 "execution_policy_version": str(row.get("execution_policy_version") or ""),
                 "management_policy_version": management_version,
                 "config_fingerprint": str(row.get("config_fingerprint") or ""),
-                "provider_entry": _number(signal.get("entry_price") or signal.get("entry") or row.get("entry_price") or row.get("entry_requested"), 0.0),
+                "provider_entry": provider_entry,
                 "actual_fill": _number(row.get("entry_actual"), 0.0),
                 "actual_exit": _number(row.get("exit_actual")),
                 "entry_bid": _number(row.get("entry_bid")),
                 "entry_ask": _number(row.get("entry_ask")),
                 "spread": _number(row.get("entry_spread_price")),
-                "initial_provider_sl": _number(row.get("stop_loss") or signal.get("stop_loss"), 0.0),
-                "tp1": _number(row.get("tp1") or signal.get("tp1")),
-                "tp2": _number(row.get("tp2") or signal.get("tp2")),
-                "tp3": _number(row.get("tp3") or signal.get("tp3")),
+                "initial_provider_sl": provider_stop,
+                "tp1": provider_targets["tp1"],
+                "tp2": provider_targets["tp2"],
+                "tp3": provider_targets["tp3"],
                 "risk_amount": _number(row.get("initial_risk_amount"), 0.0),
                 "risk_r": 1.0,
                 "requested_volume": _number(row.get("original_volume") or row.get("volume") or row.get("initial_volume"), 0.0),
@@ -422,6 +515,7 @@ class TgSnapshotImporter:
                 "events": execution_events,
                 "one_second_mark_count": mark_counts.get(execution_id, 0),
                 "deals": execution_deals,
+                "venue_translation": venue_translation,
             }
             row_hash = sha256_bytes(canonical_json(payload).encode())
             if execution_id in seen and seen[execution_id] != row_hash:
