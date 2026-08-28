@@ -825,6 +825,9 @@ class TgManagementLabService:
                 "destination_quote_bid", "destination_quote_ask",
                 "quote_skew_seconds", "quote_acquisition_seconds",
                 "venue_order_id", "venue_position_key",
+                "cohort_decision", "cohort_decided_at",
+                "cohort_authority_execution_id", "cohort_authority_status",
+                "cohort_authority_leg_count",
             ])
             writer.writeheader()
             selected_results = (result.get("selected_candidate") or {}).get("results", {})

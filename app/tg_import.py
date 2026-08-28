@@ -22,7 +22,8 @@ ARCHIVE_SCHEMA_VERSION = 2
 TICK_CODEC = "zlib-struct-qddI-v1"
 TICK_STRUCT = struct.Struct("<qddI")
 SNAPSHOT_MANIFEST_VERSION = 1
-SUPPORTED_OPERATIONAL_MIGRATIONS = set(range(16, 21))
+SUPPORTED_OPERATIONAL_MIGRATIONS = set(range(16, 23))
+MIN_SUPPORTED_OPERATIONAL_MIGRATION = 16
 MIGRATION_20_EXECUTION_COLUMNS = {
     "execution_venue", "provider_entry_price", "provider_stop_loss",
     "provider_tp1", "provider_tp2", "provider_tp3", "venue_price_delta",
@@ -31,6 +32,11 @@ MIGRATION_20_EXECUTION_COLUMNS = {
     "venue_order_id", "venue_position_key",
 }
 MIGRATION_20_LEG_COLUMNS = {"venue_order_id"}
+MIGRATION_21_EXECUTION_COLUMNS = {
+    "cohort_decision", "cohort_decided_at", "cohort_authority_execution_id",
+    "cohort_authority_status",
+}
+MIGRATION_22_EXECUTION_COLUMNS = {"cohort_authority_leg_count"}
 
 
 def canonical_json(payload: Any) -> str:
@@ -284,7 +290,7 @@ class TgSnapshotImporter:
                 columns = {row[1] for row in connection.execute("PRAGMA table_info(schema_migrations)")}
                 key = "version" if "version" in columns else "id"
                 migration = int(connection.execute(f"SELECT COALESCE(MAX({key}), 0) FROM schema_migrations").fetchone()[0])
-            if migration not in SUPPORTED_OPERATIONAL_MIGRATIONS:
+            if migration < MIN_SUPPORTED_OPERATIONAL_MIGRATION:
                 raise HTTPException(400, f"Unsupported operational schema migration: {migration}")
             declared_migration = manifest.get("versions", {}).get("operational_migration")
             if declared_migration is not None and int(declared_migration) != migration:
@@ -293,7 +299,7 @@ class TgSnapshotImporter:
                     "Operational migration mismatch: "
                     f"manifest={declared_migration}, sqlite={migration}",
                 )
-            if migration == 20:
+            if migration >= 20:
                 execution_columns = {
                     str(row[1]) for row in connection.execute(
                         "PRAGMA table_info(sentinel_executions)"
@@ -304,9 +310,12 @@ class TgSnapshotImporter:
                         "PRAGMA table_info(sentinel_execution_legs)"
                     )
                 }
-                missing_execution = sorted(
-                    MIGRATION_20_EXECUTION_COLUMNS - execution_columns
-                )
+                required_execution = set(MIGRATION_20_EXECUTION_COLUMNS)
+                if migration >= 21:
+                    required_execution.update(MIGRATION_21_EXECUTION_COLUMNS)
+                if migration >= 22:
+                    required_execution.update(MIGRATION_22_EXECUTION_COLUMNS)
+                missing_execution = sorted(required_execution - execution_columns)
                 missing_legs = sorted(MIGRATION_20_LEG_COLUMNS - leg_columns)
                 if missing_execution or missing_legs:
                     missing = [
@@ -315,7 +324,7 @@ class TgSnapshotImporter:
                     ]
                     raise HTTPException(
                         400,
-                        "Operational migration 20 contract is incomplete: "
+                        f"Operational migration {migration} contract is incomplete: "
                         + ", ".join(missing),
                     )
             execution_rows = [_row_dict(row) for row in connection.execute("SELECT * FROM sentinel_executions ORDER BY id")]
@@ -411,7 +420,7 @@ class TgSnapshotImporter:
             fees = sum(float(item.get("fee") or item.get("fees") or 0) for item in execution_deals) if execution_deals else None
             execution_events = grouped_events.get(execution_id, [])
             event_text = canonical_json(execution_events).lower()
-            migration_20_geometry = migration == 20 and row.get(
+            migration_20_geometry = migration >= 20 and row.get(
                 "provider_entry_price"
             ) not in (None, "")
             provider_entry = _number(
@@ -441,7 +450,7 @@ class TgSnapshotImporter:
             venue_translation = {
                 "operational_migration": migration,
                 "provider_geometry_source": (
-                    "MIGRATION_20_PROVIDER_FIELDS"
+                    "MIGRATION_20_PLUS_PROVIDER_FIELDS"
                     if migration_20_geometry else "LEGACY_FROZEN_FIELDS"
                 ),
                 "execution_venue": str(row.get("execution_venue") or "") or None,
@@ -459,6 +468,17 @@ class TgSnapshotImporter:
                 "quote_acquisition_seconds": _number(row.get("quote_acquisition_seconds")),
                 "venue_order_id": str(row.get("venue_order_id") or "") or None,
                 "venue_position_key": str(row.get("venue_position_key") or "") or None,
+                "cohort_decision": str(row.get("cohort_decision") or "") or None,
+                "cohort_decided_at": str(row.get("cohort_decided_at") or "") or None,
+                "cohort_authority_execution_id": (
+                    int(row["cohort_authority_execution_id"])
+                    if row.get("cohort_authority_execution_id") not in (None, "") else None
+                ),
+                "cohort_authority_status": str(row.get("cohort_authority_status") or "") or None,
+                "cohort_authority_leg_count": (
+                    int(row["cohort_authority_leg_count"])
+                    if row.get("cohort_authority_leg_count") not in (None, "") else None
+                ),
             }
             payload = {
                 "execution_id": execution_id,

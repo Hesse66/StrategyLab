@@ -5,8 +5,8 @@ from typing import Any, Literal
 
 
 ENGINE_VERSION = "tg_signal_management_v2"
-IMPORTER_VERSION = "tg_snapshot_import_v3"
-MODEL_VERSION = "tg_external_execution_v4"
+IMPORTER_VERSION = "tg_snapshot_import_v4"
+MODEL_VERSION = "tg_external_execution_v5"
 SUPPORTED_ASSETS = ("XAUUSD", "EURUSD", "BTCUSD", "NASDAQ", "US30")
 PROMOTION_STATES = {
     "INSUFFICIENT_EXACT_COVERAGE",
@@ -46,6 +46,11 @@ class VenueTranslationMetadata:
     quote_acquisition_seconds: float | None
     venue_order_id: str | None
     venue_position_key: str | None
+    cohort_decision: str | None
+    cohort_decided_at: str | None
+    cohort_authority_execution_id: int | None
+    cohort_authority_status: str | None
+    cohort_authority_leg_count: int | None
 
 
 @dataclass(frozen=True, slots=True)

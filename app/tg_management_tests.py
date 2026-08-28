@@ -94,7 +94,7 @@ def build_tg_package(root: Path, count: int = 1, *, schema: int = 19, actual_pnl
         for leg_index, (fraction, target) in enumerate(((0.5, 101.0), (0.3, 102.0), (0.2, 103.0)), start=1):
             connection.execute("INSERT INTO sentinel_execution_legs VALUES (?,?,?,?,?,?,?,?,?,?,?)", (f"{execution_id}-leg-{leg_index}", execution_id, leg_index, f"TP{leg_index}", fraction, fraction, target, "CLOSED", str(1000 + index * 10 + leg_index), str(2000 + index * 10 + leg_index), None))
         execution_times[execution_id] = (opened.isoformat(), closed.isoformat(), int(opened.timestamp() * 1000))
-    if schema == 20:
+    if schema >= 20:
         migration_20_columns = (
             ("execution_venue", "TEXT"), ("provider_entry_price", "REAL"),
             ("provider_stop_loss", "REAL"), ("provider_tp1", "REAL"),
@@ -128,6 +128,19 @@ def build_tg_package(root: Path, count: int = 1, *, schema: int = 19, actual_pnl
         connection.execute(
             "UPDATE sentinel_execution_legs SET venue_order_id='venue-leg-' || id"
         )
+    if schema >= 21:
+        connection.execute("ALTER TABLE sentinel_executions ADD COLUMN cohort_decision TEXT")
+        connection.execute("ALTER TABLE sentinel_executions ADD COLUMN cohort_decided_at TEXT")
+        connection.execute("ALTER TABLE sentinel_executions ADD COLUMN cohort_authority_execution_id INTEGER")
+        connection.execute("ALTER TABLE sentinel_executions ADD COLUMN cohort_authority_status TEXT")
+        connection.execute(
+            "UPDATE sentinel_executions SET cohort_decision='APPROVED', "
+            "cohort_decided_at=opened_at, cohort_authority_execution_id=17, "
+            "cohort_authority_status='APPROVED'"
+        )
+    if schema >= 22:
+        connection.execute("ALTER TABLE sentinel_executions ADD COLUMN cohort_authority_leg_count INTEGER")
+        connection.execute("UPDATE sentinel_executions SET cohort_authority_leg_count=2")
     connection.commit()
     connection.close()
 
@@ -247,9 +260,9 @@ class TgManagementTests(unittest.TestCase):
         self.assertEqual(connection.execute("SELECT COUNT(*) FROM external_events").fetchone()[0], 6)
         connection.close()
 
-    def test_operational_migrations_16_through_20_are_explicitly_supported(self) -> None:
-        self.assertEqual(SUPPORTED_OPERATIONAL_MIGRATIONS, {16, 17, 18, 19, 20})
-        for migration in range(16, 21):
+    def test_operational_migrations_16_through_22_are_explicitly_supported(self) -> None:
+        self.assertEqual(SUPPORTED_OPERATIONAL_MIGRATIONS, set(range(16, 23)))
+        for migration in range(16, 23):
             migration_root = self.root / f"migration-{migration}"
             migration_root.mkdir()
             package = build_tg_package(migration_root, schema=migration)
@@ -257,6 +270,19 @@ class TgManagementTests(unittest.TestCase):
             self.assertEqual(
                 snapshot["versions_json"]["operational_migration"], migration
             )
+
+    def test_future_additive_operational_migration_is_capability_compatible(self) -> None:
+        package = build_tg_package(self.root, schema=23)
+        snapshot = self.importer.import_package(package)
+        self.assertEqual(snapshot["versions_json"]["operational_migration"], 23)
+        canonical = Path(snapshot["path"]) / "snapshot.sqlite3"
+        connection = sqlite3.connect(canonical)
+        operation = json.loads(connection.execute(
+            "SELECT payload_json FROM operations WHERE execution_id='exec-000'"
+        ).fetchone()[0])
+        connection.close()
+        self.assertEqual(operation["venue_translation"]["operational_migration"], 23)
+        self.assertEqual(operation["provider_entry"], 100.25)
 
     def test_migration_20_imports_venue_metadata_and_frozen_provider_geometry(self) -> None:
         package = build_tg_package(self.root, schema=20)
@@ -280,7 +306,7 @@ class TgManagementTests(unittest.TestCase):
         self.assertEqual(metadata["operational_migration"], 20)
         self.assertEqual(
             metadata["provider_geometry_source"],
-            "MIGRATION_20_PROVIDER_FIELDS",
+            "MIGRATION_20_PLUS_PROVIDER_FIELDS",
         )
         self.assertEqual(metadata["execution_venue"], "AXI_DEMO_PRO")
         self.assertEqual(metadata["venue_price_delta"], 0.25)
@@ -291,6 +317,23 @@ class TgManagementTests(unittest.TestCase):
         self.assertEqual(metadata["venue_order_id"], "venue-order")
         self.assertEqual(metadata["venue_position_key"], "venue-position")
         self.assertTrue(all(leg["venue_order_id"] for leg in operation["legs"]))
+
+    def test_migration_22_preserves_cumulative_geometry_and_cohort_metadata(self) -> None:
+        package = build_tg_package(self.root, schema=22)
+        snapshot = self.importer.import_package(package)
+        connection = sqlite3.connect(Path(snapshot["path"]) / "snapshot.sqlite3")
+        operation = json.loads(connection.execute(
+            "SELECT payload_json FROM operations WHERE execution_id='exec-000'"
+        ).fetchone()[0])
+        connection.close()
+        self.assertEqual(operation["provider_entry"], 100.25)
+        metadata = operation["venue_translation"]
+        self.assertEqual(metadata["operational_migration"], 22)
+        self.assertEqual(metadata["provider_geometry_source"], "MIGRATION_20_PLUS_PROVIDER_FIELDS")
+        self.assertEqual(metadata["cohort_decision"], "APPROVED")
+        self.assertEqual(metadata["cohort_authority_execution_id"], 17)
+        self.assertEqual(metadata["cohort_authority_status"], "APPROVED")
+        self.assertEqual(metadata["cohort_authority_leg_count"], 2)
 
     def test_migration_20_rejects_incomplete_columns_and_manifest_mismatch(self) -> None:
         incomplete_root = self.root / "incomplete-20"
