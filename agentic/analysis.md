@@ -1,20 +1,29 @@
-# Active: weekly US30 policy compatibility
+# Active: weekly cell-level optimization
 
-The 2026-09-20 snapshot adds an asset-specific US30 management policy containing
-management fields plus `asset`, fixed-R `target_levels_r`, and
-`time_stop_even_if_breakeven`.  The current decoder forwards the combined payload
-directly to `ManagementPolicy`, aborting the weekly batch before US30, XAUUSD and
-EURUSD.  The repair must split the registered payload into the existing
-management and target-geometry models, preserve the true broker-deal baseline,
-use the frozen US30 geometry for management-only and stressed baseline replays,
-and reject unsupported time-stop semantics rather than silently dropping them.
+Best-Agent moves: the requested outcome is a weekly optimization whose statistical
+selection unit is exactly `(asset, timeframe, side)`, while preserving existing
+asset-wide runs only as historical diagnostics.  The chosen perspective combines
+John Tukey's exploratory-data separation (do not pool materially different strata)
+with David Hand's validation discipline (evidence thresholds remain local to the
+population being selected).  This transfers here as exact cell filtering before
+chronological split/search, independent WFO/holdout per cell, and truthful sample
+eligibility.  Anticipatory corrections are a resumable runner, durable progress,
+unique experiment provenance, and no expensive search below 20 operations.
 
-Checklist: [done] implemented the split decoder and baseline-geometry
-propagation; [done] added regression coverage for the exact US30 payload and
-incomplete broker-deal fallback; [done] 35 focused TgSignalSniper tests pass and
-the real US30 snapshot baseline now has exact parity (-82.58/-82.58, delta 0);
-[waiting] resume only US30/XAUUSD/EURUSD in visible PowerShell and let the user
-report completion before result review.
+Acceptance contract: CLI and service accept a complete timeframe/side pair; every
+cell result contains only matching operations and has a unique experiment identity;
+the weekly runner baselines every observed cell, optimizes only cells with at least
+20 operations, preserves the 40-operation promotion threshold, resumes safely, and
+never presents an aggregate asset result as a cell policy decision.  Existing
+asset-wide calls remain compatible and no production policy is automatically
+published.
+
+Checklist: [done] implement exact cell discovery/filtering and provenance;
+[done] add focused regression tests; [done] add a resumable PowerShell runner
+and weekly instructions; [done] run 37 focused tests, 166 full-suite tests, and a
+real snapshot preflight (28 cells, 13 search-eligible); [pending] commit/push StrategyLab, then launch the visible optimization
+and stop monitoring after verified startup.  Done means all observable acceptance
+conditions pass and the visible process is running from committed code.
 
 # Durable current state
 

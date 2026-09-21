@@ -46,12 +46,19 @@ def build_parser() -> argparse.ArgumentParser:
     tg_baseline = sub.add_parser("tg-run-baseline", help="Replay the frozen management baseline")
     tg_baseline.add_argument("--snapshot-id", required=True)
     tg_baseline.add_argument("--asset", required=True)
+    tg_baseline.add_argument("--timeframe")
+    tg_baseline.add_argument("--side", choices=("BUY", "SELL"))
 
     tg_optimize = sub.add_parser("tg-optimize", help="Optimize post-fill management for one asset")
     tg_optimize.add_argument("--snapshot-id", required=True)
     tg_optimize.add_argument("--asset", required=True)
     tg_optimize.add_argument("--seed", type=int, default=0)
     tg_optimize.add_argument("--candidate-family", choices=("all", "management", "targets", "joint"), default="all")
+    tg_optimize.add_argument("--timeframe")
+    tg_optimize.add_argument("--side", choices=("BUY", "SELL"))
+
+    tg_cells = sub.add_parser("tg-cells", help="List asset/timeframe/direction analysis cells")
+    tg_cells.add_argument("--snapshot-id", required=True)
 
     tg_report = sub.add_parser("tg-report", help="Print the persisted experiment and report path")
     tg_report.add_argument("--experiment-id", required=True)
@@ -87,10 +94,17 @@ def main() -> None:
         payload = tg_lab.import_snapshot(args.package)
     elif args.command == "tg-coverage":
         payload = tg_lab.coverage(args.snapshot_id)
+    elif args.command == "tg-cells":
+        payload = tg_lab.list_cells(args.snapshot_id)
     elif args.command == "tg-run-baseline":
-        payload = tg_lab.run_baseline(args.snapshot_id, args.asset)
+        payload = tg_lab.run_baseline(
+            args.snapshot_id, args.asset, args.timeframe, args.side,
+        )
     elif args.command == "tg-optimize":
-        payload = tg_lab.optimize_asset(args.snapshot_id, args.asset, args.seed, args.candidate_family)
+        payload = tg_lab.optimize_asset(
+            args.snapshot_id, args.asset, args.seed, args.candidate_family,
+            timeframe=args.timeframe, side=args.side,
+        )
     else:
         payload = tg_lab.experiment(args.experiment_id)
 

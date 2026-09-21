@@ -776,6 +776,47 @@ class TgManagementTests(unittest.TestCase):
         groups = result["result_json"]["timeframe_lane_diagnostics"]
         self.assertEqual({(item["timeframe"], item["lane"]) for item in groups}, {("M15", "FAST"), ("H1", "CORE")})
 
+    def test_cell_runs_filter_exact_timeframe_and_side_with_unique_identity(self) -> None:
+        package = build_tg_package(self.root, count=4)
+        connection = sqlite3.connect(package / "operational.sqlite3")
+        connection.execute(
+            "UPDATE sentinel_signals SET structured_timeframe='H1' "
+            "WHERE id IN ('sig-000','sig-001','sig-002')"
+        )
+        connection.execute(
+            "UPDATE sentinel_signals SET structured_timeframe='M30' "
+            "WHERE id='sig-003'"
+        )
+        connection.execute(
+            "UPDATE sentinel_executions SET side='SELL' WHERE id='exec-002'"
+        )
+        connection.commit(); connection.close()
+        snapshot = self.importer.import_package(package)
+        service = TgManagementLabService(self.repo)
+
+        cells = service.list_cells(snapshot["snapshot_id"])["cells"]
+        self.assertEqual(
+            [(item["timeframe"], item["side"], item["operation_count"]) for item in cells],
+            [("H1", "BUY", 2), ("H1", "SELL", 1), ("M30", "BUY", 1)],
+        )
+        self.assertTrue(all(not item["optimization_eligible"] for item in cells))
+
+        buy = service.run_baseline(snapshot["snapshot_id"], "XAUUSD", "h1", "buy")
+        sell = service.run_baseline(snapshot["snapshot_id"], "XAUUSD", "H1", "SELL")
+        self.assertNotEqual(buy["experiment_id"], sell["experiment_id"])
+        self.assertEqual(buy["config_json"]["analysis_unit"], "ASSET_TIMEFRAME_SIDE")
+        self.assertEqual(buy["result_json"]["cell_id"], "XAUUSD:H1:BUY")
+        self.assertEqual(buy["result_json"]["cohort_execution_ids"], ["exec-000", "exec-001"])
+        self.assertEqual(sell["result_json"]["cohort_execution_ids"], ["exec-002"])
+
+    def test_cell_dimensions_must_be_complete(self) -> None:
+        package = build_tg_package(self.root)
+        snapshot = self.importer.import_package(package)
+        service = TgManagementLabService(self.repo)
+        with self.assertRaises(HTTPException) as captured:
+            service.run_baseline(snapshot["snapshot_id"], "XAUUSD", "H1")
+        self.assertEqual(captured.exception.status_code, 400)
+
     def test_all_cohort_operations_are_retained_with_quality_flags(self) -> None:
         package = build_tg_package(self.root, count=20)
         connection = sqlite3.connect(package / "operational.sqlite3")

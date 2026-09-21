@@ -47,17 +47,65 @@ class TgManagementLabService:
             **snapshot["coverage_json"],
         }
 
-    def run_baseline(self, snapshot_id: str, asset: str) -> dict[str, Any]:
-        return self._run(snapshot_id, asset, optimize=False)
+    def run_baseline(
+        self, snapshot_id: str, asset: str,
+        timeframe: str | None = None, side: str | None = None,
+    ) -> dict[str, Any]:
+        return self._run(
+            snapshot_id, asset, optimize=False,
+            timeframe=timeframe, side=side,
+        )
 
     def optimize_asset(
         self, snapshot_id: str, asset: str, seed: int = 0,
         candidate_family: str = "all", progress_callback: Any | None = None,
+        timeframe: str | None = None, side: str | None = None,
     ) -> dict[str, Any]:
         return self._run(
             snapshot_id, asset, optimize=True, seed=seed,
             candidate_family=candidate_family, progress_callback=progress_callback,
+            timeframe=timeframe, side=side,
         )
+
+    def list_cells(self, snapshot_id: str) -> dict[str, Any]:
+        snapshot = self._snapshot(snapshot_id)
+        snapshot_db = Path(snapshot["path"]) / "snapshot.sqlite3"
+        connection = sqlite3.connect(snapshot_db)
+        try:
+            operations = [
+                (str(asset), json.loads(payload_json))
+                for asset, payload_json in connection.execute(
+                    "SELECT asset,payload_json FROM operations"
+                )
+            ]
+        finally:
+            connection.close()
+        counts: dict[tuple[str, str, str], int] = {}
+        for asset, payload in operations:
+            key = (
+                asset.upper(),
+                str(payload.get("timeframe") or "UNKNOWN").upper(),
+                str(payload.get("side") or "UNKNOWN").upper(),
+            )
+            counts[key] = counts.get(key, 0) + 1
+        cells = [
+            {
+                "asset": str(asset).upper(),
+                "timeframe": str(timeframe).upper(),
+                "side": str(side).upper(),
+                "operation_count": int(count),
+                "optimization_eligible": int(count) >= 20,
+                "promotion_sample_eligible": int(count) >= 40,
+            }
+            for (asset, timeframe, side), count in sorted(counts.items())
+        ]
+        return {
+            "snapshot_id": snapshot_id,
+            "analysis_unit": "ASSET_TIMEFRAME_SIDE",
+            "minimum_exploratory_operations": 20,
+            "minimum_promotional_operations": 40,
+            "cells": cells,
+        }
 
     def list_experiments(self, snapshot_id: str | None = None, asset: str | None = None) -> list[dict[str, Any]]:
         return self.repository.list_tg_experiments(snapshot_id, asset)
@@ -77,16 +125,27 @@ class TgManagementLabService:
     def _run(
         self, snapshot_id: str, asset: str, *, optimize: bool, seed: int = 0,
         candidate_family: str = "all", progress_callback: Any | None = None,
+        timeframe: str | None = None, side: str | None = None,
     ) -> dict[str, Any]:
         asset = asset.upper()
         if asset not in SUPPORTED_ASSETS:
             raise HTTPException(400, f"Unsupported initial cohort asset: {asset}")
+        timeframe, side = self._normalize_cell(timeframe, side)
         candidate_family = candidate_family.lower()
         if candidate_family not in {"all", "management", "targets", "joint"}:
             raise HTTPException(400, "candidate_family must be all, management, targets, or joint")
         snapshot = self._snapshot(snapshot_id)
         snapshot_db = Path(snapshot["path"]) / "snapshot.sqlite3"
         all_operations = self._load_operations(snapshot_db, asset)
+        if timeframe is not None:
+            all_operations = [
+                item for item in all_operations
+                if str(item.get("timeframe") or "").upper() == timeframe
+                and str(item.get("side") or "").upper() == side
+            ]
+        if not all_operations:
+            unit = f"{asset} {timeframe} {side}" if timeframe else asset
+            raise HTTPException(404, f"No operations found for analysis unit: {unit}")
         evidence_tiers = self._evidence_tiers(snapshot_db, all_operations)
         version_sets = sorted({(
             item["statistics_schema_version"], item["signal_version"], item["parser_version"],
@@ -131,6 +190,11 @@ class TgManagementLabService:
         config = {
             "snapshot_id": snapshot_id,
             "asset": asset,
+            "timeframe": timeframe,
+            "side": side,
+            "analysis_unit": (
+                "ASSET_TIMEFRAME_SIDE" if timeframe else "ASSET_AGGREGATE"
+            ),
             "reference_version_set": (
                 list(selected_version_set) if selected_version_set else None
             ),
@@ -242,7 +306,8 @@ class TgManagementLabService:
             percent = round(100 * progress_done / max(1, total_candidates), 2)
             eta = (elapsed / progress_done * (total_candidates - progress_done)) if progress_done else None
             progress_callback({
-                "asset": asset, "family": family, "stage": stage,
+                "asset": asset, "timeframe": timeframe, "side": side,
+                "family": family, "stage": stage,
                 "completed": progress_done, "total": total_candidates,
                 "percent": percent, "elapsed_seconds": round(elapsed, 3),
                 "eta_seconds": round(eta, 3) if eta is not None else None,
@@ -354,6 +419,12 @@ class TgManagementLabService:
             "broker_profile": snapshot["broker_profile"],
             "cohort_id": snapshot["cohort_id"],
             "asset": asset,
+            "timeframe": timeframe,
+            "side": side,
+            "analysis_unit": config["analysis_unit"],
+            "cell_id": (
+                f"{asset}:{timeframe}:{side}" if timeframe else None
+            ),
             "status": evidence_status,
             "promotion_is_statistical_only": True,
             "recommendation": recommendation,
@@ -446,6 +517,24 @@ class TgManagementLabService:
             return [json.loads(row[0]) for row in connection.execute("SELECT payload_json FROM operations WHERE asset = ? ORDER BY opened_at, execution_id", (asset,))]
         finally:
             connection.close()
+
+    @staticmethod
+    def _normalize_cell(
+        timeframe: str | None, side: str | None,
+    ) -> tuple[str | None, str | None]:
+        if (timeframe is None) != (side is None):
+            raise HTTPException(
+                400, "timeframe and side must be supplied together",
+            )
+        if timeframe is None:
+            return None, None
+        normalized_timeframe = str(timeframe).strip().upper()
+        normalized_side = str(side).strip().upper()
+        if not normalized_timeframe:
+            raise HTTPException(400, "timeframe cannot be empty")
+        if normalized_side not in {"BUY", "SELL"}:
+            raise HTTPException(400, "side must be BUY or SELL")
+        return normalized_timeframe, normalized_side
 
     @staticmethod
     def _evidence_tiers(
@@ -880,6 +969,9 @@ class TgManagementLabService:
         lines = [
             f"# TgSignalSniper management experiment {result['experiment_id']}", "",
             f"- Asset: {result['asset']}", f"- Broker: {result['broker_profile']}",
+            f"- Analysis unit: {result.get('analysis_unit', 'ASSET_AGGREGATE')}",
+            f"- Timeframe: {result.get('timeframe') or 'all'}",
+            f"- Direction: {result.get('side') or 'all'}",
             f"- Cohort: {result['cohort_id']}", f"- Snapshot: `{result['snapshot_id']}`",
             f"- Engine: `{result['engine_version']}`", f"- Status: **{result['status']}**", "",
             "`PROMOTION_CANDIDATE` is a statistical recommendation only. This lab never publishes policies or contacts AutoKraken, MT5, or Telegram.", "",
