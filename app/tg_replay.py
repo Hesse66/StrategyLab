@@ -92,7 +92,9 @@ class TgSignalReplayEngine:
             connection.close()
 
     @staticmethod
-    def policy_from_snapshot(snapshot_db: Path, management_policy_version: str) -> ManagementPolicy | None:
+    def policy_bundle_from_snapshot(
+        snapshot_db: Path, management_policy_version: str,
+    ) -> tuple[ManagementPolicy, TargetGeometryPolicy] | None:
         connection = sqlite3.connect(snapshot_db)
         try:
             row = connection.execute("SELECT payload_json FROM policies WHERE version = ?", (management_policy_version,)).fetchone()
@@ -104,7 +106,43 @@ class TgSignalReplayEngine:
         payload.setdefault("management_policy_version", management_policy_version)
         payload.setdefault("policy_id", f"baseline_{management_policy_version}")
         payload.setdefault("parent_policy_id", None)
-        return ManagementPolicy.from_dict(payload)
+        time_stop_even_if_breakeven = payload.get("time_stop_even_if_breakeven")
+        if time_stop_even_if_breakeven is False and payload.get("time_stop_seconds") is not None:
+            raise ValueError(
+                "Snapshot policy requires conditional time-stop semantics that "
+                "the replay engine does not support"
+            )
+        management_fields = set(ManagementPolicy.__dataclass_fields__)
+        policy = ManagementPolicy.from_dict({
+            key: value for key, value in payload.items()
+            if key in management_fields
+        })
+        levels = payload.get("target_levels_r")
+        if levels is None:
+            geometry = TargetGeometryPolicy.provider_original()
+        else:
+            if (
+                not isinstance(levels, (list, tuple)) or len(levels) != 3
+                or not 0 < float(levels[0]) < float(levels[1]) < float(levels[2])
+            ):
+                raise ValueError("Snapshot policy has invalid target_levels_r")
+            geometry = TargetGeometryPolicy(
+                geometry_id=f"baseline_{management_policy_version}_fixed_r",
+                parent_geometry_id=None,
+                mode="FIXED_R",
+                candidate_family="BASELINE",
+                tp1_r=float(levels[0]),
+                tp2_r=float(levels[1]),
+                tp3_r=float(levels[2]),
+            )
+        return policy, geometry
+
+    @staticmethod
+    def policy_from_snapshot(snapshot_db: Path, management_policy_version: str) -> ManagementPolicy | None:
+        bundle = TgSignalReplayEngine.policy_bundle_from_snapshot(
+            snapshot_db, management_policy_version,
+        )
+        return bundle[0] if bundle else None
 
     def replay(
         self, operation: dict[str, Any], ticks: list[Tick],
@@ -113,9 +151,9 @@ class TgSignalReplayEngine:
         counterfactual: bool = False,
     ) -> ReplayResult:
         geometry = target_geometry or TargetGeometryPolicy.provider_original()
-        if geometry.mode == "PROVIDER_ORIGINAL" and policy.parent_policy_id is None and not counterfactual and (
-            operation.get("deals")
-            or operation.get("_use_broker_actual_baseline")
+        if geometry.mode == "PROVIDER_ORIGINAL" and not counterfactual and (
+            operation.get("_use_broker_actual_baseline")
+            or (policy.parent_policy_id is None and operation.get("deals"))
         ):
             result = self._broker_actual_baseline(operation, policy)
             diagnostics = dict(result.diagnostics)
@@ -384,6 +422,34 @@ class TgSignalReplayEngine:
             for deal in deals if int(deal.get("entry") or 0) == 0
         )
         total_exit_volume = sum(float(deal.get("volume") or 0) for deal in exits)
+        filled_volume = float(operation.get("filled_volume") or 0)
+        volume_tolerance = max(
+            EPSILON, float(operation.get("volume_step") or 0) / 2,
+        )
+        actual = operation.get("broker_realized_net_pnl")
+        if (
+            actual is not None and filled_volume > EPSILON
+            and abs(total_exit_volume - filled_volume) > volume_tolerance
+        ):
+            net = float(actual)
+            risk = float(operation.get("risk_amount") or 0)
+            fill = ExitFill(
+                "broker:execution-aggregate", "BROKER_ACTUAL",
+                utc_milliseconds(str(operation["closed_at"])),
+                float(operation.get("actual_exit") or 0), filled_volume,
+                net, net,
+            )
+            return ReplayResult(
+                operation["execution_id"], policy.policy_id, "COMPLETE", True,
+                (), net, (net / risk if risk > EPSILON else None), (fill,), (),
+                0.0, {
+                    "engine_version": self.engine_version,
+                    "baseline_source": "BROKER_EXECUTION_AGGREGATE",
+                    "quality_flags": ["BROKER_DEAL_BREAKDOWN_INCOMPLETE"],
+                    "deal_exit_volume": total_exit_volume,
+                    "filled_volume": filled_volume,
+                },
+            )
         fills: list[ExitFill] = []
         for ordinal, deal in enumerate(exits):
             volume = float(deal.get("volume") or 0)

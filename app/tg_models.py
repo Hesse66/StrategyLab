@@ -155,6 +155,18 @@ class ManagementPolicy:
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "ManagementPolicy":
         values = dict(payload)
+        # Exported policy registries may serialize inherited non-nullable
+        # defaults as JSON null.  Restore the model defaults before candidates
+        # inherit the baseline; otherwise enabling a mutation can expose None
+        # in arithmetic (for example early_breakeven_offset_r * risk).
+        for key in (
+            "partials", "tp1_action", "breakeven_offset_price", "tp2_action",
+            "early_breakeven_offset_r", "trailing_step_r", "trailing_after",
+            "exit_slippage_price", "latency_msc",
+            "stress_same_millisecond_stop_first",
+        ):
+            if values.get(key) is None:
+                values.pop(key, None)
         values["partials"] = tuple(float(value) for value in values.get("partials", (0.5, 0.3, 0.2)))
         return cls(**values)
 

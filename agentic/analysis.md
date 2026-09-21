@@ -1,4 +1,22 @@
-# Current state
+# Active: weekly US30 policy compatibility
+
+The 2026-09-20 snapshot adds an asset-specific US30 management policy containing
+management fields plus `asset`, fixed-R `target_levels_r`, and
+`time_stop_even_if_breakeven`.  The current decoder forwards the combined payload
+directly to `ManagementPolicy`, aborting the weekly batch before US30, XAUUSD and
+EURUSD.  The repair must split the registered payload into the existing
+management and target-geometry models, preserve the true broker-deal baseline,
+use the frozen US30 geometry for management-only and stressed baseline replays,
+and reject unsupported time-stop semantics rather than silently dropping them.
+
+Checklist: [done] implemented the split decoder and baseline-geometry
+propagation; [done] added regression coverage for the exact US30 payload and
+incomplete broker-deal fallback; [done] 35 focused TgSignalSniper tests pass and
+the real US30 snapshot baseline now has exact parity (-82.58/-82.58, delta 0);
+[waiting] resume only US30/XAUUSD/EURUSD in visible PowerShell and let the user
+report completion before result review.
+
+# Durable current state
 
 The offline TgSignalSniper management domain is implemented in `app/tg_*.py`;
 its durable contract is `docs/tg_signal_management_lab.md`. It has no MT5,

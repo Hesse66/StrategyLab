@@ -245,6 +245,86 @@ class TgManagementTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp.cleanup()
 
+    def test_asset_specific_snapshot_policy_splits_management_and_fixed_targets(self) -> None:
+        snapshot = self.root / "snapshot.sqlite3"
+        connection = sqlite3.connect(snapshot)
+        connection.execute("CREATE TABLE policies (version TEXT PRIMARY KEY, payload_json TEXT NOT NULL)")
+        version = "management-v1-axi-us30-v1"
+        payload = {
+            "asset": "US30",
+            "policy_id": "axi-us30",
+            "parent_policy_id": "baseline",
+            "management_policy_version": version,
+            "partials": [0.5, 0.3, 0.2],
+            "tp1_action": "breakeven_offset",
+            "breakeven_offset_points": 15.0,
+            "tp2_action": "stop_to_tp1",
+            "target_levels_r": [0.75, 1.0, 1.5],
+            "time_stop_seconds": 3600,
+            "time_stop_even_if_breakeven": True,
+        }
+        connection.execute(
+            "INSERT INTO policies VALUES (?, ?)",
+            (version, json.dumps(payload)),
+        )
+        connection.commit()
+        connection.close()
+
+        policy, geometry = TgSignalReplayEngine.policy_bundle_from_snapshot(
+            snapshot, version,
+        )
+        self.assertEqual(
+            TgSignalReplayEngine.policy_from_snapshot(snapshot, version),
+            policy,
+        )
+        self.assertEqual(policy.policy_id, "axi-us30")
+        self.assertEqual(policy.time_stop_seconds, 3600)
+        self.assertEqual(policy.breakeven_offset_points, 15.0)
+        self.assertEqual(policy.early_breakeven_offset_r, 0.0)
+        self.assertEqual(policy.trailing_step_r, 0.0)
+        self.assertEqual(policy.trailing_after, "entry")
+        self.assertEqual(geometry.mode, "FIXED_R")
+        self.assertEqual(
+            (geometry.tp1_r, geometry.tp2_r, geometry.tp3_r),
+            (0.75, 1.0, 1.5),
+        )
+
+        operation = direct_operation()
+        operation.update({
+            "_use_broker_actual_baseline": True,
+            "broker_realized_net_pnl": 12.5,
+        })
+        result = TgSignalReplayEngine().replay(operation, [], {}, policy)
+        self.assertTrue(result.comparable)
+        self.assertEqual(result.net_pnl, 12.5)
+        self.assertEqual(
+            result.diagnostics["baseline_source"],
+            "BROKER_EXECUTION_AGGREGATE",
+        )
+
+        operation["deals"] = [
+            {
+                "entry": "1", "volume": "0.5", "profit": "5.0",
+                "commission": "0", "swap": "0", "fee": "0",
+                "price": "101", "time_msc": "1780000000000",
+                "ticket": "1", "reason": "5",
+            }
+        ]
+        result = TgSignalReplayEngine().replay(operation, [], {}, policy)
+        self.assertEqual(result.net_pnl, 12.5)
+        self.assertEqual(
+            result.diagnostics["quality_flags"],
+            ["BROKER_DEAL_BREAKDOWN_INCOMPLETE"],
+        )
+
+        candidate = TgManagementLabService._candidate_policies(policy)[0]
+        self.assertEqual(
+            TgSignalReplayEngine._dynamic_stop(
+                candidate, "BUY", 100.0, 1.0, 0.5, 0.5, 0.0,
+            ),
+            100.0,
+        )
+
     def test_import_is_read_only_idempotent_and_preserves_source_files(self) -> None:
         package = build_tg_package(self.root)
         before = {path.name: (sha256_file(path), path.stat().st_mtime_ns) for path in package.iterdir() if path.is_file()}

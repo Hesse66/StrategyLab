@@ -120,11 +120,13 @@ class TgManagementLabService:
             if item.get("management_policy_version")
         })
         baseline_policy = None
+        baseline_geometry = TargetGeometryPolicy.provider_original()
         for version in reversed(baseline_versions):
-            baseline_policy = self.replay_engine.policy_from_snapshot(
+            baseline_bundle = self.replay_engine.policy_bundle_from_snapshot(
                 snapshot_db, version,
             )
-            if baseline_policy is not None:
+            if baseline_bundle is not None:
+                baseline_policy, baseline_geometry = baseline_bundle
                 break
         config = {
             "snapshot_id": snapshot_id,
@@ -257,8 +259,8 @@ class TgManagementLabService:
                     progress("MANAGEMENT_ONLY", "search", f"Evaluating {policy.policy_id}")
                     item = self._evaluate_development_candidate(
                         snapshot_db, development, split, baseline_sections, policy,
-                        TargetGeometryPolicy.provider_original(), "MANAGEMENT_ONLY",
-                        len(candidates), baseline_policy,
+                        baseline_geometry, "MANAGEMENT_ONLY",
+                        len(candidates), baseline_policy, baseline_geometry,
                     )
                     candidates.append(item); management_candidates.append(item)
                     progress_done += 1
@@ -272,7 +274,7 @@ class TgManagementLabService:
                     item = self._evaluate_development_candidate(
                         snapshot_db, development, split, baseline_sections,
                         baseline_policy, geometry, "TARGET_GEOMETRY_ONLY",
-                        len(candidates), baseline_policy,
+                        len(candidates), baseline_policy, baseline_geometry,
                     )
                     target_candidates.append(item)
                     candidates.append(item)
@@ -297,7 +299,7 @@ class TgManagementLabService:
                             item = self._evaluate_development_candidate(
                                 snapshot_db, development, split, baseline_sections,
                                 policy, geometry, "JOINT_TARGETS_AND_MANAGEMENT",
-                                len(candidates), baseline_policy,
+                                len(candidates), baseline_policy, baseline_geometry,
                             )
                             candidates.append(item); joint_candidates.append(item)
                             progress_done += 1
@@ -328,7 +330,7 @@ class TgManagementLabService:
                 progress(selected["candidate_family"], "stress", "Stressing baseline and the single finalist")
                 selected["stress_scenarios"], selected["stress_gate"] = self._stress_finalist(
                     snapshot_db, comparable, split, baseline_policy, selected,
-                    baseline_sections, stress_profiles,
+                    baseline_sections, stress_profiles, baseline_geometry,
                 )
                 selected["promotion_gate"] = bool(
                     len(comparable) >= 40 and selected["same_comparable_operation_set"]
@@ -508,6 +510,7 @@ class TgManagementLabService:
         baseline_sections: dict[str, Any], policy: ManagementPolicy,
         geometry: TargetGeometryPolicy, family: str, evaluation_order: int,
         baseline_policy: ManagementPolicy,
+        baseline_geometry: TargetGeometryPolicy,
     ) -> dict[str, Any]:
         candidate_results = self._replay_many(snapshot_db, operations, policy, geometry)
         sections = self._sections(operations, candidate_results, split)
@@ -533,7 +536,9 @@ class TgManagementLabService:
             "target_geometry": geometry.to_dict(),
             "parent_policy_id": baseline_policy.policy_id,
             "sections": sections,
-            "complexity": self._complexity(baseline_policy, policy, geometry),
+            "complexity": self._complexity(
+                baseline_policy, policy, geometry, baseline_geometry,
+            ),
             "development_comparable_operation_set": identity,
             "development_exact_promotion_set": exact,
             "preselection_eligible": identity and exact,
@@ -601,6 +606,7 @@ class TgManagementLabService:
         self, snapshot_db: Path, operations: list[dict[str, Any]], split: Any,
         baseline_policy: ManagementPolicy, selected: dict[str, Any],
         baseline_sections: dict[str, Any], stress_profiles: list[dict[str, Any]],
+        baseline_geometry: TargetGeometryPolicy,
     ) -> tuple[list[dict[str, Any]], bool]:
         scenarios: list[dict[str, Any]] = []
         all_pass = True
@@ -623,7 +629,7 @@ class TgManagementLabService:
             )
             baseline_results = self._replay_many(
                 snapshot_db, operations, baseline_stress_policy,
-                TargetGeometryPolicy.provider_original(),
+                baseline_geometry,
             )
             candidate_results = self._replay_many(
                 snapshot_db, operations, candidate_stress_policy, geometry,
@@ -756,12 +762,18 @@ class TgManagementLabService:
     def _complexity(
         baseline: ManagementPolicy, candidate: ManagementPolicy,
         geometry: TargetGeometryPolicy | None = None,
+        baseline_geometry: TargetGeometryPolicy | None = None,
     ) -> int:
         base = baseline.to_dict()
         current = candidate.to_dict()
         ignored = {"policy_id", "parent_policy_id"}
         management_changes = sum(base[key] != current[key] for key in base if key not in ignored)
-        geometry_changes = 0 if not geometry or geometry.mode == "PROVIDER_ORIGINAL" else 3
+        candidate_geometry = geometry or TargetGeometryPolicy.provider_original()
+        parent_geometry = baseline_geometry or TargetGeometryPolicy.provider_original()
+        geometry_changes = sum(
+            getattr(parent_geometry, key) != getattr(candidate_geometry, key)
+            for key in ("tp1_r", "tp2_r", "tp3_r")
+        )
         return management_changes + geometry_changes
 
     @staticmethod
